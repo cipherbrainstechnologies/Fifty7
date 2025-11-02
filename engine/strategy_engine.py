@@ -39,8 +39,16 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
         prev_low = data_1h['Low'].iloc[i-1]
         
         # Get timestamps for logging
-        current_time = data_1h['Date'].iloc[i] if 'Date' in data_1h.columns else f"Candle_{i}"
-        prev_time = data_1h['Date'].iloc[i-1] if 'Date' in data_1h.columns else f"Candle_{i-1}"
+        # Handle Date column or Date index
+        if 'Date' in data_1h.columns:
+            current_time = data_1h['Date'].iloc[i]
+            prev_time = data_1h['Date'].iloc[i-1]
+        elif data_1h.index.name == 'Date' or isinstance(data_1h.index, pd.DatetimeIndex):
+            current_time = data_1h.index[i]
+            prev_time = data_1h.index[i-1]
+        else:
+            current_time = f"Candle_{i}"
+            prev_time = f"Candle_{i-1}"
         
         # Log reference candle (previous candle)
         if i == 2:
@@ -137,7 +145,13 @@ def confirm_breakout(
         vol = recent['Volume'].iloc[i]
         
         # Get timestamp for logging
-        candle_time = recent['Date'].iloc[i] if 'Date' in recent.columns else f"Candle_{i}"
+        # Handle Date column or Date index
+        if 'Date' in recent.columns:
+            candle_time = recent['Date'].iloc[i]
+        elif recent.index.name == 'Date' or isinstance(recent.index, pd.DatetimeIndex):
+            candle_time = recent.index[i]
+        else:
+            candle_time = f"Candle_{i}"
         
         # Bullish breakout (Call option) - close above range high with volume confirmation
         if close > range_high and vol > volume_threshold:
@@ -287,8 +301,16 @@ def check_for_signal(
     range_low = reference_candle['Low']    # Parent candle's low
     
     # Get timestamps for logging
-    inside_bar_time = inside_bar_candle['Date'] if 'Date' in inside_bar_candle.index else f"Index_{latest_inside_bar_idx}"
-    ref_time = reference_candle['Date'] if 'Date' in reference_candle.index else f"Index_{latest_inside_bar_idx - 1}"
+    # Handle Date column or Date index
+    if 'Date' in data_1h.columns:
+        inside_bar_time = inside_bar_candle['Date']
+        ref_time = reference_candle['Date']
+    elif data_1h.index.name == 'Date' or isinstance(data_1h.index, pd.DatetimeIndex):
+        inside_bar_time = data_1h.index[latest_inside_bar_idx]
+        ref_time = data_1h.index[latest_inside_bar_idx - 1]
+    else:
+        inside_bar_time = f"Index_{latest_inside_bar_idx}"
+        ref_time = f"Index_{latest_inside_bar_idx - 1}"
     
     # Format timestamps for display
     if hasattr(inside_bar_time, 'strftime'):

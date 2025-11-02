@@ -8,7 +8,7 @@ import streamlit as st
 import yaml
 from yaml.loader import SafeLoader
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import os
 import sys
 from logzero import logger
@@ -48,6 +48,14 @@ from engine.signal_handler import SignalHandler
 from engine.backtest_engine import BacktestEngine
 from engine.market_data import MarketDataProvider
 from engine.live_runner import LiveStrategyRunner
+
+# Cloud data source
+try:
+    from backtesting.datasource_desiquant import stream_data
+    DESIQUANT_AVAILABLE = True
+except ImportError:
+    DESIQUANT_AVAILABLE = False
+    stream_data = None
 
 
 # Page config
@@ -991,123 +999,612 @@ elif tab == "Trade Journal":
 elif tab == "Backtest":
     st.header("🧪 Backtest Strategy")
     
-    # Backtest options
-    st.subheader("Upload Historical Data")
-    
-    uploaded_file = st.file_uploader(
-        "Choose CSV file with historical OHLC data",
-        type=['csv'],
-        help="CSV should have columns: Date, Open, High, Low, Close, Volume"
-    )
-    
-    if uploaded_file is not None:
-        try:
-            # Load data
-            data = pd.read_csv(uploaded_file)
-            
-            # Ensure date column is datetime
-            if 'Date' in data.columns:
-                data['Date'] = pd.to_datetime(data['Date'])
-                data.set_index('Date', inplace=True)
-            
-            # Display data preview
-            st.subheader("Data Preview")
-            st.dataframe(data.head(10), use_container_width=True)
-            
-            st.divider()
-            
-            # Backtest parameters
-            st.subheader("Backtest Parameters")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                initial_capital = st.number_input(
-                    "Initial Capital (₹)",
-                    min_value=10000,
-                    value=100000,
-                    step=10000
-                )
-            
-            with col2:
-                # Load strategy config
-                import yaml as yaml_lib
-                with open('config/config.yaml', 'r') as f:
-                    strategy_config = yaml_lib.safe_load(f)
-                
-                lot_size = st.number_input(
-                    "Lot Size",
-                    min_value=1,
-                    value=strategy_config.get('lot_size', 75),
-                    step=1
-                )
-            
-            # Run backtest
-            if st.button("▶️ Run Backtest", use_container_width=True):
-                with st.spinner("Running backtest..."):
-                    try:
-                        # Prepare config
-                        backtest_config = {
-                            'strategy': strategy_config.get('strategy', {}),
-                            'lot_size': lot_size
-                        }
-                        
-                        # Initialize engine
-                        engine = BacktestEngine(backtest_config)
-                        
-                        # Run backtest (simplified: using same data for 1h and 15m)
-                        results = engine.run_backtest(data, data, initial_capital)
-                        
-                        # Display results
-                        st.subheader("📊 Backtest Results")
-                        
-                        col1, col2, col3, col4 = st.columns(4)
-                        
-                        with col1:
-                            st.metric("Total Trades", results['total_trades'])
-                        
-                        with col2:
-                            st.metric("Win Rate", f"{results['win_rate']:.2f}%")
-                        
-                        with col3:
-                            st.metric("Total P&L", f"₹{results['total_pnl']:,.2f}")
-                        
-                        with col4:
-                            st.metric("Return %", f"{results['return_pct']:.2f}%")
-                        
-                        # Detailed results
-                        st.write(f"**Initial Capital:** ₹{results['initial_capital']:,.2f}")
-                        st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
-                        st.write(f"**Winning Trades:** {results['winning_trades']}")
-                        st.write(f"**Losing Trades:** {results['losing_trades']}")
-                        st.write(f"**Average Win:** ₹{results['avg_win']:,.2f}")
-                        st.write(f"**Average Loss:** ₹{results['avg_loss']:,.2f}")
-                        st.write(f"**Max Drawdown:** {results['max_drawdown']:.2f}%")
-                        
-                        # Equity curve
-                        if results.get('equity_curve'):
-                            st.subheader("Equity Curve")
-                            equity_df = pd.DataFrame({
-                                'Capital': results['equity_curve']
-                            })
-                            st.line_chart(equity_df)
-                        
-                        # Trades table
-                        if results.get('trades'):
-                            st.subheader("Trade Details")
-                            trades_df = pd.DataFrame(results['trades'])
-                            st.dataframe(trades_df, use_container_width=True)
-                    
-                    except Exception as e:
-                        st.error(f"❌ Backtest failed: {e}")
-                        st.exception(e)
-        
-        except Exception as e:
-            st.error(f"❌ Error loading CSV file: {e}")
-            st.exception(e)
-    
+    # --- Source selector ---
+    if DESIQUANT_AVAILABLE:
+        mode = st.radio(
+            "Select data source",
+            ["Upload CSV (existing)", "DesiQuant S3 (no upload)"],
+            index=0,
+            help="Use cloud mode to stream spot + options + expiries directly from DesiQuant"
+        )
     else:
-        st.info("ℹ️ Please upload a CSV file with historical OHLC data to run backtest")
+        mode = "Upload CSV (existing)"
+        st.info("ℹ️ Cloud data source not available. Install dependencies: `pip install s3fs>=2024.3.1 pyarrow>=15.0.0`")
+    
+    # Common parameters (shown for both modes)
+    st.subheader("Backtest Parameters")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        initial_capital = st.number_input(
+            "Initial Capital (₹)",
+            min_value=10000,
+            value=100000,
+            step=10000
+        )
+    
+    with col2:
+        # Load strategy config
+        import yaml as yaml_lib
+        with open('config/config.yaml', 'r') as f:
+            strategy_config = yaml_lib.safe_load(f)
+        
+        lot_size = st.number_input(
+            "Lot Size",
+            min_value=1,
+            value=strategy_config.get('lot_size', 75),
+            step=1
+        )
+    
+    with col3:
+        sl_pct = st.number_input(
+            "Premium SL %",
+            min_value=10,
+            value=35,
+            max_value=60,
+            step=5,
+            help="Stop loss percentage on option premium (legacy mode only)"
+        )
+    
+    # ========== Enhanced Feature Flags (Backtest Only) ==========
+    # Initialize defaults (for when expander is collapsed)
+    use_atr_filter = False
+    use_regime_filter = False
+    use_distance_guard = False
+    use_tiered_exits = False
+    use_expiry_protocol = False
+    use_directional_sizing = False
+    
+    atr_floor_pct = 0.5
+    ema_slope_len = 20
+    distance_guard_atr = 0.6
+    
+    vol_band_low = 0.40
+    vol_band_high = 0.75
+    sl_pct_low = 22
+    sl_pct_norm = 28
+    sl_pct_high = 35
+    
+    be_at_r = 0.6
+    t1_r = 1.2
+    t1_book_pct = 0.50
+    t2_r = 2.0
+    t2_book_pct = 0.25
+    
+    trail_lookback = 6
+    trail_mult = 2.0
+    
+    no_new_after = "14:30"
+    force_partial_by = "13:00"
+    tighten_days = 1.5
+    
+    risk_per_trade_pct = 0.6
+    pe_size_cap_vs_ce = 0.7
+    max_concurrent = 2
+    
+    with st.expander("🔧 Enhanced Features (Backtest Only)", expanded=False):
+        st.markdown("**Feature Toggles:**")
+        col_flags1, col_flags2 = st.columns(2)
+        
+        with col_flags1:
+            use_atr_filter = st.checkbox("ATR Filter", value=use_atr_filter, help="Require minimum ATR% before entry")
+            use_regime_filter = st.checkbox("Regime Filter", value=use_regime_filter, help="Filter trades based on EMA slope regime")
+            use_distance_guard = st.checkbox("Distance Guard", value=use_distance_guard, help="Reduce size if breakout is too stretched")
+        
+        with col_flags2:
+            use_tiered_exits = st.checkbox("Tiered Exits", value=use_tiered_exits, help="Enable partial exits at T1/T2 targets")
+            use_expiry_protocol = st.checkbox("Expiry Protocol", value=use_expiry_protocol, help="Force exits and partial banks on expiry day")
+            use_directional_sizing = st.checkbox("Directional Sizing", value=use_directional_sizing, help="Adjust PE size based on regime")
+        
+        st.divider()
+        
+        # Filters Configuration
+        st.markdown("**Filters:**")
+        col_filt1, col_filt2, col_filt3 = st.columns(3)
+        
+        with col_filt1:
+            atr_floor_pct = st.number_input(
+                "ATR Floor % (1h)",
+                min_value=0.0,
+                value=atr_floor_pct,
+                step=0.1,
+                format="%.1f",
+                help="Minimum ATR%/Close required before entry"
+            )
+        
+        with col_filt2:
+            ema_slope_len = st.number_input(
+                "EMA Slope Lookback",
+                min_value=5,
+                value=ema_slope_len,
+                step=5,
+                help="Bars to calculate EMA slope for regime detection"
+            )
+        
+        with col_filt3:
+            distance_guard_atr = st.number_input(
+                "Distance Guard (ATR mult)",
+                min_value=0.1,
+                value=distance_guard_atr,
+                step=0.1,
+                format="%.1f",
+                help="Multiplier: reject/halve if breakout > this * ATR from signal edge"
+            )
+        
+        st.divider()
+        
+        # Vol-Band SL Configuration
+        st.markdown("**Volatility-Based Stop Loss:**")
+        col_vol1, col_vol2, col_vol3, col_vol4 = st.columns(4)
+        
+        with col_vol1:
+            vol_band_low = st.number_input(
+                "Vol Band Low %",
+                min_value=0.0,
+                value=vol_band_low,
+                step=0.05,
+                format="%.2f",
+                help="ATR% threshold for low volatility"
+            )
+        
+        with col_vol2:
+            vol_band_high = st.number_input(
+                "Vol Band High %",
+                min_value=0.0,
+                value=vol_band_high,
+                step=0.05,
+                format="%.2f",
+                help="ATR% threshold for high volatility"
+            )
+        
+        with col_vol3:
+            sl_pct_low = st.number_input(
+                "SL % (Low Vol)",
+                min_value=10,
+                value=sl_pct_low,
+                step=1,
+                help="Stop loss % when ATR% < low threshold"
+            )
+        
+        with col_vol4:
+            sl_pct_high = st.number_input(
+                "SL % (High Vol)",
+                min_value=20,
+                value=sl_pct_high,
+                step=1,
+                help="Stop loss % when ATR% >= high threshold"
+            )
+        
+        sl_pct_norm = st.number_input(
+            "SL % (Normal Vol)",
+            min_value=15,
+            value=sl_pct_norm,
+            step=1,
+            help="Stop loss % when low <= ATR% < high"
+        )
+        
+        st.divider()
+        
+        # Tiered Exits Configuration
+        st.markdown("**Tiered Exit Parameters:**")
+        col_tier1, col_tier2, col_tier3, col_tier4 = st.columns(4)
+        
+        with col_tier1:
+            be_at_r = st.number_input(
+                "Breakeven @ R",
+                min_value=0.0,
+                value=be_at_r,
+                step=0.1,
+                format="%.1f",
+                help="Move to BE when profit reaches this many R"
+            )
+        
+        with col_tier2:
+            t1_r = st.number_input(
+                "T1 Target (R)",
+                min_value=0.0,
+                value=t1_r,
+                step=0.1,
+                format="%.1f",
+                help="Book partial at this many R"
+            )
+        
+        t1_book_pct = st.number_input(
+            "T1 Book %",
+            min_value=0.0,
+            max_value=1.0,
+            value=t1_book_pct,
+            step=0.05,
+            format="%.2f",
+            help="Percentage to book at T1 (0.5 = 50%)"
+        )
+        
+        with col_tier3:
+            t2_r = st.number_input(
+                "T2 Target (R)",
+                min_value=0.0,
+                value=t2_r,
+                step=0.1,
+                format="%.1f",
+                help="Book second partial at this many R"
+            )
+        
+        t2_book_pct = st.number_input(
+            "T2 Book %",
+            min_value=0.0,
+            max_value=1.0,
+            value=t2_book_pct,
+            step=0.05,
+            format="%.2f",
+            help="Percentage to book at T2 (0.25 = 25%)"
+        )
+        
+        st.divider()
+        
+        # Trailing Stop Configuration
+        st.markdown("**Trailing Stop (Chandelier):**")
+        col_trail1, col_trail2 = st.columns(2)
+        
+        with col_trail1:
+            trail_lookback = st.number_input(
+                "Trail Lookback (bars)",
+                min_value=3,
+                value=trail_lookback,
+                step=1,
+                help="Number of bars for chandelier trail calculation"
+            )
+        
+        with col_trail2:
+            trail_mult = st.number_input(
+                "Trail Multiplier",
+                min_value=0.5,
+                value=trail_mult,
+                step=0.1,
+                format="%.1f",
+                help="Multiplier for ATR in chandelier trail"
+            )
+        
+        st.divider()
+        
+        # Expiry Protocol Configuration
+        st.markdown("**Expiry Protocol:**")
+        col_exp1, col_exp2, col_exp3 = st.columns(3)
+        
+        with col_exp1:
+            no_new_after = st.text_input(
+                "No New After (HH:MM)",
+                value=no_new_after,
+                help="Block new entries after this time on expiry day (IST)"
+            )
+        
+        with col_exp2:
+            force_partial_by = st.text_input(
+                "Force Partial By (HH:MM)",
+                value=force_partial_by,
+                help="Force partial bank by this time if not at BE (IST)"
+            )
+        
+        with col_exp3:
+            tighten_days = st.number_input(
+                "Tighten Trail (days to expiry)",
+                min_value=0.5,
+                value=tighten_days,
+                step=0.5,
+                format="%.1f",
+                help="Days before expiry to tighten trailing stop"
+            )
+        
+        st.divider()
+        
+        # Sizing Configuration
+        st.markdown("**Position Sizing:**")
+        col_size1, col_size2, col_size3 = st.columns(3)
+        
+        with col_size1:
+            risk_per_trade_pct = st.number_input(
+                "Risk Per Trade %",
+                min_value=0.0,
+                value=risk_per_trade_pct,
+                step=0.1,
+                format="%.1f",
+                help="Percentage of equity to risk per trade"
+            )
+        
+        with col_size2:
+            pe_size_cap_vs_ce = st.number_input(
+                "PE Size Cap vs CE",
+                min_value=0.0,
+                max_value=1.0,
+                value=pe_size_cap_vs_ce,
+                step=0.1,
+                format="%.1f",
+                help="PE position size multiplier vs CE (0.7 = 70%)"
+            )
+        
+        with col_size3:
+            max_concurrent = st.number_input(
+                "Max Concurrent Positions",
+                min_value=1,
+                value=max_concurrent,
+                step=1,
+                help="Maximum number of simultaneous positions"
+            )
+    
+    st.divider()
+    
+    # Prepare strategy config with all enhanced features
+    backtest_config = {
+        'initial_capital': float(initial_capital),
+        'lot_size': int(lot_size),
+        'strategy': {
+            **strategy_config.get('strategy', {}),
+            # Legacy defaults (used when flags are off)
+            'premium_sl_pct': float(sl_pct),
+            'sl': 30,
+            'rr': 1.8,
+            
+            # Feature toggles
+            'use_atr_filter': use_atr_filter,
+            'use_regime_filter': use_regime_filter,
+            'use_distance_guard': use_distance_guard,
+            'use_tiered_exits': use_tiered_exits,
+            'use_expiry_protocol': use_expiry_protocol,
+            'use_directional_sizing': use_directional_sizing,
+            
+            # Filters
+            'atr_floor_pct_1h': float(atr_floor_pct),
+            'ema_slope_len': int(ema_slope_len),
+            'adx_min': 0.0,  # Disabled for now
+            'distance_guard_atr': float(distance_guard_atr),
+            
+            # Vol-band SL
+            'vol_bands': {
+                'low': float(vol_band_low),
+                'high': float(vol_band_high)
+            },
+            'premium_sl_pct_low': float(sl_pct_low),
+            'premium_sl_pct_norm': float(sl_pct_norm),
+            'premium_sl_pct_high': float(sl_pct_high),
+            
+            # Breakeven & trailing
+            'be_at_r': float(be_at_r),
+            'trail_type': 'chandelier',
+            'trail_lookback': int(trail_lookback),
+            'trail_mult': float(trail_mult),
+            'swing_lock': True,
+            
+            # Partial exits
+            't1_r': float(t1_r),
+            't1_book': float(t1_book_pct),
+            't2_r': float(t2_r),
+            't2_book': float(t2_book_pct),
+            
+            # Expiry protocol
+            'no_new_after': str(no_new_after),
+            'force_partial_by': str(force_partial_by),
+            'tighten_trail_days_to_expiry': float(tighten_days),
+            'tighten_mult_factor': 1.3
+        },
+        'sizing': {
+            'risk_per_trade_pct': float(risk_per_trade_pct),
+            'pe_size_cap_vs_ce': float(pe_size_cap_vs_ce),
+            'portfolio_risk_cap_pct': 4.0,
+            'max_concurrent_positions': int(max_concurrent)
+        }
+    }
+    
+    # Initialize engine (used by both modes)
+    engine = BacktestEngine(backtest_config)
+    
+    # --- MODE 1: CSV Upload (existing flow) ---
+    if mode == "Upload CSV (existing)":
+        st.subheader("Upload Historical Data")
+        uploaded_file = st.file_uploader(
+            "Choose CSV file with historical OHLC data",
+            type=['csv'],
+            help="CSV should have columns: Date, Open, High, Low, Close, Volume"
+        )
+        
+        if uploaded_file is not None:
+            try:
+                # Load data
+                data = pd.read_csv(uploaded_file)
+                
+                # Normalize column names (handle case-insensitive matching)
+                # Map common variations to expected column names
+                column_mapping = {}
+                expected_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+                
+                for col in data.columns:
+                    col_lower = col.lower().strip()
+                    for expected in expected_columns:
+                        if col_lower == expected.lower():
+                            column_mapping[col] = expected
+                            break
+                
+                # Rename columns if mapping found
+                if column_mapping:
+                    data = data.rename(columns=column_mapping)
+                
+                # Ensure required columns exist
+                required_cols = ['High', 'Low', 'Open', 'Close']
+                missing_cols = [col for col in required_cols if col not in data.columns]
+                if missing_cols:
+                    st.error(f"❌ Missing required columns: {missing_cols}")
+                    st.info(f"Available columns: {list(data.columns)}")
+                    st.stop()
+                
+                # Ensure date column is datetime
+                if 'Date' in data.columns:
+                    data['Date'] = pd.to_datetime(data['Date'])
+                    data.set_index('Date', inplace=True)
+                elif data.index.name is None or data.index.name.lower() != 'date':
+                    # If Date is already the index name or index is datetime, ensure it's properly named
+                    if isinstance(data.index, pd.DatetimeIndex):
+                        data.index.name = 'Date'
+                    else:
+                        st.warning("⚠️ Date column not found. Please ensure your CSV has a 'Date' column.")
+                
+                # Display data preview
+                st.subheader("Data Preview")
+                st.dataframe(data.head(10), use_container_width=True)
+                
+                # Run backtest
+                if st.button("▶️ Run Backtest", use_container_width=True):
+                    with st.spinner("Running backtest..."):
+                        try:
+                            # Run backtest with new API (1h close breakout, no 15m logic)
+                            # options_df and expiries_df are optional - will use synthetic premiums if not provided
+                            results = engine.run_backtest(
+                                data_1h=data,
+                                options_df=None,  # Optional: can upload options data separately
+                                expiries_df=None,  # Optional: can upload expiry calendar separately
+                                initial_capital=initial_capital
+                            )
+                            
+                            # Display results
+                            st.subheader("📊 Backtest Results")
+                            
+                            col1, col2, col3, col4 = st.columns(4)
+                            
+                            with col1:
+                                st.metric("Total Trades", results['total_trades'])
+                            
+                            with col2:
+                                st.metric("Win Rate", f"{results['win_rate']:.2f}%")
+                            
+                            with col3:
+                                st.metric("Total P&L", f"₹{results['total_pnl']:,.2f}")
+                            
+                            with col4:
+                                st.metric("Return %", f"{results['return_pct']:.2f}%")
+                            
+                            # Detailed results
+                            st.write(f"**Initial Capital:** ₹{results['initial_capital']:,.2f}")
+                            st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
+                            st.write(f"**Winning Trades:** {results['winning_trades']}")
+                            st.write(f"**Losing Trades:** {results['losing_trades']}")
+                            st.write(f"**Average Win:** ₹{results['avg_win']:,.2f}")
+                            st.write(f"**Average Loss:** ₹{results['avg_loss']:,.2f}")
+                            st.write(f"**Max Drawdown:** {results['max_drawdown']:.2f}%")
+                            
+                            # Equity curve
+                            if results.get('equity_curve'):
+                                st.subheader("Equity Curve")
+                                equity_df = pd.DataFrame({
+                                    'Capital': results['equity_curve']
+                                })
+                                st.line_chart(equity_df)
+                            
+                            # Trades table
+                            if results.get('trades'):
+                                st.subheader("Trade Details")
+                                trades_df = pd.DataFrame(results['trades'])
+                                st.dataframe(trades_df, use_container_width=True)
+                        
+                        except Exception as e:
+                            st.error(f"❌ Backtest failed: {e}")
+                            st.exception(e)
+            
+            except Exception as e:
+                st.error(f"❌ Error loading CSV file: {e}")
+                st.exception(e)
+        else:
+            st.info("ℹ️ Please upload a CSV file with historical OHLC data to run backtest")
+    
+    # --- MODE 2: DesiQuant Cloud (new, no upload) ---
+    else:
+        st.subheader("DesiQuant S3 Data Source")
+        st.info("Cloud mode: streams NIFTY spot + ATM options + expiries from DesiQuant S3.")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            start_date = st.date_input("Start date", value=pd.to_datetime("2021-01-01").date())
+        
+        with col2:
+            end_date = st.date_input("End date", value=pd.to_datetime("2021-03-31").date())
+        
+        with col3:
+            symbol = st.selectbox("Symbol", ["NIFTY"], index=0)
+        
+        if st.button("▶️ Run Backtest (Cloud)", use_container_width=True):
+            with st.spinner("Fetching from DesiQuant S3 and running backtest..."):
+                try:
+                    # Stream data from DesiQuant S3
+                    data = stream_data(
+                        symbol=symbol,
+                        start=str(start_date),
+                        end=str(end_date)
+                    )
+                    
+                    # Extract spot, options, and expiries
+                    spot_df = data['spot']
+                    options_df = data['options']
+                    expiries_df = data['expiries']
+                    
+                    # Check if we got any data
+                    if spot_df.empty:
+                        st.warning("⚠️ No data returned from DesiQuant S3. The datasource module may need implementation.")
+                        st.info("💡 For now, please use CSV upload mode or implement the S3 connection in `backtesting/datasource_desiquant.py`")
+                        st.stop()
+                    
+                    # Display data preview
+                    st.subheader("Data Preview")
+                    st.dataframe(spot_df.head(10), use_container_width=True)
+                    
+                    # Run backtest with cloud data
+                    results = engine.run_backtest(
+                        data_1h=spot_df,
+                        data_15m=None,  # not used in 1h breakout
+                        options_df=options_df if not options_df.empty else None,
+                        expiries_df=expiries_df if not expiries_df.empty else None,
+                        initial_capital=initial_capital
+                    )
+                    
+                    # Display results (same format as CSV mode)
+                    st.subheader("📊 Backtest Results")
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("Total Trades", results['total_trades'])
+                    
+                    with col2:
+                        st.metric("Win Rate", f"{results['win_rate']:.2f}%")
+                    
+                    with col3:
+                        st.metric("Total P&L", f"₹{results['total_pnl']:,.2f}")
+                    
+                    with col4:
+                        st.metric("Return %", f"{results['return_pct']:.2f}%")
+                    
+                    # Detailed results
+                    st.write(f"**Initial Capital:** ₹{results['initial_capital']:,.2f}")
+                    st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
+                    st.write(f"**Winning Trades:** {results['winning_trades']}")
+                    st.write(f"**Losing Trades:** {results['losing_trades']}")
+                    st.write(f"**Average Win:** ₹{results['avg_win']:,.2f}")
+                    st.write(f"**Average Loss:** ₹{results['avg_loss']:,.2f}")
+                    st.write(f"**Max Drawdown:** {results['max_drawdown']:.2f}%")
+                    
+                    # Equity curve
+                    if results.get('equity_curve'):
+                        st.subheader("Equity Curve")
+                        equity_df = pd.DataFrame({
+                            'Capital': results['equity_curve']
+                        })
+                        st.line_chart(equity_df)
+                    
+                    # Trades table
+                    if results.get('trades'):
+                        st.subheader("Trade Details")
+                        trades_df = pd.DataFrame(results['trades'])
+                        st.dataframe(trades_df, use_container_width=True)
+                
+                except Exception as e:
+                    st.error(f"❌ Backtest failed: {e}")
+                    st.exception(e)
 
 # ============ SETTINGS TAB ============
 elif tab == "Settings":

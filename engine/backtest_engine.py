@@ -1,296 +1,786 @@
 """
 Backtest Engine for historical strategy testing
+
+— 1h close breakout of locked Signal Candle (no 15m logic)
+
+— Option-premium simulation with trailing SL + expiry rules
+
 """
+
+from __future__ import annotations
 
 import pandas as pd
 import numpy as np
+import math
 from typing import Dict, List, Optional
-from datetime import datetime
-from engine.strategy_engine import detect_inside_bar, confirm_breakout, calculate_sl_tp_levels
+from datetime import datetime, time, timedelta
+
+# Reuse your live strategy helpers
+from engine.strategy_engine import detect_inside_bar  # keep using this
+
+
+# ========== PATCH A: Utility Functions (backtest-only enhancements) ==========
+
+def _atr_from_ohlc(df, n=14):
+    """ATR on underlying (1h). df has Open/High/Low/Close."""
+    h = df['High'].astype(float)
+    l = df['Low'].astype(float)
+    c = df['Close'].astype(float)
+    prev_c = c.shift(1)
+    tr = pd.concat([
+        (h - l),
+        (h - prev_c).abs(),
+        (l - prev_c).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(n, min_periods=n).mean()
+    return atr
+
+
+def _ema(series, n):
+    return series.ewm(span=n, adjust=False).mean()
+
+
+def _ema_slope_up(df, n=20):
+    """Simple regime check: EMA slope >= 0 → uptrend bias."""
+    ema = _ema(df['Close'].astype(float), n)
+    slope = ema.diff(n)  # n-bar delta
+    return slope.iloc[-1] >= 0
+
+
+def _atr_pct(df, n=14):
+    atr = _atr_from_ohlc(df, n)
+    close = df['Close'].astype(float)
+    return (atr / close) * 100.0
+
+
+def _chandelier_trail(prem_series, lookback=6, mult=2.0, direction='CE'):
+    """
+    Returns trailing stop series on premium based on chandelier exit.
+    direction CE trails on lows, PE trails on highs (premium).
+    prem_series must be a DataFrame with columns: open/high/low/close
+    """
+    hi = prem_series['high'].astype(float)
+    lo = prem_series['low'].astype(float)
+    cl = prem_series['close'].astype(float)
+    # ATR on premium (true range on premium bars)
+    prev_c = cl.shift(1)
+    tr = pd.concat([(hi - lo), (hi - prev_c).abs(), (lo - prev_c).abs()], axis=1).max(axis=1)
+    atrp = tr.rolling(lookback, min_periods=lookback).mean()
+    if direction == 'CE':
+        ref = hi.rolling(lookback, min_periods=lookback).max()
+        trail = ref - mult * atrp
+    else:
+        ref = lo.rolling(lookback, min_periods=lookback).min()
+        trail = ref + mult * atrp
+    return trail
+
+
+def _hhmm(ts):
+    """Extract hour, minute from timestamp."""
+    return (ts.hour, ts.minute)
+
+
+def _parse_hhmm(s, default=(0, 0)):
+    """Parse 'HH:MM' string to (hour, minute) tuple."""
+    try:
+        h, m = map(int, s.split(":"))
+        return (h, m)
+    except Exception:
+        return default
 
 
 class BacktestEngine:
     """
     Backtesting framework with trade simulation and result calculation.
+    - Uses 1h close breakout of the locked signal candle
+    - Works with real options_df (preferred) or synthetic premium fallback
     """
-    
+
     def __init__(self, config: Dict):
-        """
-        Initialize BacktestEngine with configuration.
+        self.config = config or {}
+        self.trades: List[Dict] = []
+        self.equity_curve: List[float] = []
         
-        Args:
-            config: Configuration dictionary with strategy parameters
-        """
-        self.config = config
-        self.trades = []
-        self.equity_curve = []
-    
+        # ========== PATCH B: Feature flags (backtest-only) ==========
+        self.flags = {
+            "use_atr_filter": bool(self.config.get("strategy", {}).get("use_atr_filter", False)),
+            "use_regime_filter": bool(self.config.get("strategy", {}).get("use_regime_filter", False)),
+            "use_distance_guard": bool(self.config.get("strategy", {}).get("use_distance_guard", False)),
+            "use_tiered_exits": bool(self.config.get("strategy", {}).get("use_tiered_exits", False)),
+            "use_expiry_protocol": bool(self.config.get("strategy", {}).get("use_expiry_protocol", False)),
+            "use_directional_sizing": bool(self.config.get("strategy", {}).get("use_directional_sizing", False)),
+        }
+        self.params = self.config.get("strategy", {})
+        self.sizing = self.config.get("sizing", {})
+
+    # ------------- Public API -------------
+
     def run_backtest(
         self,
         data_1h: pd.DataFrame,
-        data_15m: pd.DataFrame,
-        initial_capital: float = 100000.0
+        data_15m: Optional[pd.DataFrame] = None,   # kept for backward-compat (ignored by 1h breakout)
+        initial_capital: float = 100000.0,
+        *,
+        options_df: Optional[pd.DataFrame] = None,   # NEW (safe default)
+        expiries_df: Optional[pd.DataFrame] = None  # NEW (safe default)
     ) -> Dict:
         """
-        Run backtest on historical data.
-        
+        Run the backtest.
+
         Args:
-            data_1h: Historical 1-hour OHLC data
-            data_15m: Historical 15-minute OHLCV data aligned with 1h data
-            initial_capital: Starting capital
-        
+            data_1h: 1-hour OHLC(V) DataFrame indexed by Timestamp.
+                     Expected columns (case-insensitive): Open, High, Low, Close
+            data_15m: kept only for legacy signature (ignored by 1h breakout logic)
+            initial_capital: starting capital
+            options_df: (optional) 1-hour OHLC for options with columns:
+                        ['timestamp','open','high','low','close','expiry','strike','type']
+                        type ∈ {'CE','PE'}, expiry as date/datetime
+            expiries_df: (optional) expiry calendar with column 'expiry'
+
         Returns:
-            Dictionary with backtest results
+            Results dictionary with trades, PnL, equity, etc.
         """
         self.trades = []
         self.equity_curve = [initial_capital]
         current_capital = initial_capital
-        
-        strategy_config = {
-            'sl': self.config.get('strategy', {}).get('sl', 30),
-            'rr': self.config.get('strategy', {}).get('rr', 1.8)
-        }
-        
-        lot_size = self.config.get('lot_size', 75)
-        
-        # Detect all Inside Bars first
-        inside_bars = detect_inside_bar(data_1h)
-        
-        if not inside_bars:
+
+        # --- config defaults ---
+        strat = self.config.get('strategy', {})
+        self.pct_sl = float(strat.get('premium_sl_pct', 35.0)) / 100.0  # 35%
+        self.partial_lock_1 = float(strat.get('lock1_gain_pct', 60.0)) / 100.0  # +60%
+        self.partial_lock_2 = float(strat.get('lock2_gain_pct', 80.0)) / 100.0  # +80%
+        self.partial_lock_3 = float(strat.get('lock3_gain_pct', 100.0)) / 100.0 # +100%
+        self.lot_qty = int(self.config.get('lot_size', 75))  # Nifty lot
+
+        # normalize columns
+        data = self._norm_ohlc(data_1h).copy()
+        if options_df is not None:
+            options_df = self._norm_options(options_df)
+
+        # ========== PATCH C: Precompute ATR on spot for filters / vol-bands ==========
+        spot_1h = data.copy()
+        atr_pct_series = _atr_pct(spot_1h, n=14)
+        atr_floor = float(self.params.get("atr_floor_pct_1h", 0.0))
+        ema_len = int(self.params.get("ema_slope_len", 20))
+        adx_min = float(self.params.get("adx_min", 0.0))  # (not used if 0, we keep EMA slope)
+
+        # helper: get ATR% near a timestamp (use last available)
+        def _atrpct_at(ts):
+            idx = spot_1h.index.searchsorted(ts, side='right') - 1
+            if idx < 0:
+                return None
+            return float(atr_pct_series.iloc[idx])
+
+        # --- Step 1: find all inside-candle indices (signal lock) ---
+        inside_idxs = detect_inside_bar(data)
+        if not inside_idxs:
             return self._generate_results(initial_capital, current_capital)
-        
-        # Process each Inside Bar pattern
-        for inside_bar_idx in inside_bars:
-            if inside_bar_idx < 2:
+
+        # --- iterate every inside pattern; wait for 1h CLOSE breakout only ---
+        for idx in inside_idxs:
+            if idx < 2:
                 continue
-            
-            # Get range from Inside Bar
-            range_high = data_1h['High'].iloc[inside_bar_idx - 1]
-            range_low = data_1h['Low'].iloc[inside_bar_idx - 1]
-            
-            # Find corresponding 15m data after Inside Bar
-            inside_bar_time = data_1h.index[inside_bar_idx]
-            
-            # Get 15m data after Inside Bar
-            future_15m = data_15m[data_15m.index > inside_bar_time]
-            
-            if len(future_15m) < 5:
+
+            signal_high = data['High'].iloc[idx-1]
+            signal_low  = data['Low'].iloc[idx-1]
+            signal_time = data.index[idx]             # time of the inside candle (current)
+            # we trade only after we get a 1h close outside the signal range
+            future_h = data[data.index > signal_time]
+
+            if future_h.empty:
                 continue
-            
-            # Check for breakout in next few 15m candles
-            max_lookahead = min(20, len(future_15m))  # Check next 20 candles max
-            
-            for i in range(max_lookahead):
-                window_15m = future_15m.iloc[:i+1]
-                
-                # Confirm breakout
-                direction = confirm_breakout(window_15m, range_high, range_low)
-                
-                if direction is None:
-                    continue
-                
-                # Entry signal found
-                entry_candle = window_15m.iloc[-1]
-                entry_price = entry_candle['Close']  # Simplified: use NIFTY price
-                
-                # Calculate option entry price (simplified: using intrinsic value estimate)
-                if direction == 'CE':
-                    option_entry = max(0, entry_price - (data_15m['Close'].iloc[-1] // 50 * 50))
-                else:
-                    option_entry = max(0, ((data_15m['Close'].iloc[-1] // 50 * 50) - entry_price))
-                
-                # Calculate SL and TP
-                sl_points = strategy_config['sl']
-                rr_ratio = strategy_config['rr']
-                stop_loss, take_profit = calculate_sl_tp_levels(
-                    option_entry,
-                    sl_points,
-                    rr_ratio
-                )
-                
-                # Simulate trade execution
-                trade_result = self._simulate_trade(
-                    entry_candle,
-                    future_15m.iloc[i:],
-                    option_entry,
-                    stop_loss,
-                    take_profit,
-                    direction,
-                    lot_size
-                )
-                
-                if trade_result:
-                    trade_result['entry_time'] = entry_candle.name
-                    self.trades.append(trade_result)
-                    
-                    # Update capital
-                    pnl = trade_result.get('pnl', 0)
-                    current_capital += pnl
-                    self.equity_curve.append(current_capital)
-                    
-                    # Only take one trade per Inside Bar
+
+            breakout_row = None
+            direction = None  # 'CE' or 'PE'
+
+            for _, row in future_h.iterrows():
+                c = row['Close']
+                if c > signal_high:
+                    breakout_row = row
+                    direction = 'CE'
                     break
-        
+                if c < signal_low:
+                    breakout_row = row
+                    direction = 'PE'
+                    break
+
+            if breakout_row is None:
+                continue
+
+            # ========== PATCH D: Guard each candidate breakout with filters ==========
+            filters_ok = True
+            reasons = []
+
+            if self.flags["use_atr_filter"]:
+                atr_now = _atrpct_at(breakout_row.name)
+                if atr_now is None or atr_now < atr_floor:
+                    filters_ok = False
+                    reasons.append(f"ATR%<{atr_floor}")
+
+            if filters_ok and self.flags["use_regime_filter"]:
+                # simple EMA slope regime: bullish bias only CE unless we allow both
+                regime_up = _ema_slope_up(spot_1h.loc[:breakout_row.name], n=ema_len)
+                if regime_up and direction == 'PE':
+                    # allow but tag for reduced size later
+                    reasons.append("bearish_dir_under_bull_regime")
+
+            if filters_ok and self.flags["use_distance_guard"]:
+                # reject / reduce entries if breakout close is too stretched
+                # compute ATR in points at breakout
+                atr_now = _atrpct_at(breakout_row.name)
+                if atr_now is not None:
+                    # convert %ATR to points
+                    close_px = float(breakout_row['Close'])
+                    atr_pts = close_px * (atr_now / 100.0)
+                    signal_edge = (signal_high if direction == 'CE' else signal_low)
+                    dist = abs(float(breakout_row['Close']) - float(signal_edge))
+                    if dist > self.params.get("distance_guard_atr", 0.6) * atr_pts:
+                        reasons.append("distance_guard")
+                # filters_ok remains True (we may half-size instead of rejecting)
+
+            # bail if a hard filter failed
+            if not filters_ok:
+                continue
+
+            # Entry on NEXT hour open
+            entry_bar_idx = data.index.get_loc(breakout_row.name) + 1
+            if entry_bar_idx >= len(data):
+                continue  # no bar to enter
+
+            entry_bar = data.iloc[entry_bar_idx]
+            entry_ts = data.index[entry_bar_idx]
+            spot_at_entry = entry_bar['Open']
+
+            # expiry handling
+            expiry_dt = self._get_expiry_for(entry_ts, expiries_df)
+
+            # expiry-day restrictions (Tuesday):
+            if self._is_expiry_day(entry_ts, expiry_dt):
+                # block new entries after 11:30
+                if entry_ts.time() > time(11, 30):
+                    continue
+
+            # ========== PATCH E: Directional sizing & portfolio caps ==========
+            risk_pct = float(self.sizing.get("risk_per_trade_pct", 0.0)) / 100.0
+            pe_cap = float(self.sizing.get("pe_size_cap_vs_ce", 1.0))
+            port_cap = float(self.sizing.get("portfolio_risk_cap_pct", 100.0)) / 100.0
+            max_conc = int(self.sizing.get("max_concurrent_positions", 9999))
+
+            # derive per-trade size multiplier (1.0 default)
+            size_mult = 1.0
+            if self.flags["use_directional_sizing"]:
+                regime_up = _ema_slope_up(spot_1h.loc[:breakout_row.name], n=ema_len)
+                if direction == 'PE' and regime_up:
+                    size_mult = min(size_mult, pe_cap)  # reduce PE size under bullish regime
+
+            if "distance_guard" in reasons:
+                size_mult *= 0.5  # halve size if stretched breakout
+
+            # for a single-lot backtester you can store size_mult; if you price by premium risk:
+            # we'll record it to trade dict (quantity already equals lot_size)
+
+            # --- determine option entry premium ---
+            # Prefer real options_df; else fallback to synthetic using spot & delta 0.5
+            if options_df is not None and expiry_dt is not None:
+                atm = self._nearest_100(spot_at_entry)
+                opt_slice = self._select_option_slice(
+                    options_df, expiry_dt, atm, direction, entry_ts
+                )
+                if opt_slice.empty:
+                    # if not found, skip gracefully
+                    continue
+                # enter at first bar open on/after entry_ts
+                entry_price = float(opt_slice.iloc[0]['open'])
+                option_path = opt_slice  # we will iterate this for exit
+            else:
+                # synthetic premium path (safe fallback)
+                entry_price = max(1.0, self._synthetic_entry_premium(spot_at_entry))
+                option_path = self._build_synthetic_path(
+                    data, start_ts=entry_ts, direction=direction, entry_price=entry_price
+                )
+
+            # ========== PATCH G: Vol-band SL selection ==========
+            atr_now = _atrpct_at(entry_ts) or 0.0
+            low_th = float(self.params.get("vol_bands", {}).get("low", 0.40))
+            high_th = float(self.params.get("vol_bands", {}).get("high", 0.75))
+            if atr_now < low_th:
+                sl_pct = float(self.params.get("premium_sl_pct_low", 22.0))
+            elif atr_now < high_th:
+                sl_pct = float(self.params.get("premium_sl_pct_norm", 28.0))
+            else:
+                sl_pct = float(self.params.get("premium_sl_pct_high", 35.0))
+
+            # Use vol-band SL if tiered exits enabled, else fallback to legacy
+            if self.flags.get("use_tiered_exits", False):
+                sl_price = entry_price * (1.0 - sl_pct / 100.0)
+            else:
+                sl_price = entry_price * (1.0 - self.pct_sl)  # 35% down (legacy)
+            trail_price = sl_price  # will update dynamically
+
+            # --- simulate walk-forward on hourly option bars ---
+            # Use enhanced tiered exits if enabled, else legacy
+            if self.flags.get("use_tiered_exits", False):
+                trade_result = self._simulate_trade_enhanced(
+                    entry_candle=entry_bar,
+                    future_data=option_path,
+                    entry_price=entry_price,
+                    stop_loss=sl_price,
+                    direction=direction,
+                    lot_size=self.lot_qty,
+                    expiry_dt=expiry_dt,
+                    reasons=reasons
+                )
+                if trade_result:
+                    exit_price = trade_result['exit']
+                    exit_time = trade_result['exit_time']
+                    exit_reason = trade_result['exit_reason']
+                    pnl = trade_result['pnl']  # already includes lot_size in calculation
+                    notes = trade_result.get('notes', '')
+                    pnl_per_unit = pnl / self.lot_qty  # derive per-unit PnL
+                else:
+                    continue
+            else:
+                exit_price, exit_time, exit_reason = self._walk_option_path(
+                    option_path=option_path,
+                    entry_price=entry_price,
+                    trail_start=trail_price,
+                    direction=direction,
+                    entry_ts=entry_ts,
+                    expiry_dt=expiry_dt
+                )
+                pnl_per_unit = exit_price - entry_price
+                pnl = pnl_per_unit * self.lot_qty  # 75 qty
+                notes = ""
+
+            self.trades.append({
+                'entry_time': entry_ts,
+                'exit_time': exit_time,
+                'direction': direction,
+                'signal_high': float(signal_high),
+                'signal_low': float(signal_low),
+                'entry': float(entry_price),
+                'exit': float(exit_price),
+                'sl_initial': float(sl_price),
+                'pnl': float(pnl),
+                'pnl_per_unit': float(pnl_per_unit),
+                'exit_reason': exit_reason,
+                'expiry': expiry_dt.date().isoformat() if expiry_dt is not None else None,
+                'quantity': self.lot_qty,
+                'strike': int(self._nearest_100(spot_at_entry)),
+                'notes': notes  # PATCH: filter/sizing reasons
+            })
+
+            current_capital += pnl
+            self.equity_curve.append(current_capital)
+
         return self._generate_results(initial_capital, current_capital)
-    
-    def _simulate_trade(
+
+    # ------------- Simulation helpers -------------
+
+    @staticmethod
+    def _norm_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        out = out.rename(columns={c: c.capitalize() for c in out.columns})
+        if 'Open' not in out.columns:  out.rename(columns={'O':'Open'}, inplace=True)
+        if 'High' not in out.columns:  out.rename(columns={'H':'High'}, inplace=True)
+        if 'Low' not in out.columns:   out.rename(columns={'L':'Low'}, inplace=True)
+        if 'Close' not in out.columns: out.rename(columns={'C':'Close'}, inplace=True)
+        if not isinstance(out.index, pd.DatetimeIndex):
+            if 'Timestamp' in out.columns:
+                out['Timestamp'] = pd.to_datetime(out['Timestamp'])
+                out = out.set_index('Timestamp')
+            else:
+                out.index = pd.to_datetime(out.index)
+        out = out[['Open','High','Low','Close']].copy()
+        out.sort_index(inplace=True)
+        return out
+
+    @staticmethod
+    def _norm_options(df: pd.DataFrame) -> pd.DataFrame:
+        d = df.copy()
+        d.columns = [c.lower() for c in d.columns]
+        # enforce schema
+        rename = {
+            'timestamp':'timestamp',
+            'open':'open','high':'high','low':'low','close':'close',
+            'type':'type','strike':'strike','expiry':'expiry'
+        }
+        d = d.rename(columns=rename)
+        d['timestamp'] = pd.to_datetime(d['timestamp'])
+        d['expiry'] = pd.to_datetime(d['expiry'])
+        d['type'] = d['type'].str.upper()
+        d = d[['timestamp','open','high','low','close','expiry','strike','type']]
+        d.sort_values('timestamp', inplace=True)
+        return d
+
+    @staticmethod
+    def _nearest_100(x: float) -> int:
+        return int(round(x / 100.0) * 100)
+
+    @staticmethod
+    def _get_expiry_for(ts: pd.Timestamp, expiries_df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:
+        if expiries_df is None or 'expiry' not in expiries_df.columns:
+            return None
+        e = expiries_df[expiries_df['expiry'] >= ts].sort_values('expiry')
+        return e.iloc[0]['expiry'] if len(e) else None
+
+    @staticmethod
+    def _is_expiry_day(ts: pd.Timestamp, expiry_dt: Optional[pd.Timestamp]) -> bool:
+        if expiry_dt is None: return False
+        return ts.date() == expiry_dt.date()
+
+    def _select_option_slice(
+        self,
+        options_df: pd.DataFrame,
+        expiry_dt: pd.Timestamp,
+        atm: int,
+        direction: str,
+        entry_ts: pd.Timestamp
+    ) -> pd.DataFrame:
+        side = 'CE' if direction == 'CE' else 'PE'
+        mask = (
+            (options_df['expiry'].dt.date == expiry_dt.date()) &
+            (options_df['strike'] == atm) &
+            (options_df['type'] == side) &
+            (options_df['timestamp'] >= entry_ts)
+        )
+        return options_df.loc[mask].copy()
+
+    # ----- synthetic fallback (only used if options_df not supplied) -----
+
+    @staticmethod
+    def _synthetic_entry_premium(spot_open: float) -> float:
+        # keep it conservative: ~0.5% of spot, floor 50
+        return max(50.0, 0.005 * spot_open)
+
+    def _build_synthetic_path(
+        self,
+        spot_df_1h: pd.DataFrame,
+        start_ts: pd.Timestamp,
+        direction: str,
+        entry_price: float
+    ) -> pd.DataFrame:
+        """Create a simple premium path from spot using delta~0.5."""
+        future = spot_df_1h[spot_df_1h.index >= start_ts].copy()
+        delta = 0.5
+        base = float(future.iloc[0]['Open'])
+        premium = [entry_price]
+        for i in range(1, len(future)):
+            move = float(future.iloc[i]['Close'] - base)
+            chg = delta * move if direction == 'CE' else -delta * move
+            premium.append(max(1.0, entry_price + chg))
+        # Create DataFrame with timestamp as column (not index) for consistency with _walk_option_path
+        out = pd.DataFrame({
+            'timestamp': pd.to_datetime(future.index.values),
+            'open': premium,
+            'high': [p*1.05 for p in premium],
+            'low':  [max(1.0, p*0.95) for p in premium],
+            'close': premium
+        })
+        # Ensure timestamp is datetime type
+        out['timestamp'] = pd.to_datetime(out['timestamp'])
+        return out
+
+    # ----- walk forward with trailing & expiry rules -----
+
+    def _simulate_trade_enhanced(
         self,
         entry_candle: pd.Series,
         future_data: pd.DataFrame,
         entry_price: float,
         stop_loss: float,
-        take_profit: float,
         direction: str,
-        lot_size: int
+        lot_size: int,
+        *,
+        expiry_dt: Optional[pd.Timestamp] = None,
+        reasons: Optional[list] = None
     ) -> Optional[Dict]:
         """
-        Simulate a trade from entry to exit.
-        
-        Args:
-            entry_candle: Entry candle data
-            future_data: Future price data after entry
-            entry_price: Entry price
-            stop_loss: Stop loss price
-            take_profit: Take profit price
-            direction: 'CE' or 'PE'
-            lot_size: Number of lots
-        
-        Returns:
-            Trade result dictionary or None
+        ========== PATCH F: Enhanced simulation with tiered exits, BE conversion,
+        ATR-premium trail, and expiry protocol. ==========
+        Falls back to legacy behavior if flags are off.
         """
         if len(future_data) == 0:
             return None
-        
-        # Check each candle for SL or TP hit
-        for idx, candle in future_data.iterrows():
-            high = candle['High']
-            low = candle['Low']
-            close = candle['Close']
-            
-            # Simplified: check if option price hits SL or TP
-            # In reality, would need to calculate option prices from underlying
-            
-            # For CE: price increases when underlying increases
-            # For PE: price increases when underlying decreases
-            
-            if direction == 'CE':
-                # Call option: profit if underlying goes up
-                if high >= take_profit:
-                    exit_price = take_profit
-                    exit_reason = 'TP_HIT'
-                    pnl = (exit_price - entry_price) * lot_size
+
+        # Params
+        be_at_r = float(self.params.get("be_at_r", 0.6))
+        lookback = int(self.params.get("trail_lookback", 6))
+        mult = float(self.params.get("trail_mult", 2.0))
+        t1_r = float(self.params.get("t1_r", 1.2))
+        t1_book = float(self.params.get("t1_book", 0.5))
+        t2_r = float(self.params.get("t2_r", 2.0))
+        t2_book = float(self.params.get("t2_book", 0.25))
+        swing_lock = bool(self.params.get("swing_lock", True))
+        tighten_days = float(self.params.get("tighten_trail_days_to_expiry", 1.5))
+        tighten_factor = float(self.params.get("tighten_mult_factor", 1.3))
+
+        # Build premium path DataFrame view
+        prem = future_data.rename(columns=str.lower).copy()
+        # Ensure we have timestamp as index or column
+        if 'timestamp' in prem.columns:
+            prem['timestamp'] = pd.to_datetime(prem['timestamp'])
+            prem = prem.set_index('timestamp')
+        elif not isinstance(prem.index, pd.DatetimeIndex):
+            prem.index = pd.to_datetime(prem.index)
+
+        # Get OHLC columns (case-insensitive)
+        ohcl_cols = {}
+        for col in prem.columns:
+            col_lower = col.lower()
+            if col_lower in ['open', 'high', 'low', 'close']:
+                ohcl_cols[col_lower] = col
+
+        if not all(k in ohcl_cols for k in ['open', 'high', 'low', 'close']):
+            # Fallback: use available columns
+            prem_cols = [c.lower() for c in prem.columns]
+            if 'open' not in prem_cols and len(prem.columns) >= 4:
+                prem.columns = ['open', 'high', 'low', 'close'] + list(prem.columns[4:])
+            ohcl_cols = {'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}
+
+        prem_clean = prem[[ohcl_cols['open'], ohcl_cols['high'], ohcl_cols['low'], ohcl_cols['close']]].copy()
+        prem_clean.columns = ['open', 'high', 'low', 'close']
+
+        # R in premium terms
+        risk_per_unit = entry_price - stop_loss
+        if risk_per_unit <= 0:
+            return None
+
+        # Chandelier trail on premium
+        trail_series = _chandelier_trail(prem_clean, lookback=lookback, mult=mult, direction=direction)
+
+        # State
+        qty = lot_size
+        realized = 0.0
+        remaining = 1.0  # fraction of position remaining
+        sl = stop_loss
+        be_locked = False
+        hit_t1 = False
+        hit_t2 = False
+        exit_reason = "TIME_EXIT"
+        exit_price = prem_clean['close'].iloc[-1]
+        exit_time = prem_clean.index[-1]
+
+        # Time/expiry helpers
+        def _is_expiry_bar(ts):
+            return (expiry_dt is not None) and (ts.date() == expiry_dt.date())
+
+        no_new_after_hhmm = _parse_hhmm(self.params.get("no_new_after", "14:30"), (14, 30))
+        force_partial_by_hhmm = _parse_hhmm(self.params.get("force_partial_by", "13:00"), (13, 0))
+
+        for ts, row in prem_clean.iterrows():
+            h = float(row['high'])
+            l = float(row['low'])
+            c = float(row['close'])
+
+            # Tighten trail near expiry
+            if expiry_dt is not None:
+                days_to_exp = (expiry_dt - ts).total_seconds() / 86400.0
+                if days_to_exp <= tighten_days:
+                    # recompute tighter trail on the fly
+                    prem_slice = prem_clean.loc[:ts]
+                    if len(prem_slice) >= 3:
+                        tight_lookback = max(3, lookback // 2)
+                        tight_mult = max(1.2, mult / tighten_factor)
+                        tight_trail_series = _chandelier_trail(prem_slice, lookback=tight_lookback, mult=tight_mult, direction=direction)
+                        tight_trail = tight_trail_series.iloc[-1] if len(tight_trail_series) > 0 else None
+                    else:
+                        tight_trail = trail_series.loc[ts] if ts in trail_series.index else None
+                else:
+                    tight_trail = trail_series.loc[ts] if ts in trail_series.index else None
+            else:
+                tight_trail = trail_series.loc[ts] if ts in trail_series.index else None
+
+            # Breakeven conversion
+            if not be_locked and (c >= entry_price + be_at_r * risk_per_unit):
+                sl = max(sl, entry_price)  # BE
+                be_locked = True
+
+            # Partial tiers
+            if (not hit_t1) and (c >= entry_price + t1_r * risk_per_unit):
+                realized += t1_book * (c - entry_price) * qty
+                remaining -= t1_book
+                hit_t1 = True
+            if (not hit_t2) and (c >= entry_price + t2_r * risk_per_unit):
+                realized += t2_book * (c - entry_price) * qty
+                remaining -= t2_book
+                hit_t2 = True
+
+            # Update trail (never looser than tight_trail)
+            if tight_trail is not None:
+                if direction == 'CE':
+                    sl = max(sl, tight_trail)
+                else:
+                    sl = min(sl, tight_trail)
+
+            # Stop-loss hit on remaining
+            if (direction == 'CE' and l <= sl) or (direction == 'PE' and h >= sl):
+                exit_price = sl
+                exit_reason = "SL_HIT" if remaining >= 0.999 else "TRAIL_EXIT"
+                exit_time = ts
+                realized += remaining * (exit_price - entry_price) * qty
+                remaining = 0.0
+                break
+
+            # Expiry force exit by 14:45
+            if _is_expiry_bar(ts):
+                hh, mm = _hhmm(ts)
+                if (hh, mm) >= (14, 45):
+                    exit_price = c
+                    exit_reason = "EXPIRY_FORCE_EXIT"
+                    exit_time = ts
+                    realized += remaining * (exit_price - entry_price) * qty
+                    remaining = 0.0
                     break
-                elif low <= stop_loss:
-                    exit_price = stop_loss
-                    exit_reason = 'SL_HIT'
-                    pnl = (exit_price - entry_price) * lot_size
-                    break
-            else:  # PE
-                # Put option: profit if underlying goes down
-                if low <= take_profit:
-                    exit_price = take_profit
-                    exit_reason = 'TP_HIT'
-                    pnl = (exit_price - entry_price) * lot_size
-                    break
-                elif high >= stop_loss:
-                    exit_price = stop_loss
-                    exit_reason = 'SL_HIT'
-                    pnl = (exit_price - entry_price) * lot_size
-                    break
-        else:
-            # No exit: use last candle close
-            exit_price = close
-            exit_reason = 'TIME_EXIT'
-            pnl = (exit_price - entry_price) * lot_size
-        
+
+                # Force partial by 13:00 if not BE yet
+                if self.flags.get("use_expiry_protocol", False) and (hh, mm) >= force_partial_by_hhmm and not be_locked and remaining > 0.5:
+                    take = 0.5
+                    realized += take * (c - entry_price) * qty
+                    remaining -= take
+
+        # If still open
+        if remaining > 0:
+            realized += remaining * (exit_price - entry_price) * qty
+
+        pnl = realized
+
         return {
             'direction': direction,
             'entry': entry_price,
             'exit': exit_price,
             'sl': stop_loss,
-            'tp': take_profit,
+            'tp': None,
             'pnl': pnl,
             'exit_reason': exit_reason,
-            'exit_time': future_data.index[-1],
-            'quantity': lot_size
+            'exit_time': exit_time,
+            'quantity': lot_size,
+            'notes': ";".join(reasons or [])
         }
-    
+
+    def _walk_option_path(
+        self,
+        option_path: pd.DataFrame,
+        entry_price: float,
+        trail_start: float,
+        direction: str,
+        entry_ts: pd.Timestamp,
+        expiry_dt: Optional[pd.Timestamp]
+    ) -> tuple[float, pd.Timestamp, str]:
+        """
+        Iterate hourly option bars and apply:
+        - initial SL = -35%,
+        - +40% BE lock,
+        - +60/+80/+100% profit locks,
+        - expiry-day exits (no carry; force close 14:45).
+        """
+
+        # levels
+        sl = trail_start
+        lock1 = entry_price * (1.0 + self.partial_lock_1)  # +60%
+        lock2 = entry_price * (1.0 + self.partial_lock_2)  # +80%
+        lock3 = entry_price * (1.0 + self.partial_lock_3)  # +100%
+
+        # dynamic trail:
+        # after +40% -> BE, then progressive locks
+        be_locked = False
+
+        # iterate bars (already from entry time forward)
+        for i, r in option_path.reset_index(drop=True).iterrows():
+            ts = pd.to_datetime(r['timestamp'])
+            o, h, l, c = float(r['open']), float(r['high']), float(r['low']), float(r['close'])
+
+            # expiry day hard exit 14:45
+            if self._is_expiry_day(ts, expiry_dt):
+                # block new entries handled earlier;
+                # here we force exit by 14:45
+                if ts.time() >= time(14, 45):
+                    return (c, ts, 'EXPIRY_FORCE_EXIT')
+
+            # hit SL?
+            if l <= sl:
+                return (sl, ts, 'SL_HIT')
+
+            # BE lock after +40%
+            if not be_locked and c >= entry_price * 1.40:
+                sl = entry_price  # move to BE
+                be_locked = True
+
+            # progressive locks
+            if c >= lock1:
+                sl = max(sl, entry_price * 1.25)  # +25% locked
+            if c >= lock2:
+                sl = max(sl, entry_price * 1.45)  # +45% locked
+            if c >= lock3:
+                sl = max(sl, entry_price * 1.60)  # +60% locked
+
+            # normal trailing: protect on bar lows when well in profit
+            if c >= entry_price * 1.40:
+                # trail under bar low (premium) with small cushion
+                sl = max(sl, l * 0.995)
+
+        # if never exited, close at last candle
+        last = option_path.iloc[-1]
+        return (float(last['close']), pd.to_datetime(last['timestamp']), 'TIME_EXIT')
+
+    # ------------- Results & stats -------------
+
     def _generate_results(self, initial_capital: float, final_capital: float) -> Dict:
-        """
-        Generate backtest results summary.
-        
-        Args:
-            initial_capital: Starting capital
-            final_capital: Ending capital
-        
-        Returns:
-            Results dictionary
-        """
         if not self.trades:
             return {
-                'total_trades': 0,
-                'winning_trades': 0,
-                'losing_trades': 0,
-                'total_pnl': 0.0,
-                'win_rate': 0.0,
-                'initial_capital': initial_capital,
-                'final_capital': final_capital,
-                'return_pct': 0.0,
-                'trades': []
+                'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
+                'total_pnl': 0.0, 'win_rate': 0.0,
+                'initial_capital': initial_capital, 'final_capital': final_capital,
+                'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': []
             }
-        
-        df_trades = pd.DataFrame(self.trades)
-        
-        winning_trades = df_trades[df_trades['pnl'] > 0]
-        losing_trades = df_trades[df_trades['pnl'] < 0]
-        
-        total_pnl = df_trades['pnl'].sum()
-        win_rate = (len(winning_trades) / len(df_trades) * 100) if len(df_trades) > 0 else 0
-        
-        avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0.0
-        avg_loss = losing_trades['pnl'].mean() if len(losing_trades) > 0 else 0.0
-        
-        max_drawdown = self._calculate_max_drawdown()
-        
+
+        df = pd.DataFrame(self.trades)
+        winners = df[df['pnl'] > 0]
+        losers  = df[df['pnl'] < 0]
+        total_pnl = float(df['pnl'].sum())
+        win_rate  = float((len(winners) / len(df)) * 100.0)
+        avg_win   = float(winners['pnl'].mean()) if not winners.empty else 0.0
+        avg_loss  = float(losers['pnl'].mean()) if not losers.empty else 0.0
+        max_dd    = self._calculate_max_drawdown()
+
         return {
-            'total_trades': len(df_trades),
-            'winning_trades': len(winning_trades),
-            'losing_trades': len(losing_trades),
-            'total_pnl': float(total_pnl),
-            'win_rate': float(win_rate),
-            'avg_win': float(avg_win),
-            'avg_loss': float(avg_loss),
-            'max_drawdown': float(max_drawdown),
-            'initial_capital': initial_capital,
-            'final_capital': final_capital,
-            'return_pct': ((final_capital - initial_capital) / initial_capital * 100) if initial_capital > 0 else 0.0,
+            'total_trades': int(len(df)),
+            'winning_trades': int(len(winners)),
+            'losing_trades': int(len(losers)),
+            'total_pnl': total_pnl, 'win_rate': win_rate,
+            'avg_win': avg_win, 'avg_loss': avg_loss,
+            'max_drawdown': max_dd,
+            'initial_capital': initial_capital, 'final_capital': final_capital,
+            'return_pct': ((final_capital - initial_capital) / initial_capital * 100.0) if initial_capital > 0 else 0.0,
             'equity_curve': self.equity_curve,
             'trades': self.trades
         }
-    
+
     def _calculate_max_drawdown(self) -> float:
-        """Calculate maximum drawdown from equity curve."""
         if len(self.equity_curve) < 2:
             return 0.0
-        
-        equity_array = np.array(self.equity_curve)
-        running_max = np.maximum.accumulate(equity_array)
-        drawdown = (equity_array - running_max) / running_max * 100
-        
-        return float(abs(np.min(drawdown)))
+        eq = np.array(self.equity_curve, dtype=float)
+        roll_max = np.maximum.accumulate(eq)
+        dd = (eq - roll_max) / np.where(roll_max == 0, 1, roll_max) * 100.0
+        return float(abs(np.min(dd)))
 
 
-def run_backtest(data: pd.DataFrame, strategy_params: Dict) -> Dict:
+# ------------- Convenience wrapper (kept for compatibility) -------------
+
+def run_backtest(
+    data: pd.DataFrame,
+    strategy_params: Dict,
+    **kwargs
+) -> Dict:
     """
     Convenience function to run backtest.
-    
-    Args:
-        data: Historical OHLC data
-        strategy_params: Strategy parameters dictionary
-    
-    Returns:
-        Backtest results dictionary
+    Accepts optional options_df=..., expiries_df=..., data_15m=... (legacy, ignored)
     """
     engine = BacktestEngine(strategy_params)
-    return engine.run_backtest(data, data, initial_capital=100000.0)
-
+    return engine.run_backtest(
+        data_1h=data,
+        data_15m=kwargs.get("data_15m"),                  # optional / ignored
+        initial_capital=float(strategy_params.get("initial_capital", 100000.0)),
+        options_df=kwargs.get("options_df"),
+        expiries_df=kwargs.get("expiries_df"),
+    )
