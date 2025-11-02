@@ -72,14 +72,17 @@ class SignalHandler:
     def process_signal(
         self,
         data_1h: pd.DataFrame,
-        data_15m: pd.DataFrame
+        data_15m: Optional[pd.DataFrame] = None  # Optional - kept for backward compatibility but not used
     ) -> Optional[Dict]:
         """
         Process market data and generate validated signal.
         
+        IMPORTANT: Only uses 1-hour data for breakout confirmation.
+        15-minute data is not used (kept as parameter for backward compatibility only).
+        
         Args:
-            data_1h: 1-hour OHLC data
-            data_15m: 15-minute OHLCV data
+            data_1h: 1-hour OHLCV data (REQUIRED - used for both inside bar and breakout)
+            data_15m: 15-minute OHLCV data (OPTIONAL - kept for backward compatibility, NOT USED)
         
         Returns:
             Validated signal dictionary or None
@@ -91,7 +94,7 @@ class SignalHandler:
             'atm_offset': self.config.get('strategy', {}).get('atm_offset', 0)
         }
         
-        # Generate signal
+        # Generate signal - only pass 1H data (data_15m is optional and not used)
         signal = check_for_signal(data_1h, data_15m, strategy_config)
         
         # Validate signal

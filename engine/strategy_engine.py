@@ -1,6 +1,9 @@
 """
 Strategy Engine for NIFTY Options Trading System
-Implements Inside Bar detection and 15-minute breakout confirmation
+Implements Inside Bar detection and 1-hour breakout confirmation
+
+IMPORTANT: Only uses 1-hour data for both inside bar detection AND breakout confirmation.
+No 15-minute breakouts are processed.
 """
 
 import pandas as pd
@@ -99,20 +102,24 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
 
 
 def confirm_breakout(
-    data_15m: pd.DataFrame,
+    data_1h: pd.DataFrame,
     range_high: float,
     range_low: float,
+    inside_bar_idx: int,
     volume_threshold_multiplier: float = 1.0
 ) -> Optional[str]:
     """
-    Confirm breakout on 15-minute timeframe with volume validation.
-    Checks up to the last 5 candles for breakout confirmation.
+    Confirm breakout on 1-hour timeframe with volume validation.
+    Checks candles AFTER the inside bar for breakout confirmation.
+    
+    IMPORTANT: Only uses 1-hour data - no 15-minute breakouts.
     
     Args:
-        data_15m: DataFrame with OHLCV data for 15-minute timeframe
+        data_1h: DataFrame with OHLCV data for 1-hour timeframe
                   Must have columns: ['Close', 'Volume', 'High', 'Low']
         range_high: Upper bound of the Inside Bar range
         range_low: Lower bound of the Inside Bar range
+        inside_bar_idx: Index of the inside bar candle
         volume_threshold_multiplier: Multiplier for volume average (default: 1.0)
     
     Returns:
@@ -120,32 +127,46 @@ def confirm_breakout(
         "PE" for Put option (bearish breakout)
         None if no breakout confirmed
     """
-    if len(data_15m) < 5:
+    # Only check candles AFTER the inside bar
+    # Need at least 1 candle after the inside bar
+    if inside_bar_idx >= len(data_1h) - 1:
+        logger.debug("No candles available after inside bar for breakout confirmation")
         return None
     
-    # Get last 5 candles for confirmation check
-    recent = data_15m.tail(5)
+    # Get candles after the inside bar (excluding the inside bar itself)
+    candles_after = data_1h.iloc[inside_bar_idx + 1:]
     
-    # Calculate average volume over last 5 candles
-    avg_volume = recent['Volume'].mean()
-    volume_threshold = avg_volume * volume_threshold_multiplier
+    if len(candles_after) < 1:
+        return None
+    
+    # Use up to last 3 candles after inside bar for confirmation
+    recent = candles_after.tail(min(3, len(candles_after)))
+    
+    # Calculate average volume for volume confirmation
+    # Use volume from reference period (candles before and including inside bar)
+    volume_period = data_1h.iloc[max(0, inside_bar_idx - 10):inside_bar_idx + 1]
+    if len(volume_period) > 0 and 'Volume' in volume_period.columns:
+        avg_volume = volume_period['Volume'].mean()
+        volume_threshold = avg_volume * volume_threshold_multiplier
+    else:
+        # Fallback: use recent candles average if volume not available
+        avg_volume = recent['Volume'].mean() if 'Volume' in recent.columns else 0
+        volume_threshold = avg_volume * volume_threshold_multiplier
     
     logger.debug(
-        f"🔍 Checking breakout on {len(recent)} recent 15m candles | "
+        f"🔍 Checking 1H breakout on {len(recent)} candles after inside bar | "
         f"Range: {range_low:.2f} - {range_high:.2f} | "
         f"Volume threshold: {volume_threshold:.0f} (avg: {avg_volume:.0f} × {volume_threshold_multiplier})"
     )
     
-    # Check each of the last 5 candles for breakout
-    # Start from oldest to newest (first valid breakout wins)
+    # Check each candle after inside bar for breakout
     for i in range(len(recent)):
         close = recent['Close'].iloc[i]
         high = recent['High'].iloc[i]
         low = recent['Low'].iloc[i]
-        vol = recent['Volume'].iloc[i]
+        vol = recent['Volume'].iloc[i] if 'Volume' in recent.columns else avg_volume
         
         # Get timestamp for logging
-        # Handle Date column or Date index
         if 'Date' in recent.columns:
             candle_time = recent['Date'].iloc[i]
         elif recent.index.name == 'Date' or isinstance(recent.index, pd.DatetimeIndex):
@@ -156,7 +177,7 @@ def confirm_breakout(
         # Bullish breakout (Call option) - close above range high with volume confirmation
         if close > range_high and vol > volume_threshold:
             logger.info(
-                f"✅ Bullish breakout (CE) confirmed at {candle_time} | "
+                f"✅ Bullish breakout (CE) confirmed on 1H at {candle_time} | "
                 f"Close: {close:.2f} > Range High: {range_high:.2f} | "
                 f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
             )
@@ -165,7 +186,7 @@ def confirm_breakout(
         # Bearish breakout (Put option) - close below range low with volume confirmation
         elif close < range_low and vol > volume_threshold:
             logger.info(
-                f"✅ Bearish breakout (PE) confirmed at {candle_time} | "
+                f"✅ Bearish breakout (PE) confirmed on 1H at {candle_time} | "
                 f"Close: {close:.2f} < Range Low: {range_low:.2f} | "
                 f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
             )
@@ -173,13 +194,13 @@ def confirm_breakout(
         
         # Log why this candle didn't trigger breakout
         logger.debug(
-            f"Candle at {candle_time} | "
+            f"1H Candle at {candle_time} | "
             f"Close: {close:.2f}, Volume: {vol:.0f} | "
             f"Range check: {range_low:.2f} <= Close <= {range_high:.2f}, "
             f"Volume check: {vol:.0f} <= {volume_threshold:.0f}"
         )
     
-    logger.debug("❌ No breakout confirmed in last 5 15m candles")
+    logger.debug(f"❌ No 1H breakout confirmed in {len(recent)} candles after inside bar")
     return None
 
 
@@ -234,16 +255,19 @@ def calculate_sl_tp_levels(
 
 def check_for_signal(
     data_1h: pd.DataFrame,
-    data_15m: pd.DataFrame,
-    config: Dict
+    data_15m: Optional[pd.DataFrame] = None,  # Kept for backward compatibility but not used
+    config: Optional[Dict] = None
 ) -> Optional[Dict]:
     """
     Main signal detection function that combines Inside Bar detection
-    and breakout confirmation.
+    and 1-hour breakout confirmation.
+    
+    IMPORTANT: Only uses 1-hour data for both inside bar detection AND breakout confirmation.
+    15-minute data is not used (kept as parameter for backward compatibility only).
     
     Args:
-        data_1h: 1-hour OHLC data
-        data_15m: 15-minute OHLCV data
+        data_1h: 1-hour OHLCV data (REQUIRED - used for both inside bar and breakout)
+        data_15m: 15-minute OHLCV data (OPTIONAL - kept for backward compatibility, NOT USED)
         config: Configuration dictionary with strategy parameters
     
     Returns:
@@ -259,22 +283,20 @@ def check_for_signal(
             'reason': signal generation reason
         }
     """
-    # Validate data sufficiency
-    if data_1h.empty or data_15m.empty:
-        logger.warning("Empty dataframes provided to check_for_signal")
+    # Validate data sufficiency - ONLY 1H data required now
+    if data_1h.empty:
+        logger.warning("Empty 1H dataframe provided to check_for_signal")
         return None
     
-    # Ensure we have enough 1H data for Inside Bar detection
+    # Ensure we have enough 1H data for Inside Bar detection AND breakout confirmation
     # Need at least 20 candles for reliable pattern detection
     if len(data_1h) < 20:
         logger.warning(f"Insufficient 1H data ({len(data_1h)} candles). Need at least 20 candles. Skipping signal check.")
         return None
     
-    # Ensure we have enough 15m data for breakout confirmation
-    # Need at least 5 candles for volume confirmation
-    if len(data_15m) < 5:
-        logger.warning(f"Insufficient 15m data ({len(data_15m)} candles). Need at least 5 candles. Skipping signal check.")
-        return None
+    # Note: 15m data is no longer required (only using 1H breakouts)
+    if data_15m is not None and not data_15m.empty:
+        logger.debug("15m data provided but not used - only 1H breakouts are processed")
     
     # Detect Inside Bar patterns
     inside_bars = detect_inside_bar(data_1h)
@@ -337,28 +359,29 @@ def check_for_signal(
             f"Inside Bar Low ({inside_bar_low:.2f}) should be > Ref Low ({range_low:.2f})"
         )
     
-    # Check for breakout confirmation
+    # Check for breakout confirmation on 1H timeframe (ONLY 1H - no 15m)
     direction = confirm_breakout(
-        data_15m,
+        data_1h,
         range_high,
         range_low,
+        latest_inside_bar_idx,  # Pass inside bar index
         volume_threshold_multiplier=1.0
     )
     
     if direction is None:
         logger.debug(
-            f"🔍 No breakout confirmed in {len(data_15m)} 15m candles | "
+            f"🔍 No 1H breakout confirmed in candles after inside bar | "
             f"Range: {range_low:.2f} - {range_high:.2f}"
         )
         return None
     
     logger.info(
-        f"✅ Breakout confirmed: {direction} | "
+        f"✅ 1H Breakout confirmed: {direction} | "
         f"Range: {range_low:.2f} - {range_high:.2f}"
     )
     
-    # Get current price for strike calculation
-    current_nifty_price = data_15m['Close'].iloc[-1]
+    # Get current price for strike calculation (use 1H data)
+    current_nifty_price = data_1h['Close'].iloc[-1]
     
     # Calculate strike with ATM offset from config
     atm_offset = config.get('atm_offset', 0)
@@ -385,7 +408,7 @@ def check_for_signal(
         'tp': take_profit,
         'range_high': range_high,
         'range_low': range_low,
-        'reason': f"Inside Bar breakout on {direction} side with volume confirmation"
+        'reason': f"Inside Bar 1H breakout on {direction} side with volume confirmation"
     }
     
     return signal

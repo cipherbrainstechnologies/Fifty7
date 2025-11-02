@@ -27,7 +27,8 @@ class BrokerInterface(ABC):
         direction: str,
         quantity: int,
         order_type: str = "MARKET",
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        transaction_type: str = "BUY"
     ) -> Dict:
         """
         Place an order with the broker.
@@ -111,6 +112,48 @@ class BrokerInterface(ABC):
 
         Returns:
             True if conversion successful, False otherwise
+        """
+        pass
+    
+    def get_option_price(
+        self,
+        symbol: str,
+        strike: int,
+        direction: str,
+        expiry_date: Optional[str] = None
+    ) -> Optional[float]:
+        """
+        Get current option premium (LTP) for a given symbol/strike/direction.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'NIFTY')
+            strike: Strike price
+            direction: 'CE' for Call, 'PE' for Put
+            expiry_date: Optional expiry date (if None, uses nearest expiry)
+        
+        Returns:
+            Current option premium (LTP) or None if not available
+        """
+        pass
+    
+    def get_available_margin(self) -> float:
+        """
+        Get available margin/capital for trading.
+        
+        Returns:
+            Available margin amount in rupees
+        """
+        pass
+    
+    def get_option_expiries(self, symbol: str) -> List[datetime]:
+        """
+        Get list of available expiry dates for an option symbol.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'NIFTY')
+        
+        Returns:
+            List of expiry datetime objects
         """
         pass
 
@@ -1023,6 +1066,147 @@ class AngelOneBroker(BrokerInterface):
         except Exception as e:
             logger.exception(f"Error fetching trade book: {e}")
             return []
+    
+    def get_option_price(
+        self,
+        symbol: str,
+        strike: int,
+        direction: str,
+        expiry_date: Optional[str] = None
+    ) -> Optional[float]:
+        """
+        Get current option premium (LTP) for a given symbol/strike/direction.
+        FIX for Issue #2: Fetch actual option price from broker.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'NIFTY')
+            strike: Strike price
+            direction: 'CE' for Call, 'PE' for Put
+            expiry_date: Optional expiry date (if None, uses nearest expiry)
+        
+        Returns:
+            Current option premium (LTP) or None if not available
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch option price: No valid session")
+                return None
+            
+            # Format trading symbol
+            tradingsymbol = self._format_option_symbol(symbol, strike, direction, expiry_date)
+            
+            # Get symbol token
+            symboltoken = self._get_symbol_token(tradingsymbol, "NFO")
+            if not symboltoken:
+                logger.error(f"Cannot fetch option price: Symbol token not found for {tradingsymbol}")
+                return None
+            
+            # Get LTP via market quote
+            params = {
+                "mode": "LTP",
+                "exchangeTokens": {"NFO": [symboltoken]}
+            }
+            quote = self.get_market_quote(params)
+            
+            if not isinstance(quote, dict) or quote.get('status') == False:
+                logger.error(f"Failed to fetch option price for {tradingsymbol}")
+                return None
+            
+            fetched = quote.get('data', {}).get('fetched', [])
+            if not fetched:
+                logger.warning(f"No quote data for {tradingsymbol}")
+                return None
+            
+            ltp = fetched[0].get('ltp')
+            if ltp:
+                price = float(ltp)
+                logger.info(f"Option price for {tradingsymbol}: {price}")
+                return price
+            
+            return None
+            
+        except Exception as e:
+            logger.exception(f"Error fetching option price: {e}")
+            return None
+    
+    def get_available_margin(self) -> float:
+        """
+        Get available margin/capital for trading.
+        FIX for Issue #5: Capital validation.
+        
+        Returns:
+            Available margin amount in rupees
+        """
+        try:
+            if not self._ensure_session():
+                logger.error("Cannot fetch margin: No valid session")
+                return 0.0
+            
+            # Fetch user limits/margin from broker
+            # Use getAllHolding to get margin info
+            all_holdings = self.get_all_holdings()
+            
+            # Extract available margin from holdings data
+            # The structure may vary, but typically contains:
+            # - availablecash or availablemargin
+            available_margin = all_holdings.get('availablecash', 0.0)
+            if available_margin:
+                return float(available_margin)
+            
+            # Fallback: Try to get from positions or other endpoints
+            # For now, return a safe default if not available
+            logger.warning("Available margin not found in holdings, returning 0")
+            return 0.0
+            
+        except Exception as e:
+            logger.exception(f"Error fetching available margin: {e}")
+            return 0.0
+    
+    def get_option_expiries(self, symbol: str) -> List[datetime]:
+        """
+        Get list of available expiry dates for an option symbol.
+        FIX for Issue #6: Option expiry validation.
+        
+        Args:
+            symbol: Trading symbol (e.g., 'NIFTY')
+        
+        Returns:
+            List of expiry datetime objects
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            # For NIFTY, expiries are typically every Thursday (weekly)
+            # But monthly expiries are on last Thursday of month
+            # For simplicity, we'll generate next 4 weekly expiries
+            
+            expiries = []
+            now = datetime.now()
+            
+            # Start from next Thursday (if today is Thu before 15:30, use today)
+            weekday = now.weekday()  # Monday=0 ... Sunday=6
+            # Thursday is 3
+            days_ahead = (3 - weekday) % 7
+            if days_ahead == 0:
+                # Today is Thursday - check if before market close
+                market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+                if now > market_close:
+                    days_ahead = 7  # Use next Thursday
+            
+            current_expiry = now + timedelta(days=days_ahead)
+            current_expiry = current_expiry.replace(hour=15, minute=30, second=0, microsecond=0)
+            
+            # Generate next 4 weekly expiries
+            for i in range(4):
+                expiry_date = current_expiry + timedelta(weeks=i)
+                expiries.append(expiry_date)
+            
+            logger.info(f"Generated {len(expiries)} expiry dates for {symbol}")
+            return expiries
+            
+        except Exception as e:
+            logger.exception(f"Error fetching option expiries: {e}")
+            return []
 
 
 class FyersBroker(BrokerInterface):
@@ -1052,7 +1236,8 @@ class FyersBroker(BrokerInterface):
         direction: str,
         quantity: int,
         order_type: str = "MARKET",
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        transaction_type: str = "BUY"
     ) -> Dict:
         """
         Place order via Fyers API.

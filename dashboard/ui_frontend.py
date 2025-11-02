@@ -396,6 +396,128 @@ if tab == "Dashboard":
         if status['error_count'] > 0:
             st.warning(f"⚠️ {status['error_count']} errors encountered. Check logs for details.")
         
+        # NEW: Risk Management & Safety Checks Section
+        st.divider()
+        st.subheader("🛡️ Risk Management & Safety Checks")
+        
+        # Get risk management status from live runner
+        try:
+            # Access risk management attributes
+            daily_pnl = getattr(st.session_state.live_runner, 'daily_pnl', 0.0)
+            daily_loss_limit_pct = getattr(st.session_state.live_runner, 'daily_loss_limit_pct', 5.0)
+            max_positions = getattr(st.session_state.live_runner, 'max_concurrent_positions', 2)
+            signal_cooldown = getattr(st.session_state.live_runner, 'signal_cooldown_seconds', 3600)
+            active_positions = len(getattr(st.session_state.live_runner, 'active_monitors', []))
+            
+            # Get initial capital from config
+            initial_capital = st.session_state.live_runner.config.get('initial_capital', 100000.0)
+            loss_limit_amount = initial_capital * (daily_loss_limit_pct / 100.0)
+            
+            # Check market hours
+            is_market_open = st.session_state.live_runner._is_market_open() if hasattr(st.session_state.live_runner, '_is_market_open') else False
+            
+            # Get available margin
+            available_margin = 0.0
+            try:
+                if st.session_state.broker:
+                    available_margin = st.session_state.broker.get_available_margin()
+            except:
+                pass
+            
+            # Get nearest expiry
+            nearest_expiry = None
+            expiry_safe = False
+            try:
+                if hasattr(st.session_state.live_runner, '_get_nearest_expiry'):
+                    nearest_expiry = st.session_state.live_runner._get_nearest_expiry()
+                    if nearest_expiry and hasattr(st.session_state.live_runner, '_is_safe_to_trade_expiry'):
+                        expiry_safe = st.session_state.live_runner._is_safe_to_trade_expiry(nearest_expiry)
+            except:
+                pass
+            
+            # Display safety metrics in columns
+            safety_col1, safety_col2, safety_col3, safety_col4 = st.columns(4)
+            
+            with safety_col1:
+                # Daily P&L and loss limit
+                pnl_color = "normal" if daily_pnl >= -loss_limit_amount else "inverse"
+                st.metric("Daily P&L", f"₹{daily_pnl:,.2f}", 
+                         delta=f"Limit: ₹{-loss_limit_amount:,.2f}", 
+                         delta_color=pnl_color)
+                if daily_pnl <= -loss_limit_amount:
+                    st.error(f"🚨 Daily loss limit hit! ({daily_loss_limit_pct}% of capital)")
+                elif daily_pnl <= -loss_limit_amount * 0.8:
+                    st.warning("⚠️ Approaching daily loss limit")
+                else:
+                    st.success("✅ Within daily loss limit")
+            
+            with safety_col2:
+                # Position limits
+                pos_color = "normal" if active_positions < max_positions else "inverse"
+                st.metric("Active Positions", f"{active_positions}/{max_positions}", 
+                         delta="Limit reached" if active_positions >= max_positions else "Available",
+                         delta_color=pos_color)
+                if active_positions >= max_positions:
+                    st.error("🚨 Position limit reached!")
+                else:
+                    st.success("✅ Position limit OK")
+            
+            with safety_col3:
+                # Available margin
+                st.metric("Available Margin", f"₹{available_margin:,.2f}")
+                if available_margin < 10000:
+                    st.warning("⚠️ Low margin available")
+                elif available_margin == 0:
+                    st.error("🚨 No margin data available")
+                else:
+                    st.success("✅ Margin sufficient")
+            
+            with safety_col4:
+                # Market hours status
+                market_status = "🟢 Open" if is_market_open else "🔴 Closed"
+                st.metric("Market Status", market_status)
+                if not is_market_open:
+                    st.info("⏰ Market closed - trades will not execute")
+                else:
+                    st.success("✅ Market open - ready for trading")
+            
+            # Additional safety checks
+            st.write("**Safety Check Status:**")
+            check_col1, check_col2, check_col3 = st.columns(3)
+            
+            with check_col1:
+                # Expiry validation
+                if nearest_expiry:
+                    days_to_exp = (nearest_expiry - datetime.now()).days
+                    if expiry_safe:
+                        st.success(f"✅ Expiry OK: {days_to_exp} days remaining")
+                    else:
+                        st.error(f"🚨 Expiry too close: {days_to_exp} days")
+                else:
+                    st.warning("⚠️ Expiry data not available")
+            
+            with check_col2:
+                # Signal cooldown
+                cooldown_minutes = signal_cooldown / 60
+                st.info(f"📊 Signal cooldown: {cooldown_minutes:.0f} minutes")
+            
+            with check_col3:
+                # Initial capital
+                st.info(f"💰 Initial Capital: ₹{initial_capital:,.2f}")
+            
+            # Configuration section (read-only display for now)
+            with st.expander("⚙️ Risk Management Configuration (Read from config.yaml)"):
+                st.write("**Current Settings:**")
+                st.write(f"- Daily Loss Limit: {daily_loss_limit_pct}% of capital")
+                st.write(f"- Max Concurrent Positions: {max_positions}")
+                st.write(f"- Signal Cooldown: {cooldown_minutes:.0f} minutes ({signal_cooldown} seconds)")
+                st.write(f"- Initial Capital: ₹{initial_capital:,.2f}")
+                st.caption("💡 To change these settings, edit config/config.yaml and restart the algorithm")
+        
+        except Exception as e:
+            st.warning(f"⚠️ Could not load risk management status: {e}")
+            logger.exception(e)
+        
         # Manual refresh button
         if st.button("🔄 Refresh Market Data Now"):
             try:
