@@ -326,6 +326,82 @@ if tab == "Dashboard":
         st.caption("Auto-refresh enabled")
         # Trigger rerun after rendering at the bottom of the page
     
+    # Strategy Configuration (Live Trading)
+    st.divider()
+    st.subheader("⚙️ Strategy Configuration (Live Trading)")
+    
+    # Get current values from live_runner if available
+    current_sl_points = 30
+    current_order_lots = 2
+    current_lot_size = 75
+    current_trail_points = 10
+    
+    if st.session_state.live_runner is not None:
+        current_sl_points = getattr(st.session_state.live_runner, 'sl_points', 30)
+        current_order_lots = getattr(st.session_state.live_runner, 'order_lots', 2)
+        current_lot_size = getattr(st.session_state.live_runner, 'lot_size', 75)
+        # Get trail_points from position_management config
+        pm_cfg = st.session_state.live_runner.config.get('position_management', {})
+        current_trail_points = pm_cfg.get('trail_points', 10)
+    
+    # Create columns for configuration inputs
+    config_col1, config_col2, config_col3 = st.columns(3)
+    
+    with config_col1:
+        sl_points_input = st.number_input(
+            "Stop Loss (Points)",
+            min_value=10,
+            max_value=100,
+            value=int(current_sl_points),
+            step=5,
+            help="Stop loss in points (e.g., 30 points means SL at entry - 30 points)"
+        )
+    
+    with config_col2:
+        trail_points_input = st.number_input(
+            "Trailing SL Step (Points)",
+            min_value=5,
+            max_value=50,
+            value=int(current_trail_points),
+            step=5,
+            help="Trailing step in points. When price moves up by this amount, SL moves up (e.g., 10 points)"
+        )
+    
+    with config_col3:
+        order_lots_input = st.number_input(
+            "Order Quantity (Lots)",
+            min_value=1,
+            max_value=10,
+            value=int(current_order_lots),
+            step=1,
+            help=f"Number of lots per trade (1 lot = {current_lot_size} units). Example: 2 lots = {current_lot_size * 2} units"
+        )
+    
+    # Display calculated values
+    total_units = order_lots_input * current_lot_size
+    st.info(f"📊 **Trade Summary:** {order_lots_input} lot(s) = **{total_units} units** (1 lot = {current_lot_size} units)")
+    
+    # Update button
+    if st.button("💾 Update Strategy Config", disabled=st.session_state.algo_running, use_container_width=True):
+        if st.session_state.live_runner is not None:
+            try:
+                # Update configuration
+                st.session_state.live_runner.update_strategy_config(
+                    sl_points=int(sl_points_input),
+                    order_lots=int(order_lots_input),
+                    trail_points=int(trail_points_input)
+                )
+                st.success(f"✅ Strategy config updated: SL={sl_points_input} points, Trail={trail_points_input} points, Quantity={order_lots_input} lot(s)")
+            except Exception as e:
+                st.error(f"❌ Error updating config: {e}")
+                logger.exception(e)
+        else:
+            st.warning("⚠️ Live runner not initialized. Config will be applied when algo starts.")
+    
+    st.caption("💡 **Note:** Changes apply immediately to new trades. Current positions use previous config.")
+    
+    st.divider()
+    
     # Control buttons
     col1, col2 = st.columns(2)
     
@@ -1135,6 +1211,14 @@ elif tab == "Backtest":
     
     # Common parameters (shown for both modes)
     st.subheader("Backtest Parameters")
+    
+    # Load config for defaults
+    import yaml as yaml_lib
+    with open('config/config.yaml', 'r') as f:
+        strategy_config = yaml_lib.safe_load(f)
+    pm_config = strategy_config.get('position_management', {})
+    
+    # First row: Capital, Lot Size, SL Points
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -1146,16 +1230,14 @@ elif tab == "Backtest":
         )
     
     with col2:
-        # Load strategy config
-        import yaml as yaml_lib
-        with open('config/config.yaml', 'r') as f:
-            strategy_config = yaml_lib.safe_load(f)
-        
+        # Get lot size value first
+        lot_size_default = strategy_config.get('lot_size', 75)
         lot_size = st.number_input(
             "Lot Size",
             min_value=1,
-            value=strategy_config.get('lot_size', 75),
-            step=1
+            value=lot_size_default,
+            step=lot_size_default,  # Step by lot_size itself (e.g., 75) - clicking + adds 75, clicking - subtracts 75
+            help=f"NIFTY lot size (1 lot = {lot_size_default} units). Clicking +/- changes by {lot_size_default} units"
         )
     
     with col3:
@@ -1166,6 +1248,50 @@ elif tab == "Backtest":
             max_value=60,
             step=5,
             help="Stop loss percentage on option premium (legacy mode only)"
+        )
+    
+    # Second row: Position Management Parameters (always visible)
+    st.write("**Position Management:**")
+    col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
+    
+    with col_pm1:
+        sl_points_main = st.number_input(
+            "SL Points",
+            min_value=10,
+            max_value=100,
+            value=int(pm_config.get('sl_points', 30)),
+            step=5,
+            help="Initial stop loss in points (option price)"
+        )
+    
+    with col_pm2:
+        trail_points_main = st.number_input(
+            "Trail Points",
+            min_value=5,
+            max_value=50,
+            value=int(pm_config.get('trail_points', 10)),
+            step=5,
+            help="Trailing step in points. When price advances by this amount, SL moves up"
+        )
+    
+    with col_pm3:
+        book1_points_main = st.number_input(
+            "Book 1 Points",
+            min_value=10,
+            max_value=100,
+            value=int(pm_config.get('book1_points', 40)),
+            step=5,
+            help="Book partial profit at entry + this many points"
+        )
+    
+    with col_pm4:
+        book2_points_main = st.number_input(
+            "Book 2 Points",
+            min_value=20,
+            max_value=150,
+            value=int(pm_config.get('book2_points', 54)),
+            step=5,
+            help="Book remaining at entry + this many points"
         )
     
     # ========== Enhanced Feature Flags (Backtest Only) ==========
@@ -1203,6 +1329,13 @@ elif tab == "Backtest":
     risk_per_trade_pct = 0.6
     pe_size_cap_vs_ce = 0.7
     max_concurrent = 2
+    
+    # Position Management override variables (initialized to main section values)
+    sl_points_config = sl_points_main
+    trail_points_config = trail_points_main
+    book1_points_config = book1_points_main
+    book2_points_config = book2_points_main
+    book1_ratio_config = float(pm_config.get('book1_ratio', 0.5))
     
     with st.expander("🔧 Enhanced Features (Backtest Only)", expanded=False):
         st.markdown("**Feature Toggles:**")
@@ -1363,8 +1496,70 @@ elif tab == "Backtest":
         
         st.divider()
         
-        # Trailing Stop Configuration
-        st.markdown("**Trailing Stop (Chandelier):**")
+        # Position Management Configuration Override (Point-based SL/TP)
+        # Note: Basic PM params are in main section, here we can override if needed
+        st.markdown("**Position Management Override (Optional):**")
+        st.caption("💡 Basic position management (SL, Trail, Book points) is configured in 'Backtest Parameters' section above. Use this section only if you want to override those values when Enhanced Features are enabled.")
+        
+        col_pm1, col_pm2, col_pm3 = st.columns(3)
+        
+        with col_pm1:
+            sl_points_config = st.number_input(
+                "SL Points (Override)",
+                min_value=10,
+                max_value=100,
+                value=sl_points_main,  # Default to main section value
+                step=5,
+                help="Override SL points from main section"
+            )
+        
+        with col_pm2:
+            trail_points_config = st.number_input(
+                "Trail Points (Override)",
+                min_value=5,
+                max_value=50,
+                value=trail_points_main,  # Default to main section value
+                step=5,
+                help="Override trail points from main section"
+            )
+        
+        with col_pm3:
+            book1_points_config = st.number_input(
+                "Book 1 Points (Override)",
+                min_value=10,
+                max_value=100,
+                value=book1_points_main,  # Default to main section value
+                step=5,
+                help="Override Book 1 points from main section"
+            )
+        
+        col_pm4, col_pm5 = st.columns(2)
+        
+        with col_pm4:
+            book2_points_config = st.number_input(
+                "Book 2 Points (Override)",
+                min_value=20,
+                max_value=150,
+                value=book2_points_main,  # Default to main section value
+                step=5,
+                help="Override Book 2 points from main section"
+            )
+        
+        with col_pm5:
+            book1_ratio_config = st.number_input(
+                "Book 1 Ratio",
+                min_value=0.1,
+                max_value=1.0,
+                value=float(pm_config.get('book1_ratio', 0.5)),
+                step=0.1,
+                format="%.2f",
+                help="Percentage to book at first target (0.5 = 50%)"
+            )
+        
+        st.divider()
+        
+        # Trailing Stop Configuration (Chandelier - for backtest only)
+        st.markdown("**Trailing Stop (Chandelier - Backtest Only):**")
         col_trail1, col_trail2 = st.columns(2)
         
         with col_trail1:
@@ -1373,7 +1568,7 @@ elif tab == "Backtest":
                 min_value=3,
                 value=trail_lookback,
                 step=1,
-                help="Number of bars for chandelier trail calculation"
+                help="Number of bars for chandelier trail calculation (backtest only)"
             )
         
         with col_trail2:
@@ -1383,7 +1578,7 @@ elif tab == "Backtest":
                 value=trail_mult,
                 step=0.1,
                 format="%.1f",
-                help="Multiplier for ATR in chandelier trail"
+                help="Multiplier for ATR in chandelier trail (backtest only)"
             )
         
         st.divider()
@@ -1506,6 +1701,14 @@ elif tab == "Backtest":
             'force_partial_by': str(force_partial_by),
             'tighten_trail_days_to_expiry': float(tighten_days),
             'tighten_mult_factor': 1.3
+        },
+        'position_management': {
+            # Use override values from Enhanced Features (they default to main section values)
+            'sl_points': int(sl_points_config),
+            'trail_points': int(trail_points_config),
+            'book1_points': int(book1_points_config),
+            'book2_points': int(book2_points_config),
+            'book1_ratio': float(book1_ratio_config)
         },
         'sizing': {
             'risk_per_trade_pct': float(risk_per_trade_pct),

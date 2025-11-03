@@ -133,11 +133,11 @@ class PositionMonitor:
                     self.stop_loss = new_sl
 
         # Profit booking levels (point-based off entry)
-        # Note: total_qty and remaining_qty are in lots (units), not individual shares
+        # Note: total_qty and remaining_qty are in LOTS (1 lot = 75 units)
         if not self.book1_done and (ltp >= self.entry_price + self.rules.book1_points):
-            qty_to_close = int(round(self.remaining_qty * self.rules.book1_ratio))
-            if qty_to_close > 0:
-                self._book_profit(qty_to_close, level="L1")
+            qty_to_close_lots = int(round(self.remaining_qty * self.rules.book1_ratio))
+            if qty_to_close_lots > 0:
+                self._book_profit(qty_to_close_lots, level="L1")
                 self.book1_done = True
 
         # Full target
@@ -185,42 +185,24 @@ class PositionMonitor:
                     # Since place_order uses "BUY" by default, we need to modify or use direct API
                     # For Angel One, we can call place_order but we need SELL transaction type
                     # Let's use a workaround: call broker directly with SELL transaction
-                    if hasattr(self.broker, '_place_order_sell'):
-                        order_result = self.broker._place_order_sell(
-                            symbol=self.symbol,
-                            strike=self.strike,
-                            direction=self.direction,
-                            quantity=qty,
-                            order_type="MARKET",
-                            symboltoken=symboltoken,
-                            tradingsymbol=self.tradingsymbol
-                        )
+                    # Use broker's place_order with SELL transaction type
+                    # FIX: Broker now supports transaction_type parameter
+                    order_result = self.broker.place_order(
+                        symbol=self.symbol,
+                        strike=self.strike,
+                        direction=self.direction,
+                        quantity=qty,  # qty is in lots
+                        order_type="MARKET",
+                        transaction_type="SELL"  # SELL to close
+                    )
+                    
+                    if order_result.get('status') == True:
+                        order_id = order_result.get('order_id')
+                        logger.info(f"Profit booking {level} order placed: {order_id}")
                     else:
-                        # Fallback: Use broker's place_order with modified params
-                        # For Angel One, we'll need to place a SELL order manually
-                        logger.warning("Broker doesn't support direct SELL - using symbol token approach")
-                        
-                        # Use broker's place_order with SELL transaction type
-                        # FIX: Broker now supports transaction_type parameter
-                        order_result = self.broker.place_order(
-                            symbol=self.symbol,
-                            strike=self.strike,
-                            direction=self.direction,
-                            quantity=qty,  # qty is in lots
-                            order_type="MARKET",
-                            transaction_type="SELL"  # SELL to close
-                        )
-                        
-                        if order_result.get('status') == True:
-                            order_id = order_result.get('order_id')
-                            logger.info(f"Profit booking {level} order placed: {order_id}")
-                        else:
-                            error_msg = order_result.get('message', 'Unknown error')
-                            logger.error(f"Profit booking order failed: {error_msg}")
-                            return  # Don't update remaining_qty if order failed
-                    else:
-                        logger.error("Cannot place SELL order: broker API not available")
-                        return
+                        error_msg = order_result.get('message', 'Unknown error')
+                        logger.error(f"Profit booking order failed: {error_msg}")
+                        return  # Don't update remaining_qty if order failed
                 else:
                     logger.error(f"Cannot book profit: missing tradingsymbol for {self.symbol} {self.strike}{self.direction}")
                     return

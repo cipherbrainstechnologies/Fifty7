@@ -59,11 +59,19 @@ class LiveStrategyRunner:
         
         # Strategy config
         strategy_config = config.get('strategy', {})
-        self.lot_size = config.get('lot_size', 75)
-        # Use broker.default_qty if provided; fallback to 2 lots
-        self.order_qty = config.get('broker', {}).get('default_qty', self.lot_size * 2)
+        self.lot_size = config.get('lot_size', 75)  # NIFTY lot size (1 lot = 75 units)
+        
+        # Order quantity in LOTS (standardized - not units)
+        # broker.default_qty was confusing (could be lots or units), now always LOTS
+        default_lots = config.get('broker', {}).get('default_lots', 2)  # Default: 2 lots
+        self.order_lots = default_lots  # Always in LOTS
+        
         self.sl_points = strategy_config.get('sl', 30)
         self.rr_ratio = strategy_config.get('rr', 1.8)
+        
+        # Position management config (for trailing SL and profit booking)
+        pm_config = config.get('position_management', {})
+        self.trail_points = pm_config.get('trail_points', 10)  # Trailing step in points
         
         # Statistics
         self.last_fetch_time = None
@@ -378,6 +386,85 @@ class LiveStrategyRunner:
         self.daily_pnl += pnl
         logger.info(f"Daily P&L updated: ₹{self.daily_pnl:,.2f}")
     
+    def update_strategy_config(self, sl_points: Optional[int] = None, order_lots: Optional[int] = None, trail_points: Optional[int] = None):
+        """
+        Update strategy configuration at runtime (from front-end).
+        
+        Args:
+            sl_points: New stop loss in points (optional)
+            order_lots: New order quantity in LOTS (optional)
+            trail_points: New trailing SL step in points (optional)
+        """
+        if sl_points is not None:
+            if sl_points > 0:
+                self.sl_points = sl_points
+                logger.info(f"Stop Loss updated to {sl_points} points")
+            else:
+                logger.warning(f"Invalid stop loss: {sl_points} (must be > 0)")
+        
+        if order_lots is not None:
+            if order_lots > 0:
+                self.order_lots = order_lots
+                logger.info(f"Order quantity updated to {order_lots} lot(s) ({order_lots * self.lot_size} units)")
+            else:
+                logger.warning(f"Invalid order lots: {order_lots} (must be > 0)")
+        
+        if trail_points is not None:
+            if trail_points > 0:
+                self.trail_points = trail_points
+                # Also update config for PositionMonitor
+                if 'position_management' not in self.config:
+                    self.config['position_management'] = {}
+                self.config['position_management']['trail_points'] = trail_points
+                logger.info(f"Trailing SL step updated to {trail_points} points")
+            else:
+                logger.warning(f"Invalid trail points: {trail_points} (must be > 0)")
+    
+    def _display_strategy_summary(self, signal: Dict, entry_price: float, strike: int, direction: str):
+        """
+        Display strategy summary before trade execution.
+        
+        Args:
+            signal: Signal dictionary
+            entry_price: Actual option premium
+            strike: Strike price
+            direction: 'CE' or 'PE'
+        """
+        # Calculate values
+        total_units = self.order_lots * self.lot_size
+        order_value = entry_price * total_units
+        sl_price = entry_price - self.sl_points
+        tp_partial = entry_price + signal.get('tp', entry_price + (self.sl_points * self.rr_ratio)) - entry_price
+        tp_full = tp_partial * (signal.get('tp', entry_price + (self.sl_points * self.rr_ratio)) - entry_price) / tp_partial if tp_partial > 0 else entry_price + (self.sl_points * self.rr_ratio)
+        
+        # Get position management targets
+        pm_cfg = self.config.get('position_management', {})
+        book1_points = pm_cfg.get('book1_points', 40)
+        book2_points = pm_cfg.get('book2_points', 54)
+        book1_ratio = pm_cfg.get('book1_ratio', 0.5)
+        
+        logger.info("=" * 80)
+        logger.info("📊 STRATEGY SUMMARY - BEFORE EXECUTION")
+        logger.info("=" * 80)
+        logger.info(f"📈 Direction: {direction} ({'Call Option' if direction == 'CE' else 'Put Option'})")
+        logger.info(f"🎯 Strike: {strike}")
+        logger.info(f"💰 Entry Price: ₹{entry_price:.2f} per unit")
+        logger.info(f"📦 Quantity: {self.order_lots} lot(s) = {total_units} units")
+        logger.info(f"💵 Order Value: ₹{order_value:,.2f} (Premium × Units)")
+        logger.info("")
+        logger.info("🛡️ Risk Management:")
+        logger.info(f"  - Stop Loss: {self.sl_points} points → ₹{sl_price:.2f} per unit")
+        logger.info(f"  - Max Loss: ₹{(entry_price - sl_price) * total_units:,.2f} ({((entry_price - sl_price) / entry_price * 100):.1f}%)")
+        logger.info("")
+        logger.info("🎯 Profit Targets:")
+        logger.info(f"  - Level 1 (Partial {book1_ratio*100:.0f}%): +{book1_points} points → ₹{entry_price + book1_points:.2f}")
+        logger.info(f"  - Level 2 (Remaining): +{book2_points} points → ₹{entry_price + book2_points:.2f}")
+        logger.info(f"  - Max Profit: ₹{(book2_points) * total_units:,.2f} ({((book2_points) / entry_price * 100):.1f}%)")
+        logger.info("")
+        logger.info(f"📊 Risk-Reward Ratio: 1:{self.rr_ratio:.1f}")
+        logger.info(f"📝 Signal Reason: {signal.get('reason', 'Inside Bar 1H breakout')}")
+        logger.info("=" * 80)
+    
     def _run_loop(self):
         """
         Main polling loop (runs in background thread).
@@ -523,8 +610,12 @@ class LiveStrategyRunner:
             
             logger.info(f"Option price fetched: ₹{entry_price:.2f} (estimate was ₹{entry_estimate:.2f})")
             
+            # Display strategy summary before execution
+            self._display_strategy_summary(signal, entry_price, strike, direction)
+            
             # FIX for Issue #5: Check capital before placing order
-            order_value = entry_price * self.order_qty * self.lot_size
+            # Calculate order value: entry_price × lots × lot_size (units per lot)
+            order_value = entry_price * self.order_lots * self.lot_size
             if not self._check_capital_sufficient(order_value):
                 logger.error(f"Insufficient capital for trade - skipping")
                 return
@@ -535,11 +626,12 @@ class LiveStrategyRunner:
                 return
             
             # Place order via broker (transaction_type defaults to "BUY")
+            # Pass quantity in LOTS (broker will multiply by lot_size internally if needed)
             order_result = self.broker.place_order(
                 symbol="NIFTY",
                 strike=strike,
                 direction=direction,
-                quantity=self.order_qty,
+                quantity=self.order_lots,  # In LOTS (1 lot = 75 units)
                 order_type="MARKET",
                 transaction_type="BUY"  # Explicitly set BUY for opening positions
             )
@@ -550,12 +642,14 @@ class LiveStrategyRunner:
                 logger.error(f"Order placement failed: {error_msg}")
                 
                 # Log failed trade attempt
+                # Convert lots to units for logging
+                total_units = self.order_lots * self.lot_size
                 self.trade_logger.log_trade(
                     timestamp=datetime.now().isoformat(),
                     direction=direction,
                     strike=strike,
                     entry_price=entry_price,
-                    quantity=self.order_qty,
+                    quantity=total_units,  # Log in units for clarity
                     order_id=None,
                     status="FAILED",
                     reason=f"Order failed: {error_msg}"
@@ -585,38 +679,46 @@ class LiveStrategyRunner:
                     tradingsymbol = f"NIFTY{expiry_date_str}{strike}{direction}"
             
             # Log trade with actual entry price
+            # Convert lots to units for logging (1 lot = 75 units)
+            total_units = self.order_lots * self.lot_size
             self.trade_logger.log_trade(
                 timestamp=datetime.now().isoformat(),
                 direction=direction,
                 strike=strike,
                 entry_price=entry_price,  # Use actual fetched price
-                quantity=self.order_qty,
+                quantity=total_units,  # Log in units (lots × lot_size)
                 order_id=order_id,
                 status="OPEN",
                 reason=signal.get('reason', 'Inside Bar breakout')
             )
             
-            logger.info(f"Trade logged: Order {order_id}, {direction} {strike} @ ₹{entry_price:.2f}")
+            logger.info(
+                f"Trade logged: Order {order_id}, {direction} {strike} @ ₹{entry_price:.2f}, "
+                f"{self.order_lots} lot(s) ({total_units} units)"
+            )
 
             # Start PositionMonitor for this position
             try:
                 symboltoken = order_result.get('symboltoken')
                 exchange = order_result.get('exchange', 'NFO')
                 pm_cfg = self.config.get('position_management', {})
+                # Use self.trail_points if available (from UI update), otherwise use config
+                trail_pts = self.trail_points if hasattr(self, 'trail_points') else pm_cfg.get('trail_points', 10)
                 rules = PositionRules(
-                    sl_points=int(pm_cfg.get('sl_points', 30)),
-                    trail_points=int(pm_cfg.get('trail_points', 10)),
+                    sl_points=int(pm_cfg.get('sl_points', self.sl_points)),  # Use self.sl_points if updated from UI
+                    trail_points=int(trail_pts),  # Use configured trail_points
                     book1_points=int(pm_cfg.get('book1_points', 40)),
                     book2_points=int(pm_cfg.get('book2_points', 54)),
                     book1_ratio=float(pm_cfg.get('book1_ratio', 0.5)),
                 )
                 # FIX for Issue #10: Pass symbol info to PositionMonitor
+                # PositionMonitor expects quantity in LOTS (it will handle lot conversions internally)
                 monitor = PositionMonitor(
                     broker=self.broker,
                     symbol_token=symboltoken,
                     exchange=exchange,
                     entry_price=entry_price,  # Use actual fetched price
-                    total_qty=self.order_qty,  # Quantity in lots (PositionMonitor handles per lot)
+                    total_qty=self.order_lots,  # Quantity in LOTS (1 lot = 75 units)
                     rules=rules,
                     order_id=order_id,
                     symbol="NIFTY",  # FIX: Add symbol info

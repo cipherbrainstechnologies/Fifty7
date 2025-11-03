@@ -5,6 +5,7 @@ Supports multiple broker APIs (Angel One, Fyers)
 
 from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
+from datetime import datetime
 import pyotp
 from logzero import logger
 try:
@@ -594,7 +595,8 @@ class AngelOneBroker(BrokerInterface):
         direction: str,
         quantity: int,
         order_type: str = "MARKET",
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        transaction_type: str = "BUY"
     ) -> Dict:
         """
         Place order via Angel One SmartAPI.
@@ -633,11 +635,17 @@ class AngelOneBroker(BrokerInterface):
                 }
             
             # Build order parameters
+            # Note: Angel One API accepts quantity in UNITS (not lots)
+            # If quantity is passed in lots, multiply by NIFTY lot_size (75)
+            # Standardize: quantity parameter should be in LOTS, convert to units here
+            LOT_SIZE = 75  # NIFTY lot size (1 lot = 75 units)
+            quantity_units = quantity * LOT_SIZE  # Convert lots to units for broker API
+            
             orderparams = {
                 "variety": "NORMAL",
                 "tradingsymbol": tradingsymbol,
                 "symboltoken": symboltoken,
-                "transactiontype": "BUY",
+                "transactiontype": transaction_type,
                 "exchange": "NFO",
                 "ordertype": order_type,
                 "producttype": "INTRADAY",
@@ -645,7 +653,7 @@ class AngelOneBroker(BrokerInterface):
                 "price": str(price) if order_type == "LIMIT" and price else "0",
                 "squareoff": "0",
                 "stoploss": "0",
-                "quantity": str(quantity)
+                "quantity": str(quantity_units)  # Send units to broker API
             }
             
             logger.info(f"Placing order: {orderparams}")
