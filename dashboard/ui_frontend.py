@@ -807,18 +807,24 @@ if tab == "Dashboard":
                         st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
                         st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
                     
-                    # Check for breakout
+                    # Check for breakout (using 1H data only)
                     st.write("**Breakout Status:**")
                     from engine.strategy_engine import confirm_breakout
-                    direction = confirm_breakout(data_15m, range_high, range_low, volume_threshold_multiplier=1.0)
+                    direction = confirm_breakout(
+                        data_1h, 
+                        range_high, 
+                        range_low, 
+                        latest_idx,  # inside_bar_idx parameter
+                        volume_threshold_multiplier=1.0
+                    )
                     
                     if direction:
                         st.success(f"✅ Breakout Confirmed: {direction} (Call Option)" if direction == "CE" else f"✅ Breakout Confirmed: {direction} (Put Option)")
-                        st.write(f"**Current 15m Close:** {data_15m['Close'].iloc[-1]:.2f}")
+                        st.write(f"**Current 1H Close:** {data_1h['Close'].iloc[-1]:.2f}")
                         st.write(f"**Range High:** {range_high:.2f} | **Range Low:** {range_low:.2f}")
                     else:
                         st.info("⏳ Waiting for breakout confirmation...")
-                        current_close = data_15m['Close'].iloc[-1]
+                        current_close = data_1h['Close'].iloc[-1]
                         if current_close > range_high:
                             st.write(f"🔺 Above range: {current_close:.2f} > {range_high:.2f} (need volume confirmation)")
                         elif current_close < range_low:

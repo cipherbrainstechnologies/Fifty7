@@ -1139,8 +1139,8 @@ class AngelOneBroker(BrokerInterface):
     
     def get_available_margin(self) -> float:
         """
-        Get available margin/capital for trading.
-        FIX for Issue #5: Capital validation.
+        Get available margin/capital for trading using getRMS API.
+        FIX: Use correct RMS API endpoint instead of holdings endpoint.
         
         Returns:
             Available margin amount in rupees
@@ -1150,24 +1150,39 @@ class AngelOneBroker(BrokerInterface):
                 logger.error("Cannot fetch margin: No valid session")
                 return 0.0
             
-            # Fetch user limits/margin from broker
-            # Use getAllHolding to get margin info
-            all_holdings = self.get_all_holdings()
+            if not self.auth_token:
+                logger.error("Auth token not available for margin fetch")
+                return 0.0
             
-            # Extract available margin from holdings data
-            # The structure may vary, but typically contains:
-            # - availablecash or availablemargin
-            available_margin = all_holdings.get('availablecash', 0.0)
+            # Use the correct RMS API endpoint to fetch available margin
+            url = "https://apiconnect.angelone.in/rest/secure/angelbroking/user/v1/getRMS"
+            
+            # Use _request_json helper which already handles headers and session
+            data = self._request_json('GET', url)
+            
+            if not isinstance(data, dict):
+                logger.warning("RMS API returned non-dict response")
+                return 0.0
+            
+            if data.get('status') == False:
+                error_msg = data.get('message', 'Unknown error')
+                logger.warning(f"Failed to fetch margin from RMS API: {error_msg}")
+                return 0.0
+            
+            # Extract available margin from RMS API response
+            rms_data = data.get('data', {})
+            available_margin = rms_data.get('availablecash', 0.0)
+            
             if available_margin:
-                return float(available_margin)
-            
-            # Fallback: Try to get from positions or other endpoints
-            # For now, return a safe default if not available
-            logger.warning("Available margin not found in holdings, returning 0")
-            return 0.0
+                margin = float(available_margin)
+                logger.info(f"✅ Available Margin: ₹{margin:,.2f}")
+                return margin
+            else:
+                logger.warning("Available margin not found in RMS API response")
+                return 0.0
             
         except Exception as e:
-            logger.exception(f"Error fetching available margin: {e}")
+            logger.exception(f"Error fetching available margin from RMS API: {e}")
             return 0.0
     
     def get_option_expiries(self, symbol: str) -> List[datetime]:
