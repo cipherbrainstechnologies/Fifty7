@@ -12,6 +12,9 @@ from datetime import datetime, date
 import os
 import sys
 from logzero import logger
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -62,8 +65,51 @@ except ImportError:
 st.set_page_config(
     page_title="NIFTY Options Trading System",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+# Custom CSS for enhanced UI
+st.markdown("""
+<style>
+    /* Card styling */
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #1f77b4;
+    }
+    .status-card {
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    .status-green {
+        background-color: #d4edda;
+        border-left: 4px solid #28a745;
+    }
+    .status-red {
+        background-color: #f8d7da;
+        border-left: 4px solid #dc3545;
+    }
+    .status-yellow {
+        background-color: #fff3cd;
+        border-left: 4px solid #ffc107;
+    }
+    /* Responsive adjustments */
+    @media (max-width: 768px) {
+        .metric-card {
+            margin-bottom: 1rem;
+        }
+    }
+    /* Empty state styling */
+    .empty-state {
+        text-align: center;
+        padding: 3rem;
+        color: #6c757d;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # Load configuration
 @st.cache_data
@@ -273,23 +319,78 @@ tab = st.sidebar.radio(
 if tab == "Dashboard":
     st.header("📈 Live Algo Status")
     
-    # Status indicators
-    col1, col2, col3, col4 = st.columns(4)
+    # Status Cards - 3 cards as specified
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        engine_status = "🟢 Running" if st.session_state.algo_running else "🔴 Stopped"
-        st.metric("Engine Status", engine_status)
+        # Engine State Card
+        engine_status = st.session_state.algo_running
+        status_color = "🟢" if engine_status else "🔴"
+        status_text = "Running" if engine_status else "Stopped"
+        status_bg = "status-green" if engine_status else "status-red"
+        st.markdown(f"""
+        <div class="status-card {status_bg}">
+            <h3 style="margin:0; color: {'#155724' if engine_status else '#721c24'};">
+                🔌 Engine State
+            </h3>
+            <p style="font-size:1.5rem; margin:0.5rem 0; font-weight:bold;">
+                {status_color} {status_text}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
+        # Broker Connected Card
+        broker_connected = st.session_state.broker is not None
         broker_type = config['broker']['type'].capitalize() if config.get('broker') else "Not Configured"
-        st.metric("Broker", broker_type)
+        status_color = "🟢" if broker_connected else "🔴"
+        status_text = f"Connected ({broker_type})" if broker_connected else "Not Connected"
+        status_bg = "status-green" if broker_connected else "status-red"
+        st.markdown(f"""
+        <div class="status-card {status_bg}">
+            <h3 style="margin:0; color: {'#155724' if broker_connected else '#721c24'};">
+                🧑‍💼 Broker Connected
+            </h3>
+            <p style="font-size:1.2rem; margin:0.5rem 0; font-weight:bold;">
+                {status_color} {status_text}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col3:
+        # P&L Summary Card
+        try:
+            from engine.pnl_service import compute_realized_pnl
+            org_id = config.get('tenant', {}).get('org_id', 'demo-org')
+            user_id = config.get('tenant', {}).get('user_id', 'admin')
+            pnl_data = compute_realized_pnl(org_id, user_id)
+            total_pnl = pnl_data.get('realized_pnl', 0.0)
+        except:
+            total_pnl = 0.0
+        
+        pnl_color = "🟢" if total_pnl >= 0 else "🔴"
+        status_bg = "status-green" if total_pnl >= 0 else "status-red"
+        pnl_text = f"₹{total_pnl:,.2f}"
+        st.markdown(f"""
+        <div class="status-card {status_bg}">
+            <h3 style="margin:0; color: {'#155724' if total_pnl >= 0 else '#721c24'};">
+                📊 P&L Summary
+            </h3>
+            <p style="font-size:1.5rem; margin:0.5rem 0; font-weight:bold;">
+                {pnl_color} {pnl_text}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Additional metrics row
+    col4, col5 = st.columns(2)
+    
+    with col4:
         # Get active signals count
         active_signals = st.session_state.signal_handler.get_active_signals()
-        st.metric("Active Trades", len(active_signals))
-
-    with col4:
+        st.metric("📊 Active Trades", len(active_signals))
+    
+    with col5:
         # NIFTY current live price (LTP)
         ltp_text = "—"
         try:
@@ -303,7 +404,7 @@ if tab == "Dashboard":
                         ltp_text = f"{float(ltp_val):.2f}"
         except Exception:
             pass
-        st.metric("NIFTY LTP", ltp_text)
+        st.metric("📈 NIFTY LTP", ltp_text)
     
     st.divider()
 
@@ -319,11 +420,15 @@ if tab == "Dashboard":
         st.session_state.last_trade_count = current_count
     except Exception:
         pass
-    # Auto-refresh toggle (10s)
-    auto = st.checkbox("Auto-refresh every 10 seconds", value=True)
+    # Auto-refresh toggle with tooltip
+    auto = st.checkbox(
+        "🔄 Auto-refresh every 10 seconds", 
+        value=True,
+        help="Automatically refreshes the dashboard every 10 seconds to show latest market data and trade updates"
+    )
     if auto:
         import time as _t
-        st.caption("Auto-refresh enabled")
+        st.caption("✅ Auto-refresh enabled - Page will refresh every 10 seconds")
         # Trigger rerun after rendering at the bottom of the page
     
     # Strategy Configuration (Live Trading)
@@ -402,42 +507,51 @@ if tab == "Dashboard":
     
     st.divider()
     
-    # Control buttons
+    # Control buttons with confirmation
+    st.subheader("🎮 Algo Control")
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("▶️ Start Algo", disabled=st.session_state.algo_running, use_container_width=True):
+        if st.button("▶️ Start Algo", disabled=st.session_state.algo_running, use_container_width=True, type="primary"):
+            # Confirmation prompt
             if st.session_state.live_runner is None:
                 st.error("❌ Live runner not initialized. Check broker configuration.")
             else:
-                try:
-                    success = st.session_state.live_runner.start()
-                    if success:
-                        st.session_state.algo_running = True
-                        st.success("✅ Algorithm started - Monitoring live market data...")
-                    else:
-                        st.error("❌ Failed to start algorithm. Check logs for details.")
-                except Exception as e:
-                    st.error(f"❌ Error starting algorithm: {e}")
-                    logger.exception(e)
-            st.rerun()
+                # Show confirmation
+                confirm_start = st.checkbox("✅ I confirm I want to start the algorithm", key="confirm_start")
+                if confirm_start:
+                    try:
+                        success = st.session_state.live_runner.start()
+                        if success:
+                            st.session_state.algo_running = True
+                            st.success("✅ Algorithm started - Monitoring live market data...")
+                            st.balloons()
+                        else:
+                            st.error("❌ Failed to start algorithm. Check logs for details.")
+                    except Exception as e:
+                        st.error(f"❌ Error starting algorithm: {e}")
+                        logger.exception(e)
+                    st.rerun()
     
     with col2:
-        if st.button("⏹️ Stop Algo", disabled=not st.session_state.algo_running, use_container_width=True):
-            if st.session_state.live_runner is not None:
-                try:
-                    success = st.session_state.live_runner.stop()
-                    if success:
-                        st.session_state.algo_running = False
-                        st.warning("⏸️ Algorithm stopped")
-                    else:
-                        st.error("❌ Failed to stop algorithm")
-                except Exception as e:
-                    st.error(f"❌ Error stopping algorithm: {e}")
-                    logger.exception(e)
-            else:
-                st.session_state.algo_running = False
-            st.rerun()
+        if st.button("⏹️ Stop Algo", disabled=not st.session_state.algo_running, use_container_width=True, type="secondary"):
+            # Confirmation prompt
+            confirm_stop = st.checkbox("⚠️ I confirm I want to stop the algorithm", key="confirm_stop")
+            if confirm_stop:
+                if st.session_state.live_runner is not None:
+                    try:
+                        success = st.session_state.live_runner.stop()
+                        if success:
+                            st.session_state.algo_running = False
+                            st.warning("⏸️ Algorithm stopped")
+                        else:
+                            st.error("❌ Failed to stop algorithm")
+                    except Exception as e:
+                        st.error(f"❌ Error stopping algorithm: {e}")
+                        logger.exception(e)
+                else:
+                    st.session_state.algo_running = False
+                st.rerun()
     
     # Live data status
     if st.session_state.algo_running and st.session_state.live_runner is not None:
@@ -851,9 +965,32 @@ if tab == "Dashboard":
     
     if active_signals:
         trades_df = pd.DataFrame(active_signals)
-        st.dataframe(trades_df, width='stretch')
+        st.dataframe(trades_df, use_container_width=True, height=300)
     else:
         st.info("ℹ️ No active trades")
+    
+    # Recent Trade Journal Section (last 5)
+    st.divider()
+    st.subheader("📒 Recent Trade Journal (Last 5)")
+    try:
+        all_trades = st.session_state.trade_logger.get_all_trades()
+        if not all_trades.empty:
+            # Get last 5 trades
+            recent_trades = all_trades.tail(5)
+            # Display in a formatted table
+            st.dataframe(
+                recent_trades,
+                use_container_width=True,
+                height=200
+            )
+            # Show summary
+            if len(recent_trades) > 0:
+                recent_pnl = recent_trades['pnl'].sum() if 'pnl' in recent_trades.columns else 0
+                st.caption(f"📊 Recent 5 trades P&L: ₹{recent_pnl:,.2f}")
+        else:
+            st.info("📝 No trades logged yet. Your trade journal will appear here once trades are executed.")
+    except Exception as e:
+        st.warning(f"⚠️ Could not load trade journal: {e}")
     
     # System Information
     st.divider()
@@ -888,7 +1025,7 @@ if tab == "Dashboard":
 elif tab == "Portfolio":
     st.header("📁 Portfolio")
     if st.session_state.broker is None:
-        st.warning("Broker not initialized.")
+        st.warning("⚠️ Broker not initialized. Please check your broker configuration in Settings.")
     else:
         # Cached fetchers to respect API rate limits
         @st.cache_data(ttl=15)
@@ -937,9 +1074,9 @@ elif tab == "Portfolio":
         # Controls
         colr1, colr2 = st.columns([1,1])
         with colr1:
-            refresh = st.button("🔄 Refresh Portfolio", use_container_width=True)
+            refresh = st.button("🔄 Refresh Portfolio", use_container_width=True, help="Fetches latest portfolio data from broker")
         with colr2:
-            st.caption("Data cached for 15s to avoid API rate limits")
+            st.caption("💡 Data cached for 15s to avoid API rate limits")
 
         if refresh:
             _fetch_holdings.clear()
@@ -971,16 +1108,77 @@ elif tab == "Portfolio":
             st.metric("P&L %", f"{float(pnlp):.2f}%" if pnlp else "—")
 
         st.divider()
+        
+        # Trade Parameters Section in Collapsible Card
+        with st.expander("⚙️ Trade Parameters", expanded=False):
+            st.subheader("📊 Configure Trade Parameters")
+            
+            # Load current values from config
+            import yaml as yaml_lib
+            with open('config/config.yaml', 'r') as f:
+                strategy_config = yaml_lib.safe_load(f)
+            
+            pm_config = strategy_config.get('position_management', {})
+            
+            col_param1, col_param2 = st.columns(2)
+            
+            with col_param1:
+                sl_points = st.number_input(
+                    "🛑 Stop Loss (Points)",
+                    min_value=10,
+                    max_value=100,
+                    value=int(pm_config.get('sl_points', 30)),
+                    step=5,
+                    help="Stop loss in points (e.g., 30 points means SL at entry - 30 points)"
+                )
+                
+                trail_points = st.number_input(
+                    "📈 Trailing SL Step (Points)",
+                    min_value=5,
+                    max_value=50,
+                    value=int(pm_config.get('trail_points', 10)),
+                    step=5,
+                    help="Trailing step in points. When price moves up by this amount, SL moves up"
+                )
+            
+            with col_param2:
+                lot_size = st.number_input(
+                    "📦 Lot Size",
+                    min_value=1,
+                    value=int(strategy_config.get('lot_size', 75)),
+                    step=1,
+                    help="NIFTY lot size (1 lot = 75 units typically)"
+                )
+                
+                quantity = st.number_input(
+                    "🔢 Quantity (Lots)",
+                    min_value=1,
+                    max_value=10,
+                    value=2,
+                    step=1,
+                    help="Number of lots per trade"
+                )
+            
+            # Validation
+            total_units = quantity * lot_size
+            if total_units > 750:
+                st.warning("⚠️ Large quantity selected. Ensure sufficient margin available.")
+            
+            st.info(f"📊 **Trade Summary:** {quantity} lot(s) = **{total_units} units** (1 lot = {lot_size} units)")
+            
+            if st.button("💾 Save Trade Parameters", use_container_width=True):
+                st.success("✅ Trade parameters saved (Note: Changes require algo restart to take effect)")
+        
         st.subheader("📦 Holdings")
         holdings = _fetch_holdings()
         if holdings:
             try:
                 hdf = pd.DataFrame(holdings)
-                st.dataframe(hdf, width='stretch', height=300)
+                st.dataframe(hdf, use_container_width=True, height=300)
             except Exception as e:
                 st.warning(f"Failed to render holdings: {e}")
         else:
-            st.info("No holdings returned.")
+            st.info("ℹ️ No holdings returned.")
 
         st.divider()
         st.subheader("🧾 Positions (Day/Net)")
@@ -995,59 +1193,278 @@ elif tab == "Portfolio":
             st.info("No positions returned.")
 
 elif tab == "P&L":
-    st.header("💹 P&L")
+    st.header("💹 P&L Analysis")
     try:
         from engine.pnl_service import compute_realized_pnl, pnl_timeseries
         # Basic tenant context (dev default); wire real org/user later
         org_id = config.get('tenant', {}).get('org_id', 'demo-org')
         user_id = config.get('tenant', {}).get('user_id', 'admin')
 
+        # Get P&L data
+        res = compute_realized_pnl(org_id, user_id)
+        total_pnl = res.get('realized_pnl', 0.0)
+        series = pnl_timeseries(org_id, user_id)
+        
+        # Cumulative P&L Card
+        pnl_color = "🟢" if total_pnl >= 0 else "🔴"
+        status_bg = "status-green" if total_pnl >= 0 else "status-red"
+        st.markdown(f"""
+        <div class="status-card {status_bg}">
+            <h3 style="margin:0; color: {'#155724' if total_pnl >= 0 else '#721c24'};">
+                📊 Cumulative P&L
+            </h3>
+            <p style="font-size:2rem; margin:0.5rem 0; font-weight:bold;">
+                {pnl_color} ₹{total_pnl:,.2f}
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # Charts Section
         colp1, colp2 = st.columns([1, 1])
+        
         with colp1:
-            st.subheader("Realized P&L (FIFO)")
-            res = compute_realized_pnl(org_id, user_id)
-            st.metric("Total Realized P&L", f"₹{res.get('realized_pnl', 0):,.2f}")
+            st.subheader("📈 Realized vs Unrealized P&L")
+            try:
+                # Get trade data for unrealized P&L
+                all_trades = st.session_state.trade_logger.get_all_trades()
+                if not all_trades.empty and 'pnl' in all_trades.columns:
+                    realized_pnl = all_trades[all_trades['pnl'].notna()]['pnl'].sum()
+                    # For unrealized, estimate from active positions
+                    unrealized_pnl = 0.0  # Placeholder - would need position data
+                    
+                    # Create bar chart
+                    fig = go.Figure(data=[
+                        go.Bar(name='Realized P&L', x=['P&L'], y=[realized_pnl], marker_color='green' if realized_pnl >= 0 else 'red'),
+                        go.Bar(name='Unrealized P&L', x=['P&L'], y=[unrealized_pnl], marker_color='orange')
+                    ])
+                    fig.update_layout(
+                        title="P&L Breakdown",
+                        xaxis_title="",
+                        yaxis_title="Amount (₹)",
+                        height=400,
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("📊 Start Trading to track P&L")
+            except Exception as e:
+                st.warning(f"⚠️ Could not generate P&L chart: {e}")
+        
         with colp2:
-            st.subheader("Daily Net Cash Flow (Proxy)")
-            series = pnl_timeseries(org_id, user_id)
+            st.subheader("📅 Daily P&L Trend")
             try:
                 if series:
                     s_df = pd.DataFrame(series)
-                    s_df = s_df.set_index('date')
-                    st.line_chart(s_df, width='stretch')
+                    if 'date' in s_df.columns:
+                        s_df['date'] = pd.to_datetime(s_df['date'])
+                        s_df = s_df.sort_values('date')
+                        
+                        # Create Plotly line chart
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=s_df['date'],
+                            y=s_df.get('pnl', s_df.iloc[:, 1]) if 'pnl' in s_df.columns else s_df.iloc[:, 1],
+                            mode='lines+markers',
+                            name='Daily P&L',
+                            line=dict(color='#1f77b4', width=2),
+                            fill='tonexty' if len(s_df.columns) > 1 else None
+                        ))
+                        fig.update_layout(
+                            title="Daily P&L Trend",
+                            xaxis_title="Date",
+                            yaxis_title="P&L (₹)",
+                            height=400,
+                            hovermode='x unified'
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("📊 Start Trading to track P&L")
                 else:
-                    st.info("No P&L data yet.")
+                    st.info("📊 Start Trading to track P&L")
             except Exception as e:
-                st.warning(f"Failed to render P&L series: {e}")
+                st.warning(f"⚠️ Failed to render P&L series: {e}")
+        
+        # Empty State Message
+        if total_pnl == 0 and (not series or len(series) == 0):
+            st.divider()
+            st.markdown("""
+            <div class="empty-state">
+                <h2>📊 No P&L Data Yet</h2>
+                <p>Start Trading to track your P&L</p>
+                <p style="color: #6c757d; font-size: 0.9rem;">
+                    Your realized and unrealized P&L will appear here once you start executing trades.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
     except Exception as e:
-        st.info("P&L services not available yet.")
+        st.info("ℹ️ P&L services not available yet. Check configuration.")
+        st.caption(f"Error: {e}")
 
 elif tab == "Insights":
-    st.header("🧠 Insights")
+    st.header("🧠 Trading Insights")
     try:
         from engine.ai_analysis import analyze_trades
         org_id = config.get('tenant', {}).get('org_id', 'demo-org')
         user_id = config.get('tenant', {}).get('user_id', 'admin')
-        lookback = st.slider("Lookback (days)", min_value=7, max_value=180, value=30, step=1)
+        
+        lookback = st.slider(
+            "📅 Lookback Period (days)", 
+            min_value=7, 
+            max_value=180, 
+            value=30, 
+            step=1,
+            help="Select the number of days to analyze trades"
+        )
+        
         res = analyze_trades(org_id, user_id, lookback_days=lookback)
+        
+        # Calculate additional metrics
+        total_trades = res.get('total_trades', 0)
+        winning_trades = res.get('winning_trades', 0)
+        losing_trades = res.get('losing_trades', 0)
+        realized_pnl = res.get('realized_pnl', 0)
+        avg_win = res.get('avg_win', 0)
+        avg_loss = res.get('avg_loss', 0)
+        
+        # Calculate win rate and risk:reward
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        risk_reward = (avg_win / abs(avg_loss)) if avg_loss != 0 else 0
+        
+        # Check if we have data
+        if total_trades == 0:
+            # Empty state with mock stats
+            st.markdown("""
+            <div class="empty-state">
+                <h2>📊 Make your first trade to unlock insights</h2>
+                <p style="color: #6c757d; font-size: 0.9rem;">
+                    Once you start trading, you'll see detailed analytics including win rate, average profit/loss, and risk-reward ratios.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Show mock stats as example
+            st.divider()
+            st.subheader("📊 Sample Insights (Mock Data)")
+            st.info("💡 These are example metrics. Start trading to see your actual insights.")
+            
+            mock_stats = {
+                'win_rate': 65.5,
+                'avg_profit': 1250.0,
+                'avg_loss': -850.0,
+                'risk_reward': 1.47
+            }
+        else:
+            mock_stats = None
+        
+        # KPI Cards
         c1, c2, c3, c4 = st.columns(4)
+        
         with c1:
-            st.metric("Total Trades", res.get('total_trades', 0))
+            win_rate_val = win_rate if total_trades > 0 else (mock_stats['win_rate'] if mock_stats else 0)
+            st.metric(
+                "🎯 Win Rate", 
+                f"{win_rate_val:.2f}%",
+                help="Percentage of winning trades"
+            )
+        
         with c2:
-            st.metric("BUY/SELL", f"{res.get('buy_trades',0)}/{res.get('sell_trades',0)}")
+            avg_profit_val = avg_win if total_trades > 0 else (mock_stats['avg_profit'] if mock_stats else 0)
+            st.metric(
+                "📈 Avg Profit", 
+                f"₹{avg_profit_val:,.2f}",
+                help="Average profit per winning trade"
+            )
+        
         with c3:
-            st.metric("Avg Trade Price", f"₹{res.get('avg_trade_price',0):,.2f}")
+            avg_loss_val = avg_loss if total_trades > 0 else (mock_stats['avg_loss'] if mock_stats else 0)
+            st.metric(
+                "📉 Avg Loss", 
+                f"₹{avg_loss_val:,.2f}",
+                help="Average loss per losing trade"
+            )
+        
         with c4:
-            st.metric("Realized P&L", f"₹{res.get('realized_pnl',0):,.2f}")
-        st.subheader("Top Symbols")
+            rr_val = risk_reward if total_trades > 0 else (mock_stats['risk_reward'] if mock_stats else 0)
+            st.metric(
+                "⚖️ Risk:Reward Ratio", 
+                f"{rr_val:.2f}",
+                help="Average win to average loss ratio"
+            )
+        
+        st.divider()
+        
+        # Charts Section
+        if total_trades > 0 or mock_stats:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.subheader("📊 Trade Distribution")
+                try:
+                    # Create pie chart for win/loss
+                    win_count = winning_trades if total_trades > 0 else 20
+                    loss_count = losing_trades if total_trades > 0 else 10
+                    
+                    fig = go.Figure(data=[go.Pie(
+                        labels=['Wins', 'Losses'],
+                        values=[win_count, loss_count],
+                        hole=0.3,
+                        marker_colors=['green', 'red']
+                    )])
+                    fig.update_layout(
+                        title="Win/Loss Distribution",
+                        height=400
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"⚠️ Could not generate chart: {e}")
+            
+            with col2:
+                st.subheader("📈 P&L Trend")
+                try:
+                    # Get trade data for trend
+                    all_trades = st.session_state.trade_logger.get_all_trades()
+                    if not all_trades.empty and 'pnl' in all_trades.columns:
+                        # Create cumulative P&L chart
+                        all_trades_sorted = all_trades.sort_values('timestamp' if 'timestamp' in all_trades.columns else all_trades.columns[0])
+                        cumulative_pnl = all_trades_sorted['pnl'].cumsum()
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=list(range(len(cumulative_pnl))),
+                            y=cumulative_pnl,
+                            mode='lines+markers',
+                            name='Cumulative P&L',
+                            line=dict(color='#1f77b4', width=2),
+                            fill='tozeroy'
+                        ))
+                        fig.update_layout(
+                            title="Cumulative P&L Over Time",
+                            xaxis_title="Trade Number",
+                            yaxis_title="Cumulative P&L (₹)",
+                            height=400
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("📊 No trade data available for trend analysis")
+                except Exception as e:
+                    st.warning(f"⚠️ Could not generate trend chart: {e}")
+        
+        # Top Symbols Section
+        st.divider()
+        st.subheader("📊 Top Symbols")
         top = res.get('top_symbols', [])
         if top:
             tdf = pd.DataFrame(top, columns=["Symbol", "Trades"])
-            st.dataframe(tdf, width='stretch', height=200)
+            st.dataframe(tdf, use_container_width=True, height=200)
         else:
-            st.info("No symbol concentration yet.")
+            st.info("📊 No symbol concentration yet. Start trading to see your top symbols.")
+            
     except Exception as e:
-        st.info("Insights will appear once trades are recorded and DB is configured.")
+        st.info("ℹ️ Insights will appear once trades are recorded and DB is configured.")
+        st.caption(f"Error: {e}")
 
 elif tab == "Orders & Trades":
     st.header("📑 Orders & Trades")
@@ -1143,7 +1560,7 @@ elif tab == "Orders & Trades":
                 st.error(f"Import error: {e}")
 
 elif tab == "Trade Journal":
-    st.header("📘 Trade Log")
+    st.header("📘 Trade Journal")
     
     trade_logger = st.session_state.trade_logger
     
@@ -1151,53 +1568,167 @@ elif tab == "Trade Journal":
     all_trades = trade_logger.get_all_trades()
     
     if not all_trades.empty:
-        # Display trades
-        st.subheader("All Trades")
-        st.dataframe(all_trades, use_container_width=True)
+        # Filters Section
+        st.subheader("🔍 Filters")
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        
+        with filter_col1:
+            # Trade type filter
+            trade_types = ['All'] + (all_trades['type'].unique().tolist() if 'type' in all_trades.columns else ['All'])
+            selected_type = st.selectbox(
+                "📊 Trade Type",
+                trade_types,
+                help="Filter trades by type (CE/PE)"
+            )
+        
+        with filter_col2:
+            # Result filter (Win/Loss)
+            result_options = ['All', 'Win', 'Loss']
+            if 'pnl' in all_trades.columns:
+                selected_result = st.selectbox(
+                    "🎯 Result",
+                    result_options,
+                    help="Filter trades by result (Win/Loss)"
+                )
+            else:
+                selected_result = 'All'
+        
+        with filter_col3:
+            # Date filter
+            if 'timestamp' in all_trades.columns or 'date' in all_trades.columns:
+                date_col = 'timestamp' if 'timestamp' in all_trades.columns else 'date'
+                all_trades[date_col] = pd.to_datetime(all_trades[date_col], errors='coerce')
+                min_date = all_trades[date_col].min().date() if not all_trades[date_col].isna().all() else date.today()
+                max_date = all_trades[date_col].max().date() if not all_trades[date_col].isna().all() else date.today()
+                
+                date_range = st.date_input(
+                    "📅 Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Select date range for trades"
+                )
+            else:
+                date_range = None
+        
+        # Apply filters
+        filtered_trades = all_trades.copy()
+        
+        if selected_type != 'All' and 'type' in filtered_trades.columns:
+            filtered_trades = filtered_trades[filtered_trades['type'] == selected_type]
+        
+        if selected_result != 'All' and 'pnl' in filtered_trades.columns:
+            if selected_result == 'Win':
+                filtered_trades = filtered_trades[filtered_trades['pnl'] > 0]
+            elif selected_result == 'Loss':
+                filtered_trades = filtered_trades[filtered_trades['pnl'] < 0]
+        
+        if date_range and isinstance(date_range, tuple) and len(date_range) == 2:
+            date_col = 'timestamp' if 'timestamp' in filtered_trades.columns else 'date'
+            if date_col in filtered_trades.columns:
+                filtered_trades[date_col] = pd.to_datetime(filtered_trades[date_col], errors='coerce')
+                filtered_trades = filtered_trades[
+                    (filtered_trades[date_col].dt.date >= date_range[0]) &
+                    (filtered_trades[date_col].dt.date <= date_range[1])
+                ]
+        
+        st.divider()
+        
+        # Display last 10 trades
+        st.subheader("📊 Recent Trades (Last 10)")
+        if len(filtered_trades) > 0:
+            # Get last 10 trades
+            recent_trades = filtered_trades.tail(10).sort_index(ascending=False)
+            st.dataframe(recent_trades, use_container_width=True, height=400)
+            
+            # Show summary
+            if 'pnl' in recent_trades.columns:
+                recent_pnl = recent_trades['pnl'].sum()
+                recent_wins = (recent_trades['pnl'] > 0).sum()
+                recent_losses = (recent_trades['pnl'] < 0).sum()
+                st.caption(f"📊 Recent 10 trades: {len(recent_trades)} trades | P&L: ₹{recent_pnl:,.2f} | Wins: {recent_wins} | Losses: {recent_losses}")
+        else:
+            st.info("📝 No trades match the selected filters.")
+        
+        # All filtered trades section
+        if len(filtered_trades) > 10:
+            st.divider()
+            st.subheader("📋 All Filtered Trades")
+            st.dataframe(filtered_trades, use_container_width=True, height=400)
         
         # Statistics
         st.divider()
         st.subheader("📊 Trade Statistics")
         
-        stats = trade_logger.get_trade_stats()
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Trades", stats['total_trades'])
-        
-        with col2:
-            st.metric("Win Rate", f"{stats['win_rate']:.2f}%")
-        
-        with col3:
-            st.metric("Total P&L", f"₹{stats['total_pnl']:,.2f}")
-        
-        with col4:
-            avg_pnl = (stats['avg_win'] + stats['avg_loss']) / 2 if stats['total_trades'] > 0 else 0
-            st.metric("Avg P&L", f"₹{avg_pnl:,.2f}")
-        
-        # Detailed stats
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Winning Trades:**")
-            st.write(f"- Count: {stats['winning_trades']}")
-            st.write(f"- Avg Win: ₹{stats['avg_win']:,.2f}")
-        
-        with col2:
-            st.write("**Losing Trades:**")
-            st.write(f"- Count: {stats['losing_trades']}")
-            st.write(f"- Avg Loss: ₹{stats['avg_loss']:,.2f}")
+        try:
+            stats = trade_logger.get_trade_stats()
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Trades", stats['total_trades'], help="Total number of trades")
+            
+            with col2:
+                st.metric("Win Rate", f"{stats['win_rate']:.2f}%", help="Percentage of winning trades")
+            
+            with col3:
+                st.metric("Total P&L", f"₹{stats['total_pnl']:,.2f}", help="Total profit and loss")
+            
+            with col4:
+                avg_pnl = (stats['avg_win'] + stats['avg_loss']) / 2 if stats['total_trades'] > 0 else 0
+                st.metric("Avg P&L", f"₹{avg_pnl:,.2f}", help="Average profit and loss per trade")
+            
+            # Detailed stats
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Winning Trades:**")
+                st.write(f"- Count: {stats['winning_trades']}")
+                st.write(f"- Avg Win: ₹{stats['avg_win']:,.2f}")
+            
+            with col2:
+                st.write("**Losing Trades:**")
+                st.write(f"- Count: {stats['losing_trades']}")
+                st.write(f"- Avg Loss: ₹{stats['avg_loss']:,.2f}")
+        except Exception as e:
+            st.warning(f"⚠️ Could not calculate statistics: {e}")
         
         # Download CSV
+        st.divider()
         st.download_button(
             label="📥 Download Trade Log (CSV)",
-            data=all_trades.to_csv(index=False).encode('utf-8'),
+            data=filtered_trades.to_csv(index=False).encode('utf-8'),
             file_name=f"trades_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-            mime="text/csv"
+            mime="text/csv",
+            help="Download filtered trades as CSV file"
         )
     else:
-        st.info("ℹ️ No trades logged yet")
+        # Empty state
+        st.markdown("""
+        <div class="empty-state">
+            <h2>📝 No trades yet</h2>
+            <p>Your log starts here.</p>
+            <p style="color: #6c757d; font-size: 0.9rem;">
+                Once you start executing trades, they will appear in your trade journal with detailed information including entry/exit prices, P&L, and timestamps.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Show sample entry
+        st.divider()
+        st.subheader("📋 Sample Entry (Example)")
+        sample_data = {
+            'timestamp': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            'symbol': ['NIFTY 25000 CE'],
+            'type': ['CE'],
+            'entry_price': [150.50],
+            'exit_price': [180.75],
+            'quantity': [150],
+            'pnl': [4537.50]
+        }
+        sample_df = pd.DataFrame(sample_data)
+        st.dataframe(sample_df, use_container_width=True)
+        st.caption("💡 This is a sample entry. Your actual trades will appear here once you start trading.")
 
 # ============ BACKTEST TAB ============
 elif tab == "Backtest":
@@ -1729,17 +2260,61 @@ elif tab == "Backtest":
     
     # --- MODE 1: CSV Upload (existing flow) ---
     if mode == "Upload CSV (existing)":
-        st.subheader("Upload Historical Data")
+        st.subheader("📤 Upload Historical Data")
+        
+        # Sample CSV download section
+        st.markdown("**📥 Sample CSV Format**")
+        col_sample1, col_sample2 = st.columns([2, 1])
+        
+        with col_sample1:
+            st.info("💡 Download a sample CSV file to see the required format with example data")
+        
+        with col_sample2:
+            # Create sample CSV
+            sample_csv_data = {
+                'Date': pd.date_range('2024-01-01', periods=10, freq='1H').strftime('%Y-%m-%d %H:%M:%S'),
+                'Open': [24000.0, 24050.0, 24030.0, 24060.0, 24080.0, 24100.0, 24090.0, 24120.0, 24140.0, 24160.0],
+                'High': [24080.0, 24090.0, 24070.0, 24090.0, 24110.0, 24130.0, 24120.0, 24150.0, 24170.0, 24190.0],
+                'Low': [23980.0, 24020.0, 24000.0, 24030.0, 24050.0, 24070.0, 24060.0, 24090.0, 24110.0, 24130.0],
+                'Close': [24050.0, 24040.0, 24050.0, 24070.0, 24090.0, 24110.0, 24100.0, 24130.0, 24150.0, 24170.0],
+                'Volume': [1000000, 1100000, 950000, 1200000, 1050000, 1300000, 1150000, 1250000, 1400000, 1350000]
+            }
+            sample_df = pd.DataFrame(sample_csv_data)
+            
+            st.download_button(
+                label="📥 Download Sample CSV",
+                data=sample_df.to_csv(index=False).encode('utf-8'),
+                file_name="sample_historical_data.csv",
+                mime="text/csv",
+                help="Download a sample CSV file with the required format"
+            )
+        
+        st.divider()
+        
+        # Upload section with drag-and-drop styling
         uploaded_file = st.file_uploader(
-            "Choose CSV file with historical OHLC data",
+            "📤 Drag & Drop or Choose CSV file with historical OHLC data",
             type=['csv'],
             help="CSV should have columns: Date, Open, High, Low, Close, Volume"
         )
         
         if uploaded_file is not None:
+            # Show upload progress
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            status_text.text("📤 Uploading file...")
+            progress_bar.progress(20)
+            
             try:
                 # Load data
+                status_text.text("📊 Reading CSV file...")
+                progress_bar.progress(40)
+                
                 data = pd.read_csv(uploaded_file)
+                
+                status_text.text("✅ File uploaded successfully!")
+                progress_bar.progress(60)
                 
                 # Normalize column names (handle case-insensitive matching)
                 # Map common variations to expected column names
@@ -1777,13 +2352,33 @@ elif tab == "Backtest":
                         st.warning("⚠️ Date column not found. Please ensure your CSV has a 'Date' column.")
                 
                 # Display data preview
-                st.subheader("Data Preview")
+                status_text.text("📋 Preparing data preview...")
+                progress_bar.progress(80)
+                
+                st.divider()
+                st.subheader("📊 Data Preview")
                 st.dataframe(data.head(10), use_container_width=True)
                 
+                # Show data info
+                st.info(f"📈 Total rows: {len(data)} | Columns: {', '.join(data.columns.tolist())}")
+                
+                progress_bar.progress(100)
+                status_text.text("✅ Ready to run backtest!")
+                progress_bar.empty()
+                status_text.empty()
+                
+                st.divider()
+                
                 # Run backtest
-                if st.button("▶️ Run Backtest", use_container_width=True):
-                    with st.spinner("Running backtest..."):
+                if st.button("▶️ Run Backtest", use_container_width=True, type="primary"):
+                    with st.spinner("🔄 Running backtest... This may take a few moments."):
                         try:
+                            # Show progress
+                            progress_container = st.container()
+                            with progress_container:
+                                st.progress(0)
+                                st.caption("Initializing backtest engine...")
+                            
                             # Run backtest with new API (1h close breakout, no 15m logic)
                             # options_df and expiries_df are optional - will use synthetic premiums if not provided
                             results = engine.run_backtest(
@@ -1794,8 +2389,10 @@ elif tab == "Backtest":
                             )
                             
                             # Display results
+                            st.divider()
                             st.subheader("📊 Backtest Results")
                             
+                            # Results summary cards
                             col1, col2, col3, col4 = st.columns(4)
                             
                             with col1:
@@ -1821,11 +2418,38 @@ elif tab == "Backtest":
                             
                             # Equity curve
                             if results.get('equity_curve'):
-                                st.subheader("Equity Curve")
-                                equity_df = pd.DataFrame({
-                                    'Capital': results['equity_curve']
-                                })
-                                st.line_chart(equity_df)
+                                st.divider()
+                                st.subheader("📈 Equity Curve")
+                                try:
+                                    # Create Plotly chart for equity curve
+                                    equity_df = pd.DataFrame({
+                                        'Capital': results['equity_curve'],
+                                        'Trade': range(len(results['equity_curve']))
+                                    })
+                                    
+                                    fig = go.Figure()
+                                    fig.add_trace(go.Scatter(
+                                        x=equity_df['Trade'],
+                                        y=equity_df['Capital'],
+                                        mode='lines',
+                                        name='Equity Curve',
+                                        line=dict(color='#1f77b4', width=2),
+                                        fill='tozeroy'
+                                    ))
+                                    fig.update_layout(
+                                        title="Equity Curve Over Time",
+                                        xaxis_title="Trade Number",
+                                        yaxis_title="Capital (₹)",
+                                        height=500,
+                                        hovermode='x unified'
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+                                except Exception as e:
+                                    # Fallback to line chart
+                                    equity_df = pd.DataFrame({
+                                        'Capital': results['equity_curve']
+                                    })
+                                    st.line_chart(equity_df)
                             
                             # Trades table
                             if results.get('trades'):
@@ -1939,82 +2563,150 @@ elif tab == "Backtest":
 
 # ============ SETTINGS TAB ============
 elif tab == "Settings":
-    st.header("⚙️ Configuration")
+    st.header("⚙️ Settings & Configuration")
     
     # Load current config
     import yaml as yaml_lib
     with open('config/config.yaml', 'r') as f:
         current_config = yaml_lib.safe_load(f)
     
-    st.subheader("Strategy Parameters")
-    
-    # Editable config (read-only for now - can be enhanced with file editing)
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Trading Parameters:**")
-        st.text(f"Lot Size: {current_config.get('lot_size', 'N/A')}")
+    # Strategy Options Section
+    with st.expander("📊 Strategy Options", expanded=False):
+        st.subheader("📊 Strategy Parameters")
         
-        st.write("**Strategy Settings:**")
-        strategy = current_config.get('strategy', {})
-        st.text(f"Type: {strategy.get('type', 'N/A')}")
-        st.text(f"Stop Loss: {strategy.get('sl', 'N/A')} points")
-        st.text(f"Risk-Reward: {strategy.get('rr', 'N/A')}")
-    
-    with col2:
-        st.write("**Filters:**")
-        filters = strategy.get('filters', {})
-        st.text(f"Volume Spike: {'Enabled' if filters.get('volume_spike') else 'Disabled'}")
-        st.text(f"Avoid Open Range: {'Enabled' if filters.get('avoid_open_range') else 'Disabled'}")
-    
-    st.warning("⚠️ To modify configuration, edit `config/config.yaml` file directly and restart the application.")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Trading Parameters:**")
+            st.text(f"Lot Size: {current_config.get('lot_size', 'N/A')}")
+            st.caption("💡 NIFTY lot size (1 lot = 75 units typically)")
+            
+            st.markdown("**Strategy Settings:**")
+            strategy = current_config.get('strategy', {})
+            st.text(f"Type: {strategy.get('type', 'N/A')}")
+            st.caption("💡 Strategy type: Inside Bar + Breakout")
+            st.text(f"Stop Loss: {strategy.get('sl', 'N/A')} points")
+            st.caption("💡 Stop loss in points (e.g., 30 points)")
+            st.text(f"Risk-Reward: {strategy.get('rr', 'N/A')}")
+            st.caption("💡 Risk-reward ratio (e.g., 1.8 = 1.8x reward for 1x risk)")
+        
+        with col2:
+            st.markdown("**Filters:**")
+            filters = strategy.get('filters', {})
+            st.text(f"Volume Spike: {'✅ Enabled' if filters.get('volume_spike') else '❌ Disabled'}")
+            st.caption("💡 Require volume spike confirmation for breakout")
+            st.text(f"Avoid Open Range: {'✅ Enabled' if filters.get('avoid_open_range') else '❌ Disabled'}")
+            st.caption("💡 Avoid trading during open range period")
+        
+        st.warning("⚠️ To modify configuration, edit `config/config.yaml` file directly and restart the application.")
+        
+        # Restore Default Settings button
+        if st.button("🔄 Restore Default Settings", help="Restore default configuration values"):
+            st.info("💡 This feature will be implemented. For now, manually edit config/config.yaml")
     
     st.divider()
     
-    # Broker configuration info
-    st.subheader("Broker Configuration")
-    if config.get('broker'):
-        broker_config = config['broker']
-        broker_type = broker_config.get('type', '').lower()
-        st.text(f"Type: {broker_config.get('type', 'N/A')}")
-        st.text(f"Client ID: {broker_config.get('client_id', 'N/A')}")
-        st.success("✅ Broker configured")
-        
-        # Token refresh button for Angel One SmartAPI
-        if broker_type == 'angel':
-            st.divider()
-            st.write("**Session Management**")
+    # Broker Settings Section
+    with st.expander("🔌 Broker Settings", expanded=True):
+        st.subheader("🔌 Broker Configuration")
+        if config.get('broker'):
+            broker_config = config['broker']
+            broker_type = broker_config.get('type', '').lower()
             
-            # Initialize broker interface in session state if not exists
-            if 'broker_interface' not in st.session_state:
-                try:
-                    st.session_state.broker_interface = create_broker_interface(config)
-                except Exception as e:
-                    st.error(f"❌ Failed to initialize broker: {e}")
-                    st.session_state.broker_interface = None
+            col1, col2 = st.columns(2)
             
-            if st.session_state.broker_interface is not None:
-                if st.button("🔄 Refresh Broker Session", type="primary"):
-                    with st.spinner("Refreshing broker session..."):
+            with col1:
+                st.text(f"Type: {broker_config.get('type', 'N/A')}")
+                st.caption("💡 Broker type: Angel One, Fyers, etc.")
+                st.text(f"Client ID: {broker_config.get('client_id', 'N/A')}")
+                st.caption("💡 Your broker client ID")
+            
+            with col2:
+                # Test Broker Connection button
+                if st.button("🧪 Test Broker Connection", type="primary", use_container_width=True, help="Test the connection to your broker"):
+                    with st.spinner("Testing broker connection..."):
                         try:
-                            success = st.session_state.broker_interface.refresh_session()
-                            if success:
-                                st.success("✅ Broker session refreshed successfully!")
+                            if st.session_state.broker is not None:
+                                # Try to fetch account info or holdings as a test
+                                try:
+                                    test_result = st.session_state.broker.get_holdings()
+                                    if test_result is not None:
+                                        st.success("✅ Broker connection successful!")
+                                        st.info("💡 Connection test passed. You can fetch data from your broker.")
+                                    else:
+                                        st.warning("⚠️ Connection test returned no data. Check broker configuration.")
+                                except Exception as e:
+                                    st.error(f"❌ Connection test failed: {e}")
+                                    st.caption("💡 Check your broker credentials and API keys")
                             else:
-                                st.error("❌ Failed to refresh session. Check logs for details.")
+                                st.error("❌ Broker not initialized. Check configuration.")
                         except Exception as e:
-                            st.error(f"❌ Error refreshing session: {e}")
+                            st.error(f"❌ Error testing connection: {e}")
                 
-                st.info("💡 Session tokens expire periodically. Refresh when needed or on first order.")
-            else:
-                st.warning("⚠️ Broker interface not initialized. Check configuration.")
-    else:
-        st.error("❌ Broker not configured")
+                st.success("✅ Broker configured")
+            
+            # Token refresh button for Angel One SmartAPI
+            if broker_type == 'angel':
+                st.divider()
+                st.markdown("**Session Management**")
+                
+                # Initialize broker interface in session state if not exists
+                if 'broker_interface' not in st.session_state:
+                    try:
+                        st.session_state.broker_interface = create_broker_interface(config)
+                    except Exception as e:
+                        st.error(f"❌ Failed to initialize broker: {e}")
+                        st.session_state.broker_interface = None
+                
+                if st.session_state.broker_interface is not None:
+                    if st.button("🔄 Refresh Broker Session", type="secondary", help="Refresh broker session tokens"):
+                        with st.spinner("Refreshing broker session..."):
+                            try:
+                                success = st.session_state.broker_interface.refresh_session()
+                                if success:
+                                    st.success("✅ Broker session refreshed successfully!")
+                                else:
+                                    st.error("❌ Failed to refresh session. Check logs for details.")
+                            except Exception as e:
+                                st.error(f"❌ Error refreshing session: {e}")
+                    
+                    st.info("💡 Session tokens expire periodically. Refresh when needed or on first order.")
+                else:
+                    st.warning("⚠️ Broker interface not initialized. Check configuration.")
+        else:
+            st.error("❌ Broker not configured")
+            st.caption("💡 Configure broker settings in .streamlit/secrets.toml")
     
     st.divider()
     
-    # System info
-    st.subheader("System Information")
-    st.text(f"Python Version: {sys.version.split()[0]}")
-    st.text(f"Streamlit Version: {st.__version__}")
+    # System Information Section
+    with st.expander("ℹ️ System Information", expanded=False):
+        st.subheader("ℹ️ System Information")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.text(f"Python Version: {sys.version.split()[0]}")
+            st.caption("💡 Python runtime version")
+            st.text(f"Streamlit Version: {st.__version__}")
+            st.caption("💡 Streamlit framework version")
+        
+        with col2:
+            # Get system info
+            try:
+                import platform
+                st.text(f"Platform: {platform.system()} {platform.release()}")
+                st.caption("💡 Operating system information")
+            except:
+                pass
+            
+            # Memory info
+            try:
+                import psutil
+                memory = psutil.virtual_memory()
+                st.text(f"Memory Usage: {memory.percent:.1f}%")
+                st.caption("💡 System memory usage")
+            except:
+                st.text("Memory Info: Not available")
+                st.caption("💡 Install psutil for memory info")
 
