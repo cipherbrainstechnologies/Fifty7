@@ -118,46 +118,50 @@ def load_config():
     """
     Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud).
     Note: Not using @st.cache_data to avoid recursion issues with st.secrets.
+    Returns a dict with all config sections.
     """
     config = {}
     
-    # First, try to load from Streamlit secrets (for Streamlit Cloud)
-    # Access secrets directly without converting to dict (avoids recursion)
-    if hasattr(st, 'secrets'):
-        try:
-            # Access secrets directly - st.secrets is already a dict-like object
-            # We'll access it directly when needed, not convert it
-            if hasattr(st.secrets, '_secrets'):
-                # Internal access method (for debugging)
-                config = st.secrets._secrets
-                logger.info("Loaded config from Streamlit secrets (internal)")
-            else:
-                # Mark that we're using Streamlit secrets
-                # We'll access st.secrets directly later, not convert it
-                config['_from_streamlit_secrets'] = True
-                logger.info("Using Streamlit secrets (direct access)")
-        except Exception as e:
-            logger.warning(f"Could not access Streamlit secrets: {e}")
-    
-    # Fall back to secrets.toml file (for local development)
+    # First, try to load from secrets.toml file (for local development)
     secrets_path = '.streamlit/secrets.toml'
     if os.path.exists(secrets_path):
         if tomllib is None:
             logger.warning("TOML parser not available. Install with: pip install tomli")
-            return config
-        
-        try:
-            with open(secrets_path, 'rb') as file:  # TOML requires binary mode
-                config = tomllib.load(file)
-            logger.info("Loaded config from secrets.toml file")
-            return config
-        except Exception as e:
-            logger.error(f"Error loading secrets.toml: {e}")
-            return config
+        else:
+            try:
+                with open(secrets_path, 'rb') as file:  # TOML requires binary mode
+                    config = tomllib.load(file)
+                logger.info("Loaded config from secrets.toml file")
+                return config
+            except Exception as e:
+                logger.error(f"Error loading secrets.toml: {e}")
     
-    # If neither exists, return empty config (will use fallback auth)
-    logger.warning("No secrets found - using fallback authentication")
+    # For Streamlit Cloud, we'll access st.secrets directly when needed
+    # Don't convert to dict here to avoid recursion
+    # Mark that we're using Streamlit secrets
+    if hasattr(st, 'secrets'):
+        config['_from_streamlit_secrets'] = True
+        logger.info("Using Streamlit secrets (will access directly)")
+    
     return config
+
+# Helper function to safely get config value from either source
+def get_config_value(section, key, default=None):
+    """Safely get config value from secrets.toml or st.secrets"""
+    # First check loaded config dict
+    if section in config and isinstance(config[section], dict):
+        return config[section].get(key, default)
+    
+    # If using Streamlit secrets, access directly
+    if config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
+        try:
+            section_obj = getattr(st.secrets, section, None)
+            if section_obj:
+                return getattr(section_obj, key, default)
+        except Exception:
+            pass
+    
+    return default
 
 # ===================================================================
 # FIREBASE AUTHENTICATION
@@ -424,7 +428,34 @@ if 'algo_running' not in st.session_state:
     st.session_state.algo_running = False
 if 'broker' not in st.session_state:
     try:
-        st.session_state.broker = create_broker_interface(config)
+        # Get broker config safely (from config dict or st.secrets)
+        broker_config_for_interface = config.get('broker', {})
+        
+        # If using Streamlit secrets and broker not in config dict, access directly
+        if not broker_config_for_interface and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
+            try:
+                broker_secrets = getattr(st.secrets, 'broker', None)
+                if broker_secrets:
+                    # Convert to dict safely
+                    broker_config_for_interface = {
+                        'type': getattr(broker_secrets, 'type', 'angel'),
+                        'api_key': getattr(broker_secrets, 'api_key', ''),
+                        'client_id': getattr(broker_secrets, 'client_id', ''),
+                        'username': getattr(broker_secrets, 'username', ''),
+                        'pwd': getattr(broker_secrets, 'pwd', ''),
+                        'token': getattr(broker_secrets, 'token', ''),
+                    }
+            except Exception as e:
+                logger.warning(f"Could not access broker from Streamlit secrets: {e}")
+        
+        # Create broker interface with config that has broker section
+        if broker_config_for_interface:
+            # Ensure config dict has broker section for create_broker_interface
+            temp_config = {'broker': broker_config_for_interface}
+            st.session_state.broker = create_broker_interface(temp_config)
+        else:
+            st.session_state.broker = None
+            logger.warning("No broker configuration found")
     except Exception as e:
         st.session_state.broker = None
         st.warning(f"Broker initialization warning: {e}")
@@ -510,7 +541,17 @@ if tab == "Dashboard":
     with col2:
         # Broker Connected Card
         broker_connected = st.session_state.broker is not None
-        broker_type = config['broker']['type'].capitalize() if config.get('broker') else "Not Configured"
+        # Get broker type safely
+        broker_config = config.get('broker', {})
+        if not isinstance(broker_config, dict) and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
+            try:
+                broker_secrets = getattr(st.secrets, 'broker', None)
+                broker_type = getattr(broker_secrets, 'type', 'Not Configured') if broker_secrets else 'Not Configured'
+            except:
+                broker_type = 'Not Configured'
+        else:
+            broker_type = broker_config.get('type', 'Not Configured') if broker_config else 'Not Configured'
+        broker_type = (broker_type or 'Not Configured').capitalize()
         status_color = "🟢" if broker_connected else "🔴"
         status_text = f"Connected ({broker_type})" if broker_connected else "Not Connected"
         status_bg = "status-green" if broker_connected else "status-red"
@@ -2777,8 +2818,18 @@ elif tab == "Settings":
     # Broker Settings Section
     with st.expander("🔌 Broker Settings", expanded=True):
         st.subheader("🔌 Broker Configuration")
-        if config.get('broker'):
-            broker_config = config['broker']
+        broker_config = config.get('broker', {})
+        if broker_config:
+            # If broker_config is from st.secrets, access it directly
+            if not isinstance(broker_config, dict):
+                try:
+                    broker_config = {
+                        'type': getattr(broker_config, 'type', ''),
+                        'api_key': getattr(broker_config, 'api_key', ''),
+                        'client_id': getattr(broker_config, 'client_id', ''),
+                    }
+                except:
+                    broker_config = {}
             broker_type = broker_config.get('type', '').lower()
             
             col1, col2 = st.columns(2)
@@ -2821,7 +2872,30 @@ elif tab == "Settings":
                 # Initialize broker interface in session state if not exists
                 if 'broker_interface' not in st.session_state:
                     try:
-                        st.session_state.broker_interface = create_broker_interface(config)
+                        # Get broker config safely (from config dict or st.secrets)
+                        broker_config_for_interface = config.get('broker', {})
+                        
+                        # If using Streamlit secrets and broker not in config dict, access directly
+                        if not broker_config_for_interface and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
+                            try:
+                                broker_secrets = getattr(st.secrets, 'broker', None)
+                                if broker_secrets:
+                                    broker_config_for_interface = {
+                                        'type': getattr(broker_secrets, 'type', 'angel'),
+                                        'api_key': getattr(broker_secrets, 'api_key', ''),
+                                        'client_id': getattr(broker_secrets, 'client_id', ''),
+                                        'username': getattr(broker_secrets, 'username', ''),
+                                        'pwd': getattr(broker_secrets, 'pwd', ''),
+                                        'token': getattr(broker_secrets, 'token', ''),
+                                    }
+                            except Exception as e:
+                                logger.warning(f"Could not access broker from Streamlit secrets: {e}")
+                        
+                        if broker_config_for_interface:
+                            temp_config = {'broker': broker_config_for_interface}
+                            st.session_state.broker_interface = create_broker_interface(temp_config)
+                        else:
+                            st.session_state.broker_interface = None
                     except Exception as e:
                         st.error(f"❌ Failed to initialize broker: {e}")
                         st.session_state.broker_interface = None
