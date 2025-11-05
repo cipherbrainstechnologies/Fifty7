@@ -23,19 +23,26 @@ When deploying to Streamlit Cloud, you need to add your Firebase configuration a
 
 ### Step 3: Add Firebase Configuration
 
-Add the following structure to your Streamlit Cloud secrets:
+**IMPORTANT:** Copy and paste this EXACT format into your Streamlit Cloud secrets editor:
 
 ```toml
 [firebase]
-apiKey = "YOUR_FIREBASE_API_KEY"
-authDomain = "YOUR_PROJECT_ID.firebaseapp.com"
-projectId = "YOUR_PROJECT_ID"
-storageBucket = "YOUR_PROJECT_ID.appspot.com"
-messagingSenderId = "YOUR_MESSAGING_SENDER_ID"
-appId = "YOUR_APP_ID"
-databaseURL = "https://YOUR_PROJECT_ID-default-rtdb.firebaseio.com"
-allowedEmail = "your.email@example.com"
+apiKey = "AIzaSyCwXmhHAPwA7SL2u4L8XXyyLlU1Aucb8b4"
+authDomain = "fifty7-2b2eb.firebaseapp.com"
+projectId = "fifty7-2b2eb"
+storageBucket = "fifty7-2b2eb.firebasestorage.app"
+messagingSenderId = "595848198631"
+appId = "1:595848198631:web:d4c5a6c8227e4b66526542"
+databaseURL = "https://fifty7-2b2eb-default-rtdb.firebaseio.com"
+allowedEmail = "lovesinhchauhan1935@gmail.com"
 ```
+
+**Critical Notes:**
+- ✅ Must include `[firebase]` header (with brackets)
+- ✅ No spaces around `=` are required, but spaces are fine
+- ✅ All values must be in quotes
+- ✅ Use your actual values from Firebase Console
+- ✅ Make sure `allowedEmail` matches your Firebase user email
 
 ### Example Secrets File for Streamlit Cloud
 
