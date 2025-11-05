@@ -8,11 +8,16 @@ import streamlit as st
 from logzero import logger
 
 # Optional Firebase imports
+# pyrebase4 package is imported as 'pyrebase' even though package name is 'pyrebase4'
+pyrebase = None
 try:
     import pyrebase
-except ImportError:
+except ImportError as e:
+    # Log the actual error for debugging
+    logger.warning(f"pyrebase4 import failed: {e}")
+    logger.warning("pyrebase4 not installed or incompatible. Install with: pip install pyrebase4")
+    logger.warning("Note: pyrebase4 may have compatibility issues with Python 3.13+. Consider using Python 3.11 or 3.12.")
     pyrebase = None
-    logger.warning("pyrebase4 not installed. Install with: pip install pyrebase4")
 
 try:
     import firebase_admin
