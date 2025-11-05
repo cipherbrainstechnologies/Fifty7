@@ -114,20 +114,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Load configuration
-@st.cache_data
 def load_config():
-    """Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud)"""
+    """
+    Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud).
+    Note: Not using @st.cache_data to avoid recursion issues with st.secrets.
+    """
     config = {}
     
     # First, try to load from Streamlit secrets (for Streamlit Cloud)
-    if hasattr(st, 'secrets') and st.secrets:
+    # Access secrets directly without converting to dict (avoids recursion)
+    if hasattr(st, 'secrets'):
         try:
-            # Convert Streamlit secrets to dict
-            config = dict(st.secrets)
-            logger.info("Loaded config from Streamlit secrets")
-            return config
+            # Access secrets directly - st.secrets is already a dict-like object
+            # We'll access it directly when needed, not convert it
+            if hasattr(st.secrets, '_secrets'):
+                # Internal access method (for debugging)
+                config = st.secrets._secrets
+                logger.info("Loaded config from Streamlit secrets (internal)")
+            else:
+                # Mark that we're using Streamlit secrets
+                # We'll access st.secrets directly later, not convert it
+                config['_from_streamlit_secrets'] = True
+                logger.info("Using Streamlit secrets (direct access)")
         except Exception as e:
-            logger.warning(f"Could not load from Streamlit secrets: {e}")
+            logger.warning(f"Could not access Streamlit secrets: {e}")
     
     # Fall back to secrets.toml file (for local development)
     secrets_path = '.streamlit/secrets.toml'
@@ -160,34 +170,64 @@ config = load_config()
 firebase_auth = None
 allowed_email = None
 try:
-    # Get Firebase config from loaded config (works for both Streamlit Cloud and local)
-    firebase_config = config.get('firebase', {})
+    # Get Firebase config - check Streamlit secrets first, then config dict
+    firebase_config = None
+    
+    # Priority 1: Check Streamlit secrets directly (for Streamlit Cloud)
+    # Access st.secrets directly using attribute access (avoids recursion)
+    if hasattr(st, 'secrets'):
+        try:
+            # Check if firebase section exists using hasattr (safe, no recursion)
+            if hasattr(st.secrets, 'firebase'):
+                firebase_secrets = st.secrets.firebase
+                # Access each key individually using getattr (safe, no recursion)
+                firebase_config = {}
+                
+                # Use getattr with default empty string to avoid recursion
+                for key in ['apiKey', 'authDomain', 'projectId', 'storageBucket', 
+                           'messagingSenderId', 'appId', 'databaseURL', 'allowedEmail']:
+                    try:
+                        value = getattr(firebase_secrets, key, '')
+                        if value:
+                            firebase_config[key] = str(value)
+                    except Exception:
+                        # Skip if key doesn't exist or causes error
+                        pass
+                
+                # Only use if we got at least apiKey
+                if firebase_config.get('apiKey'):
+                    logger.info("Loaded Firebase config from Streamlit secrets")
+                else:
+                    firebase_config = None
+        except Exception as e:
+            logger.warning(f"Error accessing Streamlit secrets: {e}")
+            firebase_config = None
+    
+    # Priority 2: Check config dict (for local development)
+    if not firebase_config:
+        firebase_config = config.get('firebase', {})
+        if firebase_config:
+            logger.info("Loaded Firebase config from secrets.toml file")
     
     # Debug: Check what we have
     if firebase_config:
         logger.info(f"Firebase config found with keys: {list(firebase_config.keys())}")
-        if 'apiKey' in firebase_config:
-            logger.info(f"Firebase apiKey found: {firebase_config['apiKey'][:20]}...")
+        if 'apiKey' in firebase_config and firebase_config.get('apiKey'):
+            logger.info(f"Firebase apiKey found: {str(firebase_config['apiKey'])[:20]}...")
         else:
-            logger.warning("Firebase config found but apiKey is missing")
+            logger.warning("Firebase config found but apiKey is missing or empty")
     else:
-        logger.warning("No Firebase config found in loaded configuration")
-        # Try direct access to st.secrets as fallback
-        if hasattr(st, 'secrets'):
-            try:
-                if 'firebase' in st.secrets:
-                    firebase_config = dict(st.secrets['firebase'])
-                    logger.info("Found Firebase config directly in st.secrets")
-            except Exception as e:
-                logger.error(f"Error accessing st.secrets: {e}")
+        logger.warning("No Firebase config found")
     
     if firebase_config and firebase_config.get('apiKey'):
         try:
-            firebase_auth = FirebaseAuth(firebase_config)
+            # Filter out empty values
+            clean_config = {k: v for k, v in firebase_config.items() if v}
+            firebase_auth = FirebaseAuth(clean_config)
             # Get allowed email from config (restrict to single email)
-            allowed_email = firebase_config.get('allowedEmail', None)
+            allowed_email = clean_config.get('allowedEmail', None)
             if allowed_email:
-                allowed_email = allowed_email.strip().lower()  # Normalize to lowercase
+                allowed_email = str(allowed_email).strip().lower()  # Normalize to lowercase
             logger.info(f"Firebase authentication initialized successfully. Allowed email: {allowed_email}")
         except Exception as e:
             logger.error(f"Failed to initialize FirebaseAuth: {e}")
