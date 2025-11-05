@@ -24,3 +24,6 @@ firebase-admin>=6.2.0
 pyrebase4>=4.7.1
 # Note: pyrebase4 requires requests<2.30 and requests-toolbelt<1.0
 # These constraints are handled above (requests) and will be auto-installed by pyrebase4 (requests-toolbelt)
+# setuptools provides pkg_resources (required by pyrebase4 on Python 3.13)
+# However, Python 3.13 removed pkg_resources, so Python 3.12 is recommended (see runtime.txt)
+setuptools>=65.0.0
