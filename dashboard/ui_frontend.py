@@ -146,7 +146,20 @@ config = load_config()
 firebase_auth = None
 allowed_email = None
 try:
-    firebase_config = config.get('firebase', {})
+    # Try to get Firebase config from Streamlit secrets first (for Streamlit Cloud)
+    # Then fall back to loaded config (for local development)
+    firebase_config = None
+    
+    # Check Streamlit secrets (for Streamlit Cloud deployment)
+    if hasattr(st, 'secrets') and 'firebase' in st.secrets:
+        firebase_config = dict(st.secrets['firebase'])
+        logger.info("Using Firebase config from Streamlit secrets")
+    
+    # Fall back to config file (for local development)
+    if not firebase_config:
+        firebase_config = config.get('firebase', {})
+        logger.info("Using Firebase config from secrets.toml file")
+    
     if firebase_config and firebase_config.get('apiKey'):
         firebase_auth = FirebaseAuth(firebase_config)
         # Get allowed email from config (restrict to single email)
@@ -154,11 +167,24 @@ try:
         if allowed_email:
             allowed_email = allowed_email.strip().lower()  # Normalize to lowercase
     else:
-        st.warning("⚠️ Firebase configuration not found in secrets.toml")
-        st.info("Please add Firebase configuration to continue. Using fallback authentication.")
+        st.warning("⚠️ Firebase configuration not found")
+        st.info("""
+        **Please add Firebase configuration:**
+        
+        **For Streamlit Cloud:**
+        1. Go to your app → Settings → Secrets
+        2. Add Firebase configuration in TOML format
+        
+        **For Local Development:**
+        1. Edit `.streamlit/secrets.toml`
+        2. Add `[firebase]` section with your Firebase config
+        
+        See `STREAMLIT_CLOUD_SETUP.md` for detailed instructions.
+        """)
         firebase_auth = None
 except Exception as e:
     logger.error(f"Failed to initialize Firebase: {e}")
+    st.error(f"Firebase initialization error: {e}")
     firebase_auth = None
 
 # Check authentication status
