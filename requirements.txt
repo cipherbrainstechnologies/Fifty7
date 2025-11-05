@@ -20,4 +20,8 @@ psycopg2-binary>=2.9.0  # PostgreSQL driver (optional, for PostgreSQL databases)
 # Firebase Authentication
 firebase-admin>=6.2.0
 pyrebase4>=4.7.1
+# Additional dependencies for pyrebase4
+gcloud>=0.18.3
+python-jwt>=4.0.0
+requests-toolbelt>=1.0.0
 
