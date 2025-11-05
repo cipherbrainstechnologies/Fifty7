@@ -51,6 +51,8 @@ from engine.signal_handler import SignalHandler
 from engine.backtest_engine import BacktestEngine
 from engine.market_data import MarketDataProvider
 from engine.live_runner import LiveStrategyRunner
+from engine.firebase_auth import FirebaseAuth
+from dashboard.auth_page import render_login_page
 
 # Cloud data source
 try:
@@ -134,28 +136,80 @@ def load_config():
         st.stop()
 
 # ===================================================================
-# AUTHENTICATION TEMPORARILY DISABLED - Bypass due to library bugs
-# ===================================================================
-# TODO: Re-enable authentication once streamlit-authenticator issues are resolved
-# Known issues:
-# - Version 0.4.2: "string indices must be integers" error during password validation
-# - Version 0.2.3: Various API compatibility issues
+# FIREBASE AUTHENTICATION
 # ===================================================================
 
-# Load config (still needed for broker settings, etc.)
+# Load config
 config = load_config()
 
-# Authentication bypass - Set user as "Admin" for now
-name = "Admin"
-username = "admin"
-auth_status = True
+# Initialize Firebase Authentication
+firebase_auth = None
+allowed_email = None
+try:
+    firebase_config = config.get('firebase', {})
+    if firebase_config and firebase_config.get('apiKey'):
+        firebase_auth = FirebaseAuth(firebase_config)
+        # Get allowed email from config (restrict to single email)
+        allowed_email = firebase_config.get('allowedEmail', None)
+        if allowed_email:
+            allowed_email = allowed_email.strip().lower()  # Normalize to lowercase
+    else:
+        st.warning("⚠️ Firebase configuration not found in secrets.toml")
+        st.info("Please add Firebase configuration to continue. Using fallback authentication.")
+        firebase_auth = None
+except Exception as e:
+    logger.error(f"Failed to initialize Firebase: {e}")
+    firebase_auth = None
 
-# Show bypass notice in sidebar
-st.sidebar.warning("⚠️ Authentication disabled - Development mode")
-st.sidebar.info("🔓 Direct access enabled")
+# Check authentication status
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
-# Main Dashboard
-st.sidebar.success(f"👋 Welcome, {name}")
+# If Firebase is configured, require authentication
+if firebase_auth:
+    if not st.session_state.authenticated:
+        # Show login page with email restriction
+        render_login_page(firebase_auth, allowed_email)
+        st.stop()
+    else:
+        # Verify authenticated email matches allowed email (if restricted)
+        user_email = st.session_state.get('user_email', '')
+        if allowed_email and user_email.lower() != allowed_email:
+            st.error(f"❌ Access Denied. Only authorized email ({allowed_email}) can access.")
+            firebase_auth.sign_out()
+            st.session_state.authenticated = False
+            st.session_state.user = None
+            st.session_state.id_token = None
+            st.session_state.refresh_token = None
+            st.session_state.user_email = None
+            st.rerun()
+        
+        # User is authenticated, show dashboard
+        name = user_email.split('@')[0] if '@' in user_email else user_email
+        username = user_email
+        auth_status = True
+        
+        # Add logout button in sidebar
+        with st.sidebar:
+            st.success(f"👋 Welcome, {name}")
+            if allowed_email:
+                st.caption(f"📧 {allowed_email}")
+            if st.button("🚪 Logout", use_container_width=True):
+                firebase_auth.sign_out()
+                st.session_state.authenticated = False
+                st.session_state.user = None
+                st.session_state.id_token = None
+                st.session_state.refresh_token = None
+                st.session_state.user_email = None
+                st.rerun()
+else:
+    # Fallback: No authentication (for development)
+    name = "Admin"
+    username = "admin"
+    auth_status = True
+    st.sidebar.warning("⚠️ Authentication disabled - Development mode")
+    st.sidebar.info("🔓 Direct access enabled")
+    st.sidebar.success(f"👋 Welcome, {name}")
 
 # ===================================================================
 # COMMENTED OUT AUTHENTICATION CODE (for reference)

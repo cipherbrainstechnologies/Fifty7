@@ -17,4 +17,7 @@ plotly>=5.17.0
 # Database dependencies
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0  # PostgreSQL driver (optional, for PostgreSQL databases)
+# Firebase Authentication
+firebase-admin>=6.2.0
+pyrebase4>=4.7.1
 
