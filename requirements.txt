@@ -4,6 +4,8 @@ pandas>=2.1.0
 numpy>=1.24.0
 pyyaml>=6.0
 requests>=2.31.0
+# Note: pyrebase4 requires requests<2.30, but this is handled by pyrebase4's dependencies
+# If pyrebase4 fails, we can pin requests<2.30, but most packages need >=2.31.0
 tomli>=2.0.0; python_version < "3.11"
 tomli-w>=1.0.0; python_version < "3.11"
 smartapi-python
@@ -20,8 +22,6 @@ psycopg2-binary>=2.9.0  # PostgreSQL driver (optional, for PostgreSQL databases)
 # Firebase Authentication
 firebase-admin>=6.2.0
 pyrebase4>=4.7.1
-# Additional dependencies for pyrebase4
-gcloud>=0.18.3
-python-jwt>=4.0.0
-requests-toolbelt>=1.0.0
+# Note: pyrebase4 requires requests<2.30 and requests-toolbelt<1.0
+# These constraints are handled above
 
