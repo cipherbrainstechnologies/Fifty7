@@ -14,4 +14,7 @@ pycryptodome
 s3fs>=2024.3.1
 pyarrow>=15.0.0
 plotly>=5.17.0
+# Database dependencies
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0  # PostgreSQL driver (optional, for PostgreSQL databases)
 

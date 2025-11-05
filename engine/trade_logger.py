@@ -8,11 +8,29 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from decimal import Decimal, InvalidOperation
 
-from sqlalchemy.exc import IntegrityError
-
-from .db import get_session, init_database
-from .models import Trade
 import pandas as pd
+
+# Optional database imports - only used if SQLAlchemy is available
+# CSV logging is primary; DB is best-effort only
+try:
+    from sqlalchemy.exc import IntegrityError
+    try:
+        from .db import get_session, init_database
+        from .models import Trade
+        DB_AVAILABLE = True
+    except ImportError:
+        # Database modules not available (SQLAlchemy not installed or missing deps)
+        get_session = None
+        init_database = None
+        Trade = None
+        DB_AVAILABLE = False
+except ImportError:
+    # SQLAlchemy not installed - DB functionality will be skipped
+    IntegrityError = None
+    get_session = None
+    init_database = None
+    Trade = None
+    DB_AVAILABLE = False
 
 
 class TradeLogger:
@@ -109,6 +127,10 @@ class TradeLogger:
         Requires minimal fields: org_id, user_id, symbol, side(BUY/SELL), quantity, price, traded_at.
         If not present, this is a no-op.
         """
+        # Skip if database dependencies are not available
+        if not DB_AVAILABLE:
+            return
+            
         org_id = trade.get('org_id')
         user_id = trade.get('user_id')
         if not org_id or not user_id:
@@ -169,12 +191,15 @@ class TradeLogger:
             )
             db.add(row)
             db.commit()
-        except IntegrityError:
+        except Exception as e:
             db.rollback()
-            # Idempotent duplicate; ignore
-        except Exception:
-            db.rollback()
-            raise
+            # Check if it's an IntegrityError (duplicate/constraint violation) - idempotent, ignore
+            if IntegrityError and isinstance(e, IntegrityError):
+                # Idempotent duplicate; ignore
+                pass
+            else:
+                # Re-raise other exceptions
+                raise
         finally:
             try:
                 next(sess_gen)
