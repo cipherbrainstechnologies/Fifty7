@@ -49,7 +49,11 @@ class FirebaseAuth:
     def _initialize_firebase(self):
         """Initialize Firebase app and auth"""
         if pyrebase is None:
-            raise ImportError("pyrebase4 not installed. Install with: pip install pyrebase4")
+            error_msg = (
+                "pyrebase4 not installed. Install with: pip install pyrebase4\n"
+                "For Streamlit Cloud: Make sure requirements.txt includes pyrebase4>=4.7.1 and redeploy."
+            )
+            raise ImportError(error_msg)
         
         try:
             # Initialize Pyrebase for client-side operations

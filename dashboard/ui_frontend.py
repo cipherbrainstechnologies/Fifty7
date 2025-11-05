@@ -233,9 +233,31 @@ try:
             if allowed_email:
                 allowed_email = str(allowed_email).strip().lower()  # Normalize to lowercase
             logger.info(f"Firebase authentication initialized successfully. Allowed email: {allowed_email}")
+        except ImportError as e:
+            # Missing dependency error
+            error_msg = str(e)
+            logger.error(f"Firebase dependency missing: {error_msg}")
+            st.error("⚠️ Firebase Authentication Unavailable")
+            st.warning("""
+            **Missing Dependency: pyrebase4**
+            
+            Firebase authentication requires `pyrebase4` to be installed.
+            
+            **For Streamlit Cloud:**
+            1. Make sure `requirements.txt` includes: `pyrebase4>=4.7.1`
+            2. Commit and push your changes
+            3. Streamlit Cloud will auto-redeploy and install dependencies
+            
+            **If already in requirements.txt:**
+            - Check deployment logs for installation errors
+            - Try manually triggering a redeploy: Settings → "Reboot app"
+            - Verify the package name is correct: `pyrebase4` (not `pyrebase`)
+            """)
+            firebase_auth = None
         except Exception as e:
             logger.error(f"Failed to initialize FirebaseAuth: {e}")
             st.error(f"Firebase initialization error: {e}")
+            st.exception(e)  # Show full error for debugging
             firebase_auth = None
     else:
         # Show helpful error message
