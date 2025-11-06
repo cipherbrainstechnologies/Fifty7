@@ -12,16 +12,22 @@ from typing import List, Optional, Dict, Tuple
 from logzero import logger
 
 
-def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
+def detect_inside_bar(data_1h: pd.DataFrame, tighten_signal: bool = True) -> List[int]:
     """
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
     Detect Inside Bar patterns in 1-hour timeframe data.
     
     An Inside Bar is when a candle is completely contained within 
     the previous candle's high and low range.
     
+    NEW: Supports "range tightening" - if a newer inside bar has a tighter range than
+    the previous one, it replaces the older reference. This ensures we always use the
+    most recent and tightest consolidation pattern.
+    
     Args:
         data_1h: DataFrame with OHLC data for 1-hour timeframe
                  Must have columns: ['High', 'Low', 'Open', 'Close', 'Date']
+        tighten_signal: If True, update to newer/tighter inside bars (default: True for live)
     
     Returns:
         List of indices where Inside Bar patterns are detected
@@ -32,9 +38,13 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
         logger.debug("Insufficient data for Inside Bar detection (need at least 2 candles)")
         return inside_bars
     
-    logger.info(f"🔍 Starting Inside Bar detection scan on {len(data_1h)} 1-hour candles")
+    logger.info(f"🔍 Starting Inside Bar detection scan on {len(data_1h)} 1-hour candles (tighten_signal={tighten_signal})")
     
-    # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+    # Track the latest inside bar for range tightening comparison
+    latest_inside_bar_idx = None
+    latest_inside_bar_range = None
+    
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
     # Changed iteration start from index 2 to index 1 to check latest candle pair immediately
     # This allows detection of inside bars on the most recent candle pair without waiting
     for i in range(1, len(data_1h)):
@@ -78,12 +88,49 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
         )
         
         if is_inside:
-            logger.info(
-                f"✅ Inside Bar detected at {current_time} | "
-                f"High: {current_high:.2f} < {prev_high:.2f}, Low: {current_low:.2f} > {prev_low:.2f} | "
-                f"Within range: {prev_low:.2f} - {prev_high:.2f}"
-            )
-            inside_bars.append(i)
+            # Calculate range width for tightening comparison
+            current_range_width = current_high - current_low
+            
+            # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+            # Range tightening logic: if enabled and we have a previous inside bar,
+            # only keep this one if it's tighter (narrower range) than the previous
+            should_add = True
+            if tighten_signal and latest_inside_bar_idx is not None:
+                prev_inside_high = data_1h['High'].iloc[latest_inside_bar_idx]
+                prev_inside_low = data_1h['Low'].iloc[latest_inside_bar_idx]
+                prev_range_width = prev_inside_high - prev_inside_low
+                
+                # Check if new inside bar is tighter (narrower range)
+                if current_range_width < prev_range_width:
+                    logger.info(
+                        f"🔄 Updating to tighter inside bar: "
+                        f"New range width {current_range_width:.2f} < Previous {prev_range_width:.2f}"
+                    )
+                    # Remove old inside bar and add new one
+                    if latest_inside_bar_idx in inside_bars:
+                        inside_bars.remove(latest_inside_bar_idx)
+                    should_add = True
+                    latest_inside_bar_idx = i
+                    latest_inside_bar_range = current_range_width
+                else:
+                    # Keep existing inside bar (it's tighter)
+                    logger.debug(
+                        f"📌 Keeping previous inside bar (tighter): "
+                        f"Current range {current_range_width:.2f} >= Previous {prev_range_width:.2f}"
+                    )
+                    should_add = False
+            else:
+                # First inside bar or tighten_signal=False
+                latest_inside_bar_idx = i
+                latest_inside_bar_range = current_range_width
+            
+            if should_add:
+                logger.info(
+                    f"✅ Inside Bar detected at {current_time} | "
+                    f"High: {current_high:.2f} < {prev_high:.2f}, Low: {current_low:.2f} > {prev_low:.2f} | "
+                    f"Within range: {prev_low:.2f} - {prev_high:.2f} | Range width: {current_range_width:.2f}"
+                )
+                inside_bars.append(i)
         else:
             # Log detailed reason if not inside
             if not high_check and not low_check:
@@ -109,13 +156,16 @@ def confirm_breakout(
     range_high: float,
     range_low: float,
     inside_bar_idx: int,
-    volume_threshold_multiplier: float = 1.0
+    volume_threshold_multiplier: float = 1.0,
+    symbol: str = "NIFTY"
 ) -> Optional[str]:
     """
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
     Confirm breakout on 1-hour timeframe with volume validation.
     Checks candles AFTER the inside bar for breakout confirmation.
     
     IMPORTANT: Only uses 1-hour data - no 15-minute breakouts.
+    NEW: Skips volume confirmation for NIFTY index (volume often 0 or NaN for index)
     
     Args:
         data_1h: DataFrame with OHLCV data for 1-hour timeframe
@@ -124,6 +174,7 @@ def confirm_breakout(
         range_low: Lower bound of the Inside Bar range
         inside_bar_idx: Index of the inside bar candle
         volume_threshold_multiplier: Multiplier for volume average (default: 1.0)
+        symbol: Symbol name (default: "NIFTY") - used to skip volume check for index
     
     Returns:
         "CE" for Call option (bullish breakout)
@@ -145,6 +196,10 @@ def confirm_breakout(
     # Use up to last 3 candles after inside bar for confirmation
     recent = candles_after.tail(min(3, len(candles_after)))
     
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+    # Skip volume confirmation for NIFTY index (volume often 0 or NaN)
+    skip_volume_check = (symbol == "NIFTY" or symbol.startswith("NIFTY"))
+    
     # Calculate average volume for volume confirmation
     # Use volume from reference period (candles before and including inside bar)
     volume_period = data_1h.iloc[max(0, inside_bar_idx - 10):inside_bar_idx + 1]
@@ -155,6 +210,11 @@ def confirm_breakout(
         # Fallback: use recent candles average if volume not available
         avg_volume = recent['Volume'].mean() if 'Volume' in recent.columns else 0
         volume_threshold = avg_volume * volume_threshold_multiplier
+    
+    # If NIFTY, force volume threshold to 0 (always pass volume check)
+    if skip_volume_check:
+        logger.debug(f"Skipping volume confirmation for {symbol} (index symbol)")
+        volume_threshold = 0  # Will always pass vol > threshold check
     
     logger.debug(
         f"🔍 Checking 1H breakout on {len(recent)} candles after inside bar | "
@@ -178,20 +238,20 @@ def confirm_breakout(
             candle_time = f"Candle_{i}"
         
         # Bullish breakout (Call option) - close above range high with volume confirmation
-        if close > range_high and vol > volume_threshold:
+        if close > range_high and (vol > volume_threshold or skip_volume_check):
             logger.info(
                 f"✅ Bullish breakout (CE) confirmed on 1H at {candle_time} | "
                 f"Close: {close:.2f} > Range High: {range_high:.2f} | "
-                f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
+                f"Volume: {vol:.0f} {'(skipped)' if skip_volume_check else f'> Threshold: {volume_threshold:.0f}'}"
             )
             return "CE"
         
         # Bearish breakout (Put option) - close below range low with volume confirmation
-        elif close < range_low and vol > volume_threshold:
+        elif close < range_low and (vol > volume_threshold or skip_volume_check):
             logger.info(
                 f"✅ Bearish breakout (PE) confirmed on 1H at {candle_time} | "
                 f"Close: {close:.2f} < Range Low: {range_low:.2f} | "
-                f"Volume: {vol:.0f} > Threshold: {volume_threshold:.0f}"
+                f"Volume: {vol:.0f} {'(skipped)' if skip_volume_check else f'> Threshold: {volume_threshold:.0f}'}"
             )
             return "PE"
         
@@ -302,7 +362,9 @@ def check_for_signal(
         logger.debug("15m data provided but not used - only 1H breakouts are processed")
     
     # Detect Inside Bar patterns
-    inside_bars = detect_inside_bar(data_1h)
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+    # Pass tighten_signal=True to enable range tightening (use newest/tightest inside bar)
+    inside_bars = detect_inside_bar(data_1h, tighten_signal=True)
     
     if not inside_bars:
         logger.debug(f"No Inside Bar patterns detected in {len(data_1h)} 1H candles")
@@ -363,12 +425,15 @@ def check_for_signal(
         )
     
     # Check for breakout confirmation on 1H timeframe (ONLY 1H - no 15m)
+    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+    # Pass symbol="NIFTY" to skip volume confirmation for index
     direction = confirm_breakout(
         data_1h,
         range_high,
         range_low,
         latest_inside_bar_idx,  # Pass inside bar index
-        volume_threshold_multiplier=1.0
+        volume_threshold_multiplier=1.0,
+        symbol="NIFTY"  # Skip volume check for NIFTY index
     )
     
     if direction is None:

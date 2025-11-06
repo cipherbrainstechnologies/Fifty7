@@ -7,6 +7,7 @@ from typing import Dict, Optional
 from datetime import datetime, timedelta
 import time
 from logzero import logger
+import pytz
 
 # Retry configuration for resilient API calls
 MAX_RETRIES = 3
@@ -679,23 +680,59 @@ class MarketDataProvider:
         
         return aggregated
     
+    def get_last_closed_hour_end(self) -> pd.Timestamp:
+        """
+        # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+        Get the end time of the last closed 1-hour candle aligned to NSE trading hours.
+        NSE 1H candles close at: 10:15, 11:15, 12:15, 13:15, 14:15, 15:15 (market close)
+        
+        Returns:
+            Timestamp of last closed 1H candle end time (IST timezone-aware)
+        """
+        ist = pytz.timezone('Asia/Kolkata')
+        now = pd.Timestamp.now(tz=ist)
+        
+        # Market opens at 09:15, first 1H candle closes at 10:15
+        # Subsequent candles close at 11:15, 12:15, 13:15, 14:15, 15:15
+        # Each 1H candle starts at XX:15 and closes at (XX+1):15
+        
+        # Floor to hour and add 15 minutes to get next potential candle close
+        hour_floor = now.floor('60min')
+        next_close_candidate = hour_floor + pd.Timedelta(minutes=15)
+        
+        # If current time is >= next_close_candidate, that's the last closed candle
+        if now >= next_close_candidate:
+            return next_close_candidate
+        else:
+            # Otherwise, go back one hour
+            return next_close_candidate - pd.Timedelta(hours=1)
+    
     def _aggregate_to_1h(self, raw_data: pd.DataFrame) -> pd.DataFrame:
         """
-        Aggregate raw data into 1-hour candles.
-        Can aggregate from 1-minute or 15-minute data.
+        # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+        Aggregate raw data into 1-hour candles aligned to NSE trading hours.
+        NSE 1H candles: 09:15-10:15, 10:15-11:15, ..., 14:15-15:15
         
         Args:
             raw_data: DataFrame with candles (1m or 15m)
         
         Returns:
-            DataFrame with 1-hour candles
+            DataFrame with 1-hour candles (NSE-aligned)
         """
         if raw_data.empty:
             return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
         
-        # Ensure Date is datetime
+        # Ensure Date is datetime and timezone-aware (Asia/Kolkata)
         if not pd.api.types.is_datetime64_any_dtype(raw_data['Date']):
             raw_data['Date'] = pd.to_datetime(raw_data['Date'])
+        
+        # Make timezone-aware if not already
+        if raw_data['Date'].dt.tz is None:
+            ist = pytz.timezone('Asia/Kolkata')
+            raw_data['Date'] = raw_data['Date'].dt.tz_localize(ist)
+        else:
+            # Convert to IST if in different timezone
+            raw_data['Date'] = raw_data['Date'].dt.tz_convert('Asia/Kolkata')
         
         # Drop duplicates by Date (keep first occurrence)
         raw_data = raw_data.drop_duplicates(subset=['Date'], keep='first')
@@ -710,8 +747,11 @@ class MarketDataProvider:
         # Set Date as index for resampling
         df = raw_data.set_index('Date').copy()
         
-        # Resample to 1 hour
-        aggregated = df.resample('1h').agg({
+        # Resample to 1 hour with NSE alignment
+        # origin="start_day" means start from 00:00 of the day
+        # offset="15min" shifts the bucket boundaries by 15 minutes
+        # Result: candles close at 00:15, 01:15, ..., 09:15, 10:15, 11:15, ..., 15:15
+        aggregated = df.resample('60min', origin='start_day', offset='15min').agg({
             'Open': 'first',
             'High': 'max',
             'Low': 'min',
@@ -725,6 +765,10 @@ class MarketDataProvider:
         
         # Remove rows with NaN (incomplete candles)
         aggregated = aggregated.dropna()
+        
+        logger.debug(f"Aggregated to {len(aggregated)} 1H candles (NSE-aligned: closes at XX:15)")
+        if not aggregated.empty:
+            logger.debug(f"First 1H candle: {aggregated['Date'].iloc[0]}, Last 1H candle: {aggregated['Date'].iloc[-1]}")
         
         return aggregated
     
