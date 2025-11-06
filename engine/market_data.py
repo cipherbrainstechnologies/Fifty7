@@ -728,7 +728,7 @@ class MarketDataProvider:
         
         return aggregated
     
-    def get_1h_data(self, window_hours: int = 48, use_direct_interval: bool = True) -> pd.DataFrame:
+    def get_1h_data(self, window_hours: int = 48, use_direct_interval: bool = True, include_latest: bool = False) -> pd.DataFrame:
         """
         Get 1-hour aggregated data.
         Tries direct ONE_HOUR interval first, falls back to resampling from ONE_MINUTE if needed.
@@ -736,10 +736,14 @@ class MarketDataProvider:
         Args:
             window_hours: Number of hours of data to return (default: 48)
             use_direct_interval: If True, try fetching ONE_HOUR directly first (default: True)
+            include_latest: If True, include the current (incomplete) candle for live mode (default: False)
+                           When False, only complete candles are returned (for backtesting)
         
         Returns:
             DataFrame with 1-hour OHLC candles
         """
+        # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+        # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
         current_time = datetime.now()
         to_time = current_time - timedelta(minutes=5)
@@ -761,15 +765,21 @@ class MarketDataProvider:
                     self._data_1h = self._data_1h.tail(window_hours).copy()
                     logger.debug(f"Trimmed to {window_hours} most recent 1-hour candles")
                 
-                # Exclude incomplete candles and return
+                # Exclude incomplete candles and return (unless include_latest=True for live mode)
                 all_candles = self._data_1h.copy()
-                complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
-                if len(complete_candles) < len(all_candles):
-                    excluded_count = len(all_candles) - len(complete_candles)
-                    logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
-                if complete_candles.empty:
-                    logger.warning("No complete 1-hour candles available after filtering")
-                return complete_candles
+                if include_latest:
+                    # Live mode: return all candles including incomplete latest candle
+                    logger.debug("include_latest=True: Returning all candles including incomplete latest candle")
+                    return all_candles
+                else:
+                    # Backtest mode: only return complete candles
+                    complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
+                    if len(complete_candles) < len(all_candles):
+                        excluded_count = len(all_candles) - len(complete_candles)
+                        logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
+                    if complete_candles.empty:
+                        logger.warning("No complete 1-hour candles available after filtering")
+                    return complete_candles
             else:
                 logger.info("Direct ONE_HOUR fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
         
@@ -821,24 +831,29 @@ class MarketDataProvider:
                     self._data_1h = self._data_1h.drop_duplicates(subset=['Date'], keep='last')
                     self._data_1h = self._data_1h.sort_values('Date').reset_index(drop=True)
         
-        # Get all candles and filter to complete ones only
+        # Get all candles and filter to complete ones only (unless include_latest=True for live mode)
         all_candles = self._data_1h.tail(window_hours).copy() if not self._data_1h.empty else pd.DataFrame(
             columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         )
         
-        # Exclude incomplete candles (1-hour timeframe = 60 minutes)
-        complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
-        
-        if len(complete_candles) < len(all_candles):
-            excluded_count = len(all_candles) - len(complete_candles)
-            logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
-        
-        if complete_candles.empty:
-            logger.warning("No complete 1-hour candles available after filtering")
-        
-        return complete_candles
+        if include_latest:
+            # Live mode: return all candles including incomplete latest candle
+            logger.debug("include_latest=True: Returning all candles including incomplete latest candle")
+            return all_candles
+        else:
+            # Backtest mode: exclude incomplete candles (1-hour timeframe = 60 minutes)
+            complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=60)
+            
+            if len(complete_candles) < len(all_candles):
+                excluded_count = len(all_candles) - len(complete_candles)
+                logger.info(f"Excluded {excluded_count} incomplete 1-hour candle(s) from strategy data")
+            
+            if complete_candles.empty:
+                logger.warning("No complete 1-hour candles available after filtering")
+            
+            return complete_candles
     
-    def get_15m_data(self, window_hours: int = 12, use_direct_interval: bool = True) -> pd.DataFrame:
+    def get_15m_data(self, window_hours: int = 12, use_direct_interval: bool = True, include_latest: bool = False) -> pd.DataFrame:
         """
         Get 15-minute aggregated data.
         Tries direct FIFTEEN_MINUTE interval first, falls back to resampling from ONE_MINUTE if needed.
@@ -846,10 +861,14 @@ class MarketDataProvider:
         Args:
             window_hours: Number of hours of data to return (default: 12)
             use_direct_interval: If True, try fetching FIFTEEN_MINUTE directly first (default: True)
+            include_latest: If True, include the current (incomplete) candle for live mode (default: False)
+                           When False, only complete candles are returned (for backtesting)
         
         Returns:
             DataFrame with 15-minute OHLC candles
         """
+        # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+        # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
         current_time = datetime.now()
         to_time = current_time - timedelta(minutes=5)
@@ -872,15 +891,21 @@ class MarketDataProvider:
                     self._data_15m = self._data_15m.tail(max_candles).copy()
                     logger.debug(f"Trimmed to {max_candles} most recent 15-minute candles")
                 
-                # Exclude incomplete candles and return
+                # Exclude incomplete candles and return (unless include_latest=True for live mode)
                 all_candles = self._data_15m.copy()
-                complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
-                if len(complete_candles) < len(all_candles):
-                    excluded_count = len(all_candles) - len(complete_candles)
-                    logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
-                if complete_candles.empty:
-                    logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
-                return complete_candles
+                if include_latest:
+                    # Live mode: return all candles including incomplete latest candle
+                    logger.debug("include_latest=True: Returning all candles including incomplete latest candle")
+                    return all_candles
+                else:
+                    # Backtest mode: only return complete candles
+                    complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
+                    if len(complete_candles) < len(all_candles):
+                        excluded_count = len(all_candles) - len(complete_candles)
+                        logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
+                    if complete_candles.empty:
+                        logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
+                    return complete_candles
             else:
                 logger.info("Direct FIFTEEN_MINUTE fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
         
@@ -936,23 +961,28 @@ class MarketDataProvider:
                     self._data_15m = self._data_15m.drop_duplicates(subset=['Date'], keep='last')
                     self._data_15m = self._data_15m.sort_values('Date').reset_index(drop=True)
         
-        # Get all candles and filter to complete ones only
+        # Get all candles and filter to complete ones only (unless include_latest=True for live mode)
         max_candles = (window_hours * 60) // 15
         all_candles = self._data_15m.tail(max_candles).copy() if not self._data_15m.empty else pd.DataFrame(
             columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         )
         
-        # Exclude incomplete candles (15-minute timeframe)
-        complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
-        
-        if len(complete_candles) < len(all_candles):
-            excluded_count = len(all_candles) - len(complete_candles)
-            logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
-        
-        if complete_candles.empty:
-            logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
-        
-        return complete_candles
+        if include_latest:
+            # Live mode: return all candles including incomplete latest candle
+            logger.debug("include_latest=True: Returning all candles including incomplete latest candle")
+            return all_candles
+        else:
+            # Backtest mode: exclude incomplete candles (15-minute timeframe)
+            complete_candles = self._get_complete_candles(all_candles, timeframe_minutes=15)
+            
+            if len(complete_candles) < len(all_candles):
+                excluded_count = len(all_candles) - len(complete_candles)
+                logger.info(f"Excluded {excluded_count} incomplete 15-minute candle(s) from strategy data")
+            
+            if complete_candles.empty:
+                logger.warning("No complete 15-minute candles available after filtering. Consider waiting 5-10 minutes for new candles to form.")
+            
+            return complete_candles
     
     def refresh_data(self):
         """
