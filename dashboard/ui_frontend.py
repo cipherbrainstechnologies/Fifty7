@@ -2259,8 +2259,7 @@ elif tab == "Backtest":
         mode = "Upload CSV (existing)"
         st.info("ℹ️ Cloud data source not available. Install dependencies: `pip install s3fs>=2024.3.1 pyarrow>=15.0.0`")
     
-    # Common parameters (shown for both modes)
-    st.subheader("Backtest Parameters")
+    st.divider()
     
     # Load config for defaults
     import yaml as yaml_lib
@@ -2268,7 +2267,8 @@ elif tab == "Backtest":
         strategy_config = yaml_lib.safe_load(f)
     pm_config = strategy_config.get('position_management', {})
     
-    # First row: Capital, Lot Size, SL Points
+    # ========== ESSENTIAL PARAMETERS (always visible at top) ==========
+    st.subheader("⚙️ Essential Parameters")
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -2307,23 +2307,27 @@ elif tab == "Backtest":
     if initial_capital < estimated_capital_required:
         st.warning(f"⚠️ Available capital (₹{initial_capital:,.0f}) is less than estimated capital required (₹{estimated_capital_required:,.0f}). You may not have sufficient capital to execute trades.")
     
-    # Strike Selection Row
-    st.write("**Strike Selection:**")
-    strike_selection = st.selectbox(
-        "Strike Price",
-        options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
-        index=0,
-        help="Select strike price relative to ATM:\n"
-             "- ATM 0: At The Money (nearest 50 to spot)\n"
-             "- ITM 1/2/3: In The Money (closer to spot)\n"
-             "- OTM 1/2/3: Out The Money (away from spot)\n"
-             "For CE: ITM = lower strike, OTM = higher strike\n"
-             "For PE: ITM = higher strike, OTM = lower strike"
-    )
+    st.divider()
     
-    # Second row: Position Management Parameters (always visible)
-    st.write("**Position Management:**")
-    col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
+    # ========== ADVANCED PARAMETERS (collapsible to reduce scrolling) ==========
+    with st.expander("📊 Advanced Strategy Parameters (click to expand)", expanded=False):
+        # Strike Selection Row
+        st.write("**Strike Selection:**")
+        strike_selection = st.selectbox(
+            "Strike Price",
+            options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
+            index=0,
+            help="Select strike price relative to ATM:\n"
+                 "- ATM 0: At The Money (nearest 50 to spot)\n"
+                 "- ITM 1/2/3: In The Money (closer to spot)\n"
+                 "- OTM 1/2/3: Out The Money (away from spot)\n"
+                 "For CE: ITM = lower strike, OTM = higher strike\n"
+                 "For PE: ITM = higher strike, OTM = lower strike"
+        )
+        
+        # Second row: Position Management Parameters
+        st.write("**Position Management:**")
+        col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
     
     with col_pm1:
         sl_points_main = st.number_input(
@@ -2811,11 +2815,75 @@ elif tab == "Backtest":
             'portfolio_risk_cap_pct': 4.0,
             'max_concurrent_positions': int(max_concurrent)
         }
+        }  # Close advanced parameters expander
+    
+    # Build backtest config OUTSIDE the expander (using values captured above)
+    backtest_config_dict = {
+        'strategy': {
+            'type': 'inside_bar_breakout',
+            'sl': int(sl_points_main),
+            'rr': 1.8,
+            'premium_sl_pct': float(sl_pct),
+            'lock1_gain_pct': 60.0,
+            'lock2_gain_pct': 80.0,
+            'lock3_gain_pct': 100.0,
+            'use_atr_filter': bool(use_atr_filter),
+            'use_regime_filter': bool(use_regime_filter),
+            'use_distance_guard': bool(use_distance_guard),
+            'use_tiered_exits': bool(use_tiered_exits),
+            'use_expiry_protocol': bool(use_expiry_protocol),
+            'use_directional_sizing': bool(use_directional_sizing),
+            'atr_floor_pct_1h': float(atr_floor_pct),
+            'ema_slope_len': int(ema_slope_len),
+            'distance_guard_atr': float(distance_guard_atr),
+            'adx_min': 0.0,
+            'vol_bands': {
+                'low': float(vol_low),
+                'high': float(vol_high)
+            },
+            'premium_sl_pct_low': float(prem_sl_low),
+            'premium_sl_pct_norm': float(prem_sl_norm),
+            'premium_sl_pct_high': float(prem_sl_high),
+            'be_at_r': float(be_at_r),
+            'trail_lookback': int(trail_lookback),
+            'trail_mult': float(trail_mult),
+            'swing_lock': True,
+            't1_r': float(t1_r),
+            't1_book': float(t1_book_pct),
+            't2_r': float(t2_r),
+            't2_book': float(t2_book_pct),
+            'no_new_after': str(no_new_after),
+            'force_partial_by': str(force_partial_by),
+            'tighten_trail_days_to_expiry': float(tighten_days),
+            'tighten_mult_factor': 1.3
+        },
+        'position_management': {
+            'sl_points': int(sl_points_config),
+            'trail_points': int(trail_points_config),
+            'book1_points': int(book1_points_config),
+            'book2_points': int(book2_points_config),
+            'book1_ratio': float(book1_ratio_config)
+        },
+        'sizing': {
+            'risk_per_trade_pct': float(risk_per_trade_pct),
+            'pe_size_cap_vs_ce': float(pe_size_cap_vs_ce),
+            'portfolio_risk_cap_pct': 4.0,
+            'max_concurrent_positions': int(max_concurrent)
+        },
+        'initial_capital': initial_capital,
+        'lot_size': lot_size,
+        'strike_selection': strike_selection,
+        'strike_offset_base': strike_offset_base,
+        'strike_is_itm': strike_is_itm,
+        'strike_is_otm': strike_is_otm
     }
     
     # Initialize engine (used by both modes)
-    engine = BacktestEngine(backtest_config)
+    engine = BacktestEngine(backtest_config_dict)
     
+    st.divider()
+    
+    # ========== DATA INPUT & RUN SECTION (at top, visible immediately) ==========
     # --- MODE 1: CSV Upload (existing flow) ---
     if mode == "Upload CSV (existing)":
         st.subheader("📤 Upload Historical Data")
@@ -3002,6 +3070,57 @@ elif tab == "Backtest":
                             st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
                             st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                             
+                            # ========== CAPITAL ANALYSIS (backtest-only) ==========
+                            st.divider()
+                            st.subheader("💰 Capital Analysis")
+                            
+                            # Average capital required per trade
+                            avg_cap_req = results.get('avg_capital_required', 0.0)
+                            st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
+                            
+                            # Capital exhaustion warning
+                            if results.get('capital_exhausted', False):
+                                trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
+                                st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
+                                st.warning(
+                                    f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
+                                    f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
+                                    f"Consider:\n"
+                                    f"- Increasing initial capital\n"
+                                    f"- Reducing position size\n"
+                                    f"- Tightening stop losses\n"
+                                    f"- Reviewing strategy parameters"
+                                )
+                            else:
+                                st.success("✅ Capital remained positive throughout the backtest period")
+                            
+                            # ========== TRAILING STOP LOSS ANALYSIS (backtest-only) ==========
+                            st.divider()
+                            st.subheader("🎯 Trailing Stop Loss Analysis")
+                            
+                            trail_exit_count = results.get('winning_trades_trail_exit', 0)
+                            trail_exit_pct = results.get('trail_exit_pct_of_winners', 0.0)
+                            winning_trades = results.get('winning_trades', 0)
+                            
+                            col_trail1, col_trail2 = st.columns(2)
+                            with col_trail1:
+                                st.metric("Winning Trades Cut by Trail SL", trail_exit_count)
+                            with col_trail2:
+                                st.metric("% of Winning Trades", f"{trail_exit_pct:.1f}%")
+                            
+                            if trail_exit_count > 0:
+                                st.info(
+                                    f"📊 **{trail_exit_count} out of {winning_trades} winning trades** "
+                                    f"({trail_exit_pct:.1f}%) were exited due to trailing stop loss. "
+                                    f"This means the trailing SL locked in profits before hitting take profit or time exit. "
+                                    f"Consider:\n"
+                                    f"- Loosening trailing SL if too many profits are being cut short\n"
+                                    f"- Tightening trailing SL if you want to protect more gains\n"
+                                    f"- Analyzing if the trail settings match market volatility"
+                                )
+                            else:
+                                st.write("ℹ️ No winning trades were cut by trailing stop loss.")
+                            
                             # Equity curve
                             if results.get('equity_curve'):
                                 st.divider()
@@ -3163,9 +3282,61 @@ elif tab == "Backtest":
                     st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
                     st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                     
+                    # ========== CAPITAL ANALYSIS (backtest-only) ==========
+                    st.divider()
+                    st.subheader("💰 Capital Analysis")
+                    
+                    # Average capital required per trade
+                    avg_cap_req = results.get('avg_capital_required', 0.0)
+                    st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
+                    
+                    # Capital exhaustion warning
+                    if results.get('capital_exhausted', False):
+                        trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
+                        st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
+                        st.warning(
+                            f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
+                            f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
+                            f"Consider:\n"
+                            f"- Increasing initial capital\n"
+                            f"- Reducing position size\n"
+                            f"- Tightening stop losses\n"
+                            f"- Reviewing strategy parameters"
+                        )
+                    else:
+                        st.success("✅ Capital remained positive throughout the backtest period")
+                    
+                    # ========== TRAILING STOP LOSS ANALYSIS (backtest-only) ==========
+                    st.divider()
+                    st.subheader("🎯 Trailing Stop Loss Analysis")
+                    
+                    trail_exit_count = results.get('winning_trades_trail_exit', 0)
+                    trail_exit_pct = results.get('trail_exit_pct_of_winners', 0.0)
+                    winning_trades = results.get('winning_trades', 0)
+                    
+                    col_trail1, col_trail2 = st.columns(2)
+                    with col_trail1:
+                        st.metric("Winning Trades Cut by Trail SL", trail_exit_count)
+                    with col_trail2:
+                        st.metric("% of Winning Trades", f"{trail_exit_pct:.1f}%")
+                    
+                    if trail_exit_count > 0:
+                        st.info(
+                            f"📊 **{trail_exit_count} out of {winning_trades} winning trades** "
+                            f"({trail_exit_pct:.1f}%) were exited due to trailing stop loss. "
+                            f"This means the trailing SL locked in profits before hitting take profit or time exit. "
+                            f"Consider:\n"
+                            f"- Loosening trailing SL if too many profits are being cut short\n"
+                            f"- Tightening trailing SL if you want to protect more gains\n"
+                            f"- Analyzing if the trail settings match market volatility"
+                        )
+                    else:
+                        st.write("ℹ️ No winning trades were cut by trailing stop loss.")
+                    
                     # Equity curve
                     if results.get('equity_curve'):
-                        st.subheader("Equity Curve")
+                        st.divider()
+                        st.subheader("📈 Equity Curve")
                         equity_df = pd.DataFrame({
                             'Capital': results['equity_curve']
                         })

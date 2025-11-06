@@ -103,6 +103,14 @@ class BacktestEngine:
         self.trades: List[Dict] = []
         self.equity_curve: List[float] = []
         
+        # ========== CAPITAL TRACKING (backtest-only analysis) ==========
+        self.capital_exhausted = False
+        self.capital_exhausted_at_trade = None
+        self.capital_requirements: List[float] = []
+        
+        # ========== TRAILING STOP LOSS ANALYSIS (backtest-only) ==========
+        self.winning_trades_trail_exit = 0  # Count of winning trades cut by trailing SL
+        
         # ========== PATCH B: Feature flags (backtest-only) ==========
         self.flags = {
             "use_atr_filter": bool(self.config.get("strategy", {}).get("use_atr_filter", False)),
@@ -475,6 +483,15 @@ class BacktestEngine:
                 pnl = pnl_per_unit * self.lot_qty  # 75 qty
                 notes = ""
 
+            # ========== TRACK CAPITAL REQUIREMENT FOR THIS TRADE ==========
+            self.capital_requirements.append(capital_required)
+            
+            # ========== TRACK TRAILING SL EXITS FOR WINNING TRADES ==========
+            # Check if this is a winning trade that was cut by trailing stop loss
+            if pnl > 0 and exit_reason == "TRAIL_EXIT":
+                self.winning_trades_trail_exit += 1
+                logger.info(f"📊 Winning trade #{len(self.trades)+1} cut by trailing SL: P&L=₹{pnl:.2f}")
+            
             self.trades.append({
                 'entry_time': entry_ts,
                 'exit_time': exit_time,
@@ -490,11 +507,21 @@ class BacktestEngine:
                 'expiry': expiry_dt.date().isoformat() if expiry_dt is not None else None,
                 'quantity': self.lot_qty,
                 'strike': int(strike),
+                'capital_required': float(capital_required),  # Track capital used
                 'notes': notes  # PATCH: filter/sizing reasons
             })
 
             current_capital += pnl
             self.equity_curve.append(current_capital)
+            
+            # ========== CHECK IF CAPITAL EXHAUSTED ==========
+            if current_capital <= 0 and not self.capital_exhausted:
+                self.capital_exhausted = True
+                self.capital_exhausted_at_trade = len(self.trades)
+                logger.warning(f"⚠️  CAPITAL EXHAUSTED after trade #{len(self.trades)} at {exit_time}")
+                logger.warning(f"    Final capital: ₹{current_capital:.2f}")
+                logger.warning(f"    Initial capital: ₹{initial_capital:.2f}")
+                logger.warning(f"    Total loss: ₹{initial_capital - current_capital:.2f}")
             
             logger.info(f"✅ Trade executed: {direction} at {entry_ts}, Entry: ₹{entry_price:.2f}, Exit: ₹{exit_price:.2f}, P&L: ₹{pnl:.2f}")
 
@@ -961,6 +988,18 @@ class BacktestEngine:
     # ------------- Results & stats -------------
 
     def _generate_results(self, initial_capital: float, final_capital: float) -> Dict:
+        # ========== CALCULATE CAPITAL METRICS (backtest-only) ==========
+        avg_capital_required = 0.0
+        if self.capital_requirements:
+            avg_capital_required = float(sum(self.capital_requirements) / len(self.capital_requirements))
+        
+        # ========== CALCULATE TRAILING SL METRICS (backtest-only) ==========
+        trail_exit_pct = 0.0
+        if self.trades:
+            winning_count = len([t for t in self.trades if t['pnl'] > 0])
+            if winning_count > 0:
+                trail_exit_pct = (self.winning_trades_trail_exit / winning_count) * 100.0
+        
         if not self.trades:
             return {
                 'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
@@ -968,7 +1007,14 @@ class BacktestEngine:
                 'avg_win': 0.0, 'avg_loss': 0.0, 'max_drawdown': 0.0,
                 'max_winning_streak': 0, 'max_losing_streak': 0,
                 'initial_capital': initial_capital, 'final_capital': final_capital,
-                'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': []
+                'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': [],
+                # ========== CAPITAL ANALYSIS (backtest-only) ==========
+                'capital_exhausted': False,
+                'capital_exhausted_at_trade': None,
+                'avg_capital_required': avg_capital_required,
+                # ========== TRAILING SL ANALYSIS (backtest-only) ==========
+                'winning_trades_trail_exit': 0,
+                'trail_exit_pct_of_winners': 0.0
             }
 
         df = pd.DataFrame(self.trades)
@@ -1014,7 +1060,14 @@ class BacktestEngine:
             'initial_capital': initial_capital, 'final_capital': final_capital,
             'return_pct': ((final_capital - initial_capital) / initial_capital * 100.0) if initial_capital > 0 else 0.0,
             'equity_curve': self.equity_curve,
-            'trades': self.trades
+            'trades': self.trades,
+            # ========== CAPITAL ANALYSIS (backtest-only) ==========
+            'capital_exhausted': self.capital_exhausted,
+            'capital_exhausted_at_trade': self.capital_exhausted_at_trade,
+            'avg_capital_required': avg_capital_required,
+            # ========== TRAILING SL ANALYSIS (backtest-only) ==========
+            'winning_trades_trail_exit': self.winning_trades_trail_exit,
+            'trail_exit_pct_of_winners': trail_exit_pct
         }
 
     def _calculate_max_drawdown(self) -> float:
