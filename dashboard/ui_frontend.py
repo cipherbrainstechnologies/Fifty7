@@ -2300,6 +2300,13 @@ elif tab == "Backtest":
             help="Stop loss percentage on option premium (legacy mode only)"
         )
     
+    # Capital requirement warning
+    # Rough estimate: lot_size * estimated_strike_price (using 24000 as typical NIFTY level)
+    estimated_strike_price = 24000
+    estimated_capital_required = lot_size * estimated_strike_price
+    if initial_capital < estimated_capital_required:
+        st.warning(f"⚠️ Available capital (₹{initial_capital:,.0f}) is less than estimated capital required (₹{estimated_capital_required:,.0f}). You may not have sufficient capital to execute trades.")
+    
     # Strike Selection Row
     st.write("**Strike Selection:**")
     strike_selection = st.selectbox(
@@ -2907,11 +2914,10 @@ elif tab == "Backtest":
                 progress_bar.progress(80)
                 
                 st.divider()
-                st.subheader("📊 Data Preview")
-                st.dataframe(data.head(10), use_container_width=True)
-                
-                # Show data info
-                st.info(f"📈 Total rows: {len(data)} | Columns: {', '.join(data.columns.tolist())}")
+                with st.expander("📊 Data Preview", expanded=False):
+                    st.dataframe(data.head(10), use_container_width=True)
+                    # Show data info
+                    st.info(f"📈 Total rows: {len(data)} | Columns: {', '.join(data.columns.tolist())}")
                 
                 progress_bar.progress(100)
                 status_text.text("✅ Ready to run backtest!")
@@ -3063,6 +3069,11 @@ elif tab == "Backtest":
         with col3:
             symbol = st.selectbox("Symbol", ["NIFTY"], index=0)
         
+        # Date validation
+        if end_date < start_date:
+            st.error("❌ End date cannot be less than Start date. Please select valid date range.")
+            st.stop()
+        
         if st.button("▶️ Run Backtest (Cloud)", use_container_width=True):
             with st.spinner("Fetching from DesiQuant S3 and running backtest..."):
                 try:
@@ -3085,8 +3096,8 @@ elif tab == "Backtest":
                         st.stop()
                     
                     # Display data preview
-                    st.subheader("Data Preview")
-                    st.dataframe(spot_df.head(10), use_container_width=True)
+                    with st.expander("📊 Data Preview", expanded=False):
+                        st.dataframe(spot_df.head(10), use_container_width=True)
                     
                     # Run backtest with cloud data
                     results = engine.run_backtest(
