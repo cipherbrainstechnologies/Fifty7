@@ -114,6 +114,11 @@ class BacktestEngine:
         }
         self.params = self.config.get("strategy", {})
         self.sizing = self.config.get("sizing", {})
+        
+        # Strike selection configuration
+        self.strike_offset_base = self.config.get("strike_offset_base", 0)
+        self.strike_is_itm = self.config.get("strike_is_itm", False)
+        self.strike_is_otm = self.config.get("strike_is_otm", False)
 
     # ------------- Public API -------------
 
@@ -343,13 +348,16 @@ class BacktestEngine:
             # --- determine option entry premium ---
             # Prefer real options_df; else fallback to synthetic using spot & delta 0.5
             if options_df is not None and expiry_dt is not None:
-                atm = self._nearest_100(spot_at_entry)
+                # Calculate strike based on selection (ATM/ITM/OTM)
+                strike = self._calculate_strike(spot_at_entry, direction)
+                strike_selection = self.config.get("strike_selection", "ATM 0")
+                logger.debug(f"Strike selection: {strike_selection} | Spot: {spot_at_entry:.2f} | Direction: {direction} | Calculated Strike: {strike}")
                 opt_slice = self._select_option_slice(
-                    options_df, expiry_dt, atm, direction, entry_ts
+                    options_df, expiry_dt, strike, direction, entry_ts
                 )
                 if opt_slice.empty:
                     # if not found, skip gracefully
-                    logger.debug(f"No option data found for trade at {entry_ts} (expiry: {expiry_dt}, strike: {atm}, direction: {direction})")
+                    logger.debug(f"No option data found for trade at {entry_ts} (expiry: {expiry_dt}, strike: {strike}, direction: {direction})")
                     continue
                 # enter at first bar open on/after entry_ts
                 entry_price = float(opt_slice.iloc[0]['open'])
@@ -460,7 +468,7 @@ class BacktestEngine:
                 'exit_reason': exit_reason,
                 'expiry': expiry_dt.date().isoformat() if expiry_dt is not None else None,
                 'quantity': self.lot_qty,
-                'strike': int(self._nearest_100(spot_at_entry)),
+                'strike': int(self._calculate_strike(spot_at_entry, direction)),
                 'notes': notes  # PATCH: filter/sizing reasons
             })
 
@@ -512,7 +520,58 @@ class BacktestEngine:
 
     @staticmethod
     def _nearest_100(x: float) -> int:
+        """Legacy method - rounds to nearest 100. Use _calculate_strike for proper strike calculation."""
         return int(round(x / 100.0) * 100)
+    
+    def _calculate_strike(self, spot_price: float, direction: str) -> int:
+        """
+        Calculate strike price based on spot, direction, and strike selection (ATM/ITM/OTM).
+        
+        For NIFTY: strikes are in multiples of 50
+        - ATM 0: nearest 50 to spot
+        - ITM: closer to spot (CE: lower strike, PE: higher strike)
+        - OTM: away from spot (CE: higher strike, PE: lower strike)
+        
+        Args:
+            spot_price: Current spot price
+            direction: "CE" for Call, "PE" for Put
+        
+        Returns:
+            Strike price rounded to nearest 50 with offset applied
+        """
+        # NIFTY strikes are in multiples of 50
+        base_strike = round(spot_price / 50) * 50
+        
+        # If ATM, return base strike
+        if self.strike_offset_base == 0:
+            return int(base_strike)
+        
+        # Calculate offset based on direction and ITM/OTM
+        if direction == "CE":
+            # For Call options:
+            # ITM = lower strike (closer to spot, more in the money) = negative offset
+            # OTM = higher strike (away from spot, out of the money) = positive offset
+            if self.strike_is_itm:
+                offset = -self.strike_offset_base
+            elif self.strike_is_otm:
+                offset = self.strike_offset_base
+            else:
+                offset = 0
+        elif direction == "PE":
+            # For Put options:
+            # ITM = higher strike (closer to spot, more in the money) = positive offset
+            # OTM = lower strike (away from spot, out of the money) = negative offset
+            if self.strike_is_itm:
+                offset = self.strike_offset_base
+            elif self.strike_is_otm:
+                offset = -self.strike_offset_base
+            else:
+                offset = 0
+        else:
+            offset = 0
+        
+        strike = base_strike + offset
+        return int(strike)
 
     @staticmethod
     def _get_expiry_for(ts: pd.Timestamp, expiries_df: Optional[pd.DataFrame]) -> Optional[pd.Timestamp]:

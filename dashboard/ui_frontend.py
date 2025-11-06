@@ -2300,6 +2300,20 @@ elif tab == "Backtest":
             help="Stop loss percentage on option premium (legacy mode only)"
         )
     
+    # Strike Selection Row
+    st.write("**Strike Selection:**")
+    strike_selection = st.selectbox(
+        "Strike Price",
+        options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
+        index=0,
+        help="Select strike price relative to ATM:\n"
+             "- ATM 0: At The Money (nearest 50 to spot)\n"
+             "- ITM 1/2/3: In The Money (closer to spot)\n"
+             "- OTM 1/2/3: Out The Money (away from spot)\n"
+             "For CE: ITM = lower strike, OTM = higher strike\n"
+             "For PE: ITM = higher strike, OTM = lower strike"
+    )
+    
     # Second row: Position Management Parameters (always visible)
     st.write("**Position Management:**")
     col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
@@ -2699,10 +2713,34 @@ elif tab == "Backtest":
     
     st.divider()
     
+    # Parse strike selection to get offset
+    # For NIFTY: strikes are in multiples of 50
+    # ATM 0 = 0 offset
+    # ITM 1/2/3 = -50/-100/-150 for CE, +50/+100/+150 for PE
+    # OTM 1/2/3 = +50/+100/+150 for CE, -50/-100/-150 for PE
+    strike_offset_map = {
+        "ATM 0": 0,
+        "ITM 1": 50,   # Will be adjusted based on direction
+        "ITM 2": 100,
+        "ITM 3": 150,
+        "OTM 1": 50,   # Will be adjusted based on direction
+        "OTM 2": 100,
+        "OTM 3": 150
+    }
+    strike_offset_base = strike_offset_map.get(strike_selection, 0)
+    
+    # Determine if ITM or OTM (for direction-specific calculation)
+    is_itm = strike_selection.startswith("ITM")
+    is_otm = strike_selection.startswith("OTM")
+    
     # Prepare strategy config with all enhanced features
     backtest_config = {
         'initial_capital': float(initial_capital),
         'lot_size': int(lot_size),
+        'strike_selection': strike_selection,  # Store selection for reference
+        'strike_offset_base': strike_offset_base,  # Base offset (will be adjusted by direction)
+        'strike_is_itm': is_itm,
+        'strike_is_otm': is_otm,
         'strategy': {
             **strategy_config.get('strategy', {}),
             # Legacy defaults (used when flags are off)
