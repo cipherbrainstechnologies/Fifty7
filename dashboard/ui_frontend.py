@@ -15,6 +15,8 @@ from logzero import logger
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import threading
+import time
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -305,6 +307,66 @@ except Exception as e:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
+# ===================================================================
+# FIREBASE SESSION PERSISTENCE - Restore session on page load/reload
+# Date: 2025-01-27
+# Purpose: Keep user logged in across tab changes/reloads using Firebase cache
+# ===================================================================
+if firebase_auth:
+    # Try to restore session from stored tokens if not authenticated
+    if not st.session_state.authenticated:
+        # Check if we have stored tokens in session state
+        stored_id_token = st.session_state.get('id_token')
+        stored_refresh_token = st.session_state.get('refresh_token')
+        stored_user_email = st.session_state.get('user_email')
+        
+        # If we have tokens, try to restore session
+        if stored_refresh_token and stored_user_email:
+            try:
+                # Try to refresh the token using Firebase's refresh_token method
+                refreshed_user = firebase_auth.refresh_token(stored_refresh_token)
+                if refreshed_user:
+                    # Session restored successfully
+                    st.session_state.user = refreshed_user
+                    st.session_state.id_token = refreshed_user.get('idToken', stored_id_token)
+                    st.session_state.refresh_token = refreshed_user.get('refreshToken', stored_refresh_token)
+                    st.session_state.user_email = stored_user_email
+                    st.session_state.authenticated = True
+                    logger.info(f"Firebase session restored for user: {stored_user_email}")
+                else:
+                    # Refresh failed, clear tokens
+                    st.session_state.id_token = None
+                    st.session_state.refresh_token = None
+                    st.session_state.user_email = None
+                    logger.warning("Firebase session refresh failed, tokens cleared")
+            except Exception as e:
+                # Refresh failed, clear tokens
+                logger.warning(f"Firebase session restore failed: {e}")
+                st.session_state.id_token = None
+                st.session_state.refresh_token = None
+                st.session_state.user_email = None
+        elif stored_id_token:
+            # Only id_token exists, try to verify it
+            try:
+                user_info = firebase_auth.get_user_info(stored_id_token)
+                if user_info:
+                    # Token is valid, restore session
+                    st.session_state.user = {'idToken': stored_id_token}
+                    st.session_state.id_token = stored_id_token
+                    st.session_state.user_email = stored_user_email or user_info.get('email', '')
+                    st.session_state.authenticated = True
+                    logger.info(f"Firebase session restored using id_token for user: {st.session_state.user_email}")
+                else:
+                    # Token invalid, clear it
+                    st.session_state.id_token = None
+                    st.session_state.refresh_token = None
+                    st.session_state.user_email = None
+            except Exception as e:
+                logger.warning(f"Firebase token verification failed: {e}")
+                st.session_state.id_token = None
+                st.session_state.refresh_token = None
+                st.session_state.user_email = None
+
 # If Firebase is configured, require authentication
 if firebase_auth:
     if not st.session_state.authenticated:
@@ -526,6 +588,109 @@ if 'live_runner' not in st.session_state:
     else:
         st.session_state.live_runner = None
 
+# ===================================================================
+# BACKGROUND API REFRESH - Non-blocking refresh to prevent UI flicker
+# Date: 2025-01-27
+# Purpose: Refresh AngelOne API data in background thread without blocking UI
+# ===================================================================
+
+# Initialize background refresh tracking in session state
+if 'background_refresh_thread' not in st.session_state:
+    st.session_state.background_refresh_thread = None
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = None
+if 'refresh_in_progress' not in st.session_state:
+    st.session_state.refresh_in_progress = False
+
+def background_api_refresh(market_data_provider, broker):
+    """
+    Background thread function to refresh API data without blocking UI.
+    Updates market data and broker session in the background.
+    Note: Uses thread-safe approach compatible with Streamlit Cloud and local dev.
+    
+    Args:
+        market_data_provider: MarketDataProvider instance (passed by reference)
+        broker: Broker instance (passed by reference)
+    """
+    try:
+        # Refresh market data if available
+        if market_data_provider is not None:
+            try:
+                market_data_provider.refresh_data()
+                logger.debug("Background market data refresh completed")
+            except Exception as e:
+                logger.warning(f"Background market data refresh failed: {e}")
+        
+        # Refresh broker session if available (check token validity)
+        if broker is not None:
+            try:
+                # Only refresh if session exists (don't create new session unnecessarily)
+                if hasattr(broker, 'session_generated') and broker.session_generated:
+                    # Try to ensure session is valid (will refresh token if needed)
+                    broker._ensure_session()
+                    logger.debug("Background broker session refresh completed")
+            except Exception as e:
+                logger.warning(f"Background broker session refresh failed: {e}")
+        
+    except Exception as e:
+        logger.error(f"Background API refresh error: {e}")
+
+def start_background_refresh_if_needed(interval_seconds=10):
+    """
+    Start background refresh thread if not already running and enough time has passed.
+    Thread-safe approach compatible with Streamlit Cloud and local dev.
+    
+    Args:
+        interval_seconds: Minimum seconds between refreshes (default: 10)
+    """
+    # Check if we should refresh
+    should_refresh = False
+    if st.session_state.last_refresh_time is None:
+        # First refresh
+        should_refresh = True
+    else:
+        # Check if enough time has passed
+        time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
+        if time_since_last >= interval_seconds:
+            should_refresh = True
+    
+    # Start refresh thread if needed and not already in progress
+    if should_refresh and not st.session_state.refresh_in_progress:
+        # Check if previous thread is still running (it shouldn't be, but check anyway)
+        if st.session_state.background_refresh_thread is not None:
+            if st.session_state.background_refresh_thread.is_alive():
+                # Thread still running, wait a bit
+                return
+        
+        # Start new background thread with references passed directly (thread-safe)
+        try:
+            # Get references before starting thread (thread-safe)
+            market_data_provider = st.session_state.get('market_data_provider')
+            broker = st.session_state.get('broker')
+            
+            # Start thread with references passed as arguments
+            refresh_thread = threading.Thread(
+                target=background_api_refresh,
+                args=(market_data_provider, broker),
+                daemon=True
+            )
+            refresh_thread.start()
+            st.session_state.background_refresh_thread = refresh_thread
+            # Update last refresh time (thread-safe - only writing, not reading from thread)
+            st.session_state.last_refresh_time = datetime.now()
+            st.session_state.refresh_in_progress = True
+            logger.debug("Background API refresh thread started")
+        except Exception as e:
+            logger.error(f"Failed to start background refresh thread: {e}")
+            st.session_state.refresh_in_progress = False
+    else:
+        # If refresh is in progress, check if thread completed
+        if st.session_state.refresh_in_progress:
+            if st.session_state.background_refresh_thread is not None:
+                if not st.session_state.background_refresh_thread.is_alive():
+                    # Thread completed, mark as not in progress
+                    st.session_state.refresh_in_progress = False
+
 # Sidebar menu
 tab = st.sidebar.radio(
     "📋 Menu",
@@ -658,9 +823,8 @@ if tab == "Dashboard":
         help="Automatically refreshes the dashboard every 10 seconds to show latest market data and trade updates"
     )
     if auto:
-        import time as _t
-        st.caption("✅ Auto-refresh enabled - Page will refresh every 10 seconds")
-        # Trigger rerun after rendering at the bottom of the page
+        st.caption("✅ Auto-refresh enabled - Market data will refresh in background (no UI flicker)")
+        # Background refresh will be handled at the end of the page render
     
     # Strategy Configuration (Live Trading)
     st.divider()
@@ -1246,11 +1410,23 @@ if tab == "Dashboard":
         st.write(f"- Volume Spike: {'✅' if filters.get('volume_spike') else '❌'}")
         st.write(f"- Avoid Open Range: {'✅' if filters.get('avoid_open_range') else '❌'}")
 
-    # Perform auto-refresh rerun at the end to avoid interrupting rendering
+    # Perform background API refresh if auto-refresh is enabled (non-blocking)
+    # Date: 2025-01-27
+    # Purpose: Refresh API data in background without causing UI flicker from full page rerun
     if auto:
-        import time as _t
-        _t.sleep(10)
-        st.rerun()
+        start_background_refresh_if_needed(interval_seconds=10)
+        # Use time.sleep with rerun only if needed (fallback for very old data)
+        # But prefer background refresh to avoid UI flicker
+        if st.session_state.last_refresh_time is not None:
+            time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
+            # Only rerun if last refresh was more than 15 seconds ago (fallback)
+            if time_since_last > 15:
+                time.sleep(10)
+                st.rerun()
+        else:
+            # First load, wait a bit then refresh
+            time.sleep(10)
+            st.rerun()
 
 # ============ TRADE JOURNAL TAB ============
 elif tab == "Portfolio":

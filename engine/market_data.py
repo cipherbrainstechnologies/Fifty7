@@ -958,8 +958,26 @@ class MarketDataProvider:
         """
         Refresh market data by fetching latest OHLC and updating buffers.
         This is called periodically by the live runner.
+        
+        Date: 2025-01-27
+        Purpose: Non-blocking refresh for background threading (no UI flicker)
         """
+        # Check if we have a last refresh time to prevent too-frequent refreshes
+        # (optimization for background refresh threads)
+        if not hasattr(self, '_last_refresh_time'):
+            self._last_refresh_time = None
+        
+        # Skip refresh if done recently (within last 5 seconds)
+        if self._last_refresh_time is not None:
+            time_since_last = time.time() - self._last_refresh_time
+            if time_since_last < 5:
+                logger.debug(f"Skipping refresh - only {time_since_last:.1f}s since last refresh")
+                return
+        
         logger.info("Refreshing market data...")
+        
+        # Update last refresh time
+        self._last_refresh_time = time.time()
         
         # Fetch latest data
         ohlc = self.fetch_ohlc(mode="OHLC")
