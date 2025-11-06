@@ -14,6 +14,7 @@ import numpy as np
 import math
 from typing import Dict, List, Optional
 from datetime import datetime, time, timedelta
+from logzero import logger
 
 # Reuse your live strategy helpers
 from engine.strategy_engine import detect_inside_bar  # keep using this for backward compatibility

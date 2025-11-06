@@ -826,6 +826,16 @@ class MarketDataProvider:
                     return complete_candles
             else:
                 logger.info("Direct ONE_HOUR fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
+                # Check if cached data is stale (>1 day old)
+                if not self._data_1h.empty and 'Date' in self._data_1h.columns:
+                    latest_cached_date = self._data_1h['Date'].iloc[-1]
+                    if isinstance(latest_cached_date, pd.Timestamp):
+                        days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                        if days_old > 1:
+                            logger.warning(f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). Clearing stale cache.")
+                            self._data_1h = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                        elif days_old > 0:
+                            logger.warning(f"⚠️ API failed. Using cached data from {latest_cached_date} (yesterday). Data may be stale.")
         
         # Fallback: Fetch 1-minute data and resample
         fetch_window_days = 3
@@ -854,6 +864,15 @@ class MarketDataProvider:
                 logger.debug(f"Trimmed to {window_hours} most recent 1-hour candles")
         else:
             logger.warning("No historical 1-minute data available for 1-hour aggregation. Data may be too recent or API unavailable.")
+            # Check if cached data is stale before using fallback
+            if not self._data_1h.empty and 'Date' in self._data_1h.columns:
+                latest_cached_date = self._data_1h['Date'].iloc[-1]
+                if isinstance(latest_cached_date, pd.Timestamp):
+                    days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                    if days_old > 1:
+                        logger.warning(f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). Clearing stale cache.")
+                        self._data_1h = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            
             # Fallback: Fetch current OHLC and add to buffer
             ohlc = self.fetch_ohlc(mode="OHLC")
             if ohlc:
@@ -879,6 +898,16 @@ class MarketDataProvider:
         all_candles = self._data_1h.tail(window_hours).copy() if not self._data_1h.empty else pd.DataFrame(
             columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
         )
+        
+        # Validate cached data freshness
+        if not all_candles.empty and 'Date' in all_candles.columns:
+            latest_cached_date = all_candles['Date'].iloc[-1]
+            if isinstance(latest_cached_date, pd.Timestamp):
+                days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                if days_old > 1:
+                    logger.warning(f"⚠️ Cached data is {days_old} days old (latest: {latest_cached_date}). This may cause incorrect signals.")
+                elif days_old > 0:
+                    logger.warning(f"⚠️ Using cached data from {latest_cached_date} (yesterday). API may have failed.")
         
         if include_latest:
             # Live mode: return all candles including incomplete latest candle

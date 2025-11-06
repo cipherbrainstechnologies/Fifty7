@@ -14,20 +14,21 @@ from logzero import logger
 
 def detect_inside_bar(data_1h: pd.DataFrame, tighten_signal: bool = True) -> List[int]:
     """
-    # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+    # --- [Enhancement: Prefer Newer Inside Bars - 2025-11-06] ---
     Detect Inside Bar patterns in 1-hour timeframe data.
     
     An Inside Bar is when a candle is completely contained within 
     the previous candle's high and low range.
     
-    NEW: Supports "range tightening" - if a newer inside bar has a tighter range than
-    the previous one, it replaces the older reference. This ensures we always use the
-    most recent and tightest consolidation pattern.
+    NEW: Smart range tightening logic:
+    - If both inside bars are from the same day → prefer tighter (narrower range)
+    - If inside bars are from different days → prefer newer (more recent date)
+    This ensures we use today's inside bars for live trading, not old ones.
     
     Args:
         data_1h: DataFrame with OHLC data for 1-hour timeframe
                  Must have columns: ['High', 'Low', 'Open', 'Close', 'Date']
-        tighten_signal: If True, update to newer/tighter inside bars (default: True for live)
+        tighten_signal: If True, apply smart range tightening (default: True for live)
     
     Returns:
         List of indices where Inside Bar patterns are detected
@@ -91,20 +92,71 @@ def detect_inside_bar(data_1h: pd.DataFrame, tighten_signal: bool = True) -> Lis
             # Calculate range width for tightening comparison
             current_range_width = current_high - current_low
             
-            # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+            # --- [Enhancement: Prefer Newer Inside Bars - 2025-11-06] ---
             # Range tightening logic: if enabled and we have a previous inside bar,
-            # only keep this one if it's tighter (narrower range) than the previous
+            # - If both are from the same day → prefer tighter (narrower range)
+            # - If from different days → prefer newer (more recent date)
+            # This ensures we use today's inside bars for live trading, not old ones
             should_add = True
             if tighten_signal and latest_inside_bar_idx is not None:
                 prev_inside_high = data_1h['High'].iloc[latest_inside_bar_idx]
                 prev_inside_low = data_1h['Low'].iloc[latest_inside_bar_idx]
                 prev_range_width = prev_inside_high - prev_inside_low
                 
-                # Check if new inside bar is tighter (narrower range)
-                if current_range_width < prev_range_width:
+                # Get dates for comparison
+                prev_inside_date = None
+                current_inside_date = None
+                
+                if 'Date' in data_1h.columns:
+                    prev_inside_date = data_1h['Date'].iloc[latest_inside_bar_idx]
+                    current_inside_date = current_time
+                elif isinstance(data_1h.index, pd.DatetimeIndex):
+                    prev_inside_date = data_1h.index[latest_inside_bar_idx]
+                    current_inside_date = current_time
+                
+                # Check if dates are available and can be compared
+                same_day = False
+                if prev_inside_date is not None and current_inside_date is not None:
+                    # Convert to date (ignore time) for comparison
+                    if isinstance(prev_inside_date, pd.Timestamp):
+                        prev_date_only = prev_inside_date.date()
+                    else:
+                        prev_date_only = pd.to_datetime(prev_inside_date).date()
+                    
+                    if isinstance(current_inside_date, pd.Timestamp):
+                        current_date_only = current_inside_date.date()
+                    else:
+                        current_date_only = pd.to_datetime(current_inside_date).date()
+                    
+                    same_day = (prev_date_only == current_date_only)
+                
+                # Decision logic: same day → prefer tighter, different days → prefer newer
+                if same_day:
+                    # Same day: prefer tighter (narrower range)
+                    if current_range_width < prev_range_width:
+                        logger.info(
+                            f"🔄 Updating to tighter inside bar (same day): "
+                            f"New range width {current_range_width:.2f} < Previous {prev_range_width:.2f}"
+                        )
+                        # Remove old inside bar and add new one
+                        if latest_inside_bar_idx in inside_bars:
+                            inside_bars.remove(latest_inside_bar_idx)
+                        should_add = True
+                        latest_inside_bar_idx = i
+                        latest_inside_bar_range = current_range_width
+                    else:
+                        # Keep existing inside bar (it's tighter)
+                        logger.debug(
+                            f"📌 Keeping previous inside bar (tighter, same day): "
+                            f"Current range {current_range_width:.2f} >= Previous {prev_range_width:.2f}"
+                        )
+                        should_add = False
+                else:
+                    # Different days: prefer newer (more recent)
+                    # Current inside bar is newer → replace old one
                     logger.info(
-                        f"🔄 Updating to tighter inside bar: "
-                        f"New range width {current_range_width:.2f} < Previous {prev_range_width:.2f}"
+                        f"🔄 Updating to newer inside bar (different day): "
+                        f"New date {current_inside_date} > Previous date {prev_inside_date}"
                     )
                     # Remove old inside bar and add new one
                     if latest_inside_bar_idx in inside_bars:
@@ -112,13 +164,6 @@ def detect_inside_bar(data_1h: pd.DataFrame, tighten_signal: bool = True) -> Lis
                     should_add = True
                     latest_inside_bar_idx = i
                     latest_inside_bar_range = current_range_width
-                else:
-                    # Keep existing inside bar (it's tighter)
-                    logger.debug(
-                        f"📌 Keeping previous inside bar (tighter): "
-                        f"Current range {current_range_width:.2f} >= Previous {prev_range_width:.2f}"
-                    )
-                    should_add = False
             else:
                 # First inside bar or tighten_signal=False
                 latest_inside_bar_idx = i

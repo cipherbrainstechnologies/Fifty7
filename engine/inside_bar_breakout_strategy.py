@@ -255,7 +255,12 @@ class InsideBarBreakoutStrategy:
             if 'Date' in candles.columns:
                 candles = candles[candles['Date'].apply(self._is_market_hours)]
             
-            logger.info(f"✅ Fetched {len(candles)} hourly candles")
+            # Log latest candle for debugging
+            if not candles.empty and 'Date' in candles.columns:
+                latest_candle_date = candles['Date'].iloc[-1]
+                logger.info(f"✅ Fetched {len(candles)} hourly candles | Latest candle: {latest_candle_date}")
+            else:
+                logger.info(f"✅ Fetched {len(candles)} hourly candles")
             return candles
             
         except Exception as e:
@@ -289,14 +294,29 @@ class InsideBarBreakoutStrategy:
         
         # Scan from most recent to oldest
         # We want the most recent inside bar
+        # Log latest candle for debugging
+        if 'Date' in candles.columns:
+            latest_candle_date = candles['Date'].iloc[-1]
+            logger.debug(f"🔍 Scanning for inside bars from latest candle: {latest_candle_date}")
+        
         for i in range(len(candles) - 1, 0, -1):
             current_high = candles['High'].iloc[i]
             current_low = candles['Low'].iloc[i]
             prev_high = candles['High'].iloc[i - 1]
             prev_low = candles['Low'].iloc[i - 1]
             
+            # Get dates for logging
+            if 'Date' in candles.columns:
+                current_date = candles['Date'].iloc[i]
+                prev_date = candles['Date'].iloc[i - 1]
+            else:
+                current_date = f"Index_{i}"
+                prev_date = f"Index_{i-1}"
+            
             # Inside bar condition: current is completely inside previous
             is_inside = (current_high < prev_high) and (current_low > prev_low)
+            
+            logger.debug(f"Checking candle {i} ({current_date}) vs {i-1} ({prev_date}): High {current_high:.2f} < {prev_high:.2f} = {current_high < prev_high}, Low {current_low:.2f} > {prev_low:.2f} = {current_low > prev_low}")
             
             if is_inside:
                 # Get dates
