@@ -174,30 +174,14 @@ class BacktestEngine:
             return float(atr_pct_series.iloc[idx])
 
         # --- Step 1: find all inside-candle indices (signal lock) ---
-        # Use new strategy for detection if available, else fallback to original
-        try:
-            # Create strategy instance for backtesting (no broker/market_data needed)
-            strategy = InsideBarBreakoutStrategy(
-                broker=None,
-                market_data=None,
-                symbol="NIFTY",
-                lot_size=self.lot_qty,
-                quantity_lots=1,
-                live_mode=False,  # Backtesting mode
-                config=self.config
-            )
-            
-            # Use new strategy's detect_inside_bar method
-            inside_bar_info = strategy.detect_inside_bar(data)
-            if inside_bar_info:
-                # Convert to list of indices for compatibility
-                inside_idxs = [inside_bar_info['inside_bar_idx']]
-            else:
-                inside_idxs = []
-        except Exception as e:
-            # Fallback to original detection method
-            logger.warning(f"New strategy detection failed, using original: {e}")
-            inside_idxs = detect_inside_bar(data)
+        # IMPORTANT: For backtesting, we need ALL inside bars, not just the most recent one
+        # InsideBarBreakoutStrategy.detect_inside_bar() only returns the most recent inside bar (for live trading)
+        # For backtesting, we use detect_inside_bar() from strategy_engine which returns ALL inside bars
+        # Pass tighten_signal=False to get all inside bars without filtering
+        inside_idxs = detect_inside_bar(data, tighten_signal=False)
+        
+        if inside_idxs:
+            logger.info(f"Found {len(inside_idxs)} inside bar pattern(s) for backtesting")
         
         if not inside_idxs:
             return self._generate_results(initial_capital, current_capital)
@@ -277,7 +261,10 @@ class BacktestEngine:
                         break
 
             if breakout_row is None or direction is None:
+                logger.debug(f"No breakout found for inside bar at index {idx} (time: {signal_time})")
                 continue
+            
+            logger.info(f"Breakout detected for inside bar at {signal_time}: {direction} direction")
 
             # ========== PATCH D: Guard each candidate breakout with filters ==========
             filters_ok = True
@@ -312,11 +299,13 @@ class BacktestEngine:
 
             # bail if a hard filter failed
             if not filters_ok:
+                logger.debug(f"Trade filtered out for inside bar at {signal_time}: {', '.join(reasons)}")
                 continue
 
             # Entry on NEXT hour open
             entry_bar_idx = data.index.get_loc(breakout_row.name) + 1
             if entry_bar_idx >= len(data):
+                logger.debug(f"No entry bar available after breakout at {breakout_row.name} (end of data)")
                 continue  # no bar to enter
 
             entry_bar = data.iloc[entry_bar_idx]
@@ -360,6 +349,7 @@ class BacktestEngine:
                 )
                 if opt_slice.empty:
                     # if not found, skip gracefully
+                    logger.debug(f"No option data found for trade at {entry_ts} (expiry: {expiry_dt}, strike: {atm}, direction: {direction})")
                     continue
                 # enter at first bar open on/after entry_ts
                 entry_price = float(opt_slice.iloc[0]['open'])
@@ -476,7 +466,10 @@ class BacktestEngine:
 
             current_capital += pnl
             self.equity_curve.append(current_capital)
+            
+            logger.info(f"✅ Trade executed: {direction} at {entry_ts}, Entry: ₹{entry_price:.2f}, Exit: ₹{exit_price:.2f}, P&L: ₹{pnl:.2f}")
 
+        logger.info(f"Backtest complete: Processed {len(inside_idxs)} inside bars, executed {len(self.trades)} trades")
         return self._generate_results(initial_capital, current_capital)
 
     # ------------- Simulation helpers -------------

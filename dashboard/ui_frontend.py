@@ -2844,9 +2844,36 @@ elif tab == "Backtest":
                                 initial_capital=initial_capital
                             )
                             
+                            # Validate results
+                            if results is None:
+                                st.error("❌ Backtest returned None. Please check the backtest engine.")
+                                st.stop()
+                            
+                            if not isinstance(results, dict):
+                                st.error(f"❌ Backtest returned unexpected type: {type(results)}. Expected dict.")
+                                st.stop()
+                            
                             # Display results
                             st.divider()
                             st.subheader("📊 Backtest Results")
+                            
+                            # Check if we have required keys
+                            required_keys = ['total_trades', 'win_rate', 'total_pnl', 'return_pct', 
+                                            'initial_capital', 'final_capital', 'winning_trades', 'losing_trades']
+                            missing_keys = [key for key in required_keys if key not in results]
+                            if missing_keys:
+                                st.error(f"❌ Results missing required keys: {missing_keys}")
+                                st.json(results)  # Show what we got
+                                st.stop()
+                            
+                            # Show message if no trades
+                            if results.get('total_trades', 0) == 0:
+                                st.warning("⚠️ No trades were executed during this backtest period.")
+                                st.info("💡 This could mean:\n"
+                                       "- No inside bar patterns were detected\n"
+                                       "- No breakouts occurred after inside bars\n"
+                                       "- Filters prevented trade execution\n"
+                                       "- Data range may be too short")
                             
                             # Results summary cards
                             col1, col2, col3, col4 = st.columns(4)
@@ -2973,8 +3000,35 @@ elif tab == "Backtest":
                         initial_capital=initial_capital
                     )
                     
+                    # Validate results
+                    if results is None:
+                        st.error("❌ Backtest returned None. Please check the backtest engine.")
+                        st.stop()
+                    
+                    if not isinstance(results, dict):
+                        st.error(f"❌ Backtest returned unexpected type: {type(results)}. Expected dict.")
+                        st.stop()
+                    
                     # Display results (same format as CSV mode)
                     st.subheader("📊 Backtest Results")
+                    
+                    # Check if we have required keys
+                    required_keys = ['total_trades', 'win_rate', 'total_pnl', 'return_pct', 
+                                    'initial_capital', 'final_capital', 'winning_trades', 'losing_trades']
+                    missing_keys = [key for key in required_keys if key not in results]
+                    if missing_keys:
+                        st.error(f"❌ Results missing required keys: {missing_keys}")
+                        st.json(results)  # Show what we got
+                        st.stop()
+                    
+                    # Show message if no trades
+                    if results.get('total_trades', 0) == 0:
+                        st.warning("⚠️ No trades were executed during this backtest period.")
+                        st.info("💡 This could mean:\n"
+                               "- No inside bar patterns were detected\n"
+                               "- No breakouts occurred after inside bars\n"
+                               "- Filters prevented trade execution\n"
+                               "- Data range may be too short")
                     
                     col1, col2, col3, col4 = st.columns(4)
                     
