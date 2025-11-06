@@ -16,7 +16,8 @@ from typing import Dict, List, Optional
 from datetime import datetime, time, timedelta
 
 # Reuse your live strategy helpers
-from engine.strategy_engine import detect_inside_bar  # keep using this
+from engine.strategy_engine import detect_inside_bar  # keep using this for backward compatibility
+from engine.inside_bar_breakout_strategy import InsideBarBreakoutStrategy  # NEW: Use new strategy
 
 
 # ========== PATCH A: Utility Functions (backtest-only enhancements) ==========
@@ -172,7 +173,31 @@ class BacktestEngine:
             return float(atr_pct_series.iloc[idx])
 
         # --- Step 1: find all inside-candle indices (signal lock) ---
-        inside_idxs = detect_inside_bar(data)
+        # Use new strategy for detection if available, else fallback to original
+        try:
+            # Create strategy instance for backtesting (no broker/market_data needed)
+            strategy = InsideBarBreakoutStrategy(
+                broker=None,
+                market_data=None,
+                symbol="NIFTY",
+                lot_size=self.lot_qty,
+                quantity_lots=1,
+                live_mode=False,  # Backtesting mode
+                config=self.config
+            )
+            
+            # Use new strategy's detect_inside_bar method
+            inside_bar_info = strategy.detect_inside_bar(data)
+            if inside_bar_info:
+                # Convert to list of indices for compatibility
+                inside_idxs = [inside_bar_info['inside_bar_idx']]
+            else:
+                inside_idxs = []
+        except Exception as e:
+            # Fallback to original detection method
+            logger.warning(f"New strategy detection failed, using original: {e}")
+            inside_idxs = detect_inside_bar(data)
+        
         if not inside_idxs:
             return self._generate_results(initial_capital, current_capital)
 
@@ -184,27 +209,73 @@ class BacktestEngine:
             signal_high = data['High'].iloc[idx-1]
             signal_low  = data['Low'].iloc[idx-1]
             signal_time = data.index[idx]             # time of the inside candle (current)
-            # we trade only after we get a 1h close outside the signal range
-            future_h = data[data.index > signal_time]
+            
+            # Use new strategy's check_breakout method if available
+            try:
+                # Create strategy instance for backtesting
+                strategy = InsideBarBreakoutStrategy(
+                    broker=None,
+                    market_data=None,
+                    symbol="NIFTY",
+                    lot_size=self.lot_qty,
+                    quantity_lots=1,
+                    live_mode=False,
+                    config=self.config
+                )
+                
+                # Get candles after inside bar
+                future_h = data[data.index > signal_time]
+                if future_h.empty:
+                    continue
+                
+                # Use new strategy's breakout check
+                # Find start index for breakout check
+                start_idx = 0
+                breakout_direction = strategy.check_breakout(
+                    future_h,
+                    signal_high,
+                    signal_low,
+                    start_idx=start_idx
+                )
+                
+                if breakout_direction:
+                    # Find the breakout row
+                    breakout_row = None
+                    for _, row in future_h.iterrows():
+                        c = row['Close']
+                        if (breakout_direction == 'CE' and c > signal_high) or \
+                           (breakout_direction == 'PE' and c < signal_low):
+                            breakout_row = row
+                            direction = breakout_direction
+                            break
+                else:
+                    breakout_row = None
+                    direction = None
+                    
+            except Exception as e:
+                # Fallback to original breakout logic
+                logger.warning(f"New strategy breakout check failed, using original: {e}")
+                # we trade only after we get a 1h close outside the signal range
+                future_h = data[data.index > signal_time]
 
-            if future_h.empty:
-                continue
+                if future_h.empty:
+                    continue
 
-            breakout_row = None
-            direction = None  # 'CE' or 'PE'
+                breakout_row = None
+                direction = None  # 'CE' or 'PE'
 
-            for _, row in future_h.iterrows():
-                c = row['Close']
-                if c > signal_high:
-                    breakout_row = row
-                    direction = 'CE'
-                    break
-                if c < signal_low:
-                    breakout_row = row
-                    direction = 'PE'
-                    break
+                for _, row in future_h.iterrows():
+                    c = row['Close']
+                    if c > signal_high:
+                        breakout_row = row
+                        direction = 'CE'
+                        break
+                    if c < signal_low:
+                        breakout_row = row
+                        direction = 'PE'
+                        break
 
-            if breakout_row is None:
+            if breakout_row is None or direction is None:
                 continue
 
             # ========== PATCH D: Guard each candidate breakout with filters ==========
@@ -299,22 +370,54 @@ class BacktestEngine:
                     data, start_ts=entry_ts, direction=direction, entry_price=entry_price
                 )
 
-            # ========== PATCH G: Vol-band SL selection ==========
-            atr_now = _atrpct_at(entry_ts) or 0.0
-            low_th = float(self.params.get("vol_bands", {}).get("low", 0.40))
-            high_th = float(self.params.get("vol_bands", {}).get("high", 0.75))
-            if atr_now < low_th:
-                sl_pct = float(self.params.get("premium_sl_pct_low", 22.0))
-            elif atr_now < high_th:
-                sl_pct = float(self.params.get("premium_sl_pct_norm", 28.0))
-            else:
-                sl_pct = float(self.params.get("premium_sl_pct_high", 35.0))
+            # --- Calculate SL/TP using new strategy ---
+            use_new_strategy_sl_tp = False
+            try:
+                strategy = InsideBarBreakoutStrategy(
+                    broker=None,
+                    market_data=None,
+                    symbol="NIFTY",
+                    lot_size=self.lot_qty,
+                    quantity_lots=1,
+                    live_mode=False,
+                    config=self.config
+                )
+                sl_points = strategy.sl_points
+                rr_ratio = strategy.rr_ratio
+                stop_loss, take_profit = strategy.calculate_sl_tp_levels(
+                    entry_price,
+                    sl_points,
+                    rr_ratio
+                )
+                use_new_strategy_sl_tp = True
+                logger.debug(f"SL/TP calculated (new strategy): Entry={entry_price:.2f}, SL={stop_loss:.2f}, TP={take_profit:.2f}")
+            except Exception as e:
+                # Fallback to original SL/TP calculation
+                logger.warning(f"New strategy SL/TP calculation failed, using original: {e}")
+                use_new_strategy_sl_tp = False
 
-            # Use vol-band SL if tiered exits enabled, else fallback to legacy
-            if self.flags.get("use_tiered_exits", False):
+            # Use new strategy's SL/TP if calculated, else fallback to vol-band or legacy
+            if use_new_strategy_sl_tp:
+                # Use SL/TP from new strategy
+                sl_price = stop_loss
+                tp_price = take_profit
+            elif self.flags.get("use_tiered_exits", False):
+                # Use vol-band SL if tiered exits enabled
+                atr_now = _atrpct_at(entry_ts) or 0.0
+                low_th = float(self.params.get("vol_bands", {}).get("low", 0.40))
+                high_th = float(self.params.get("vol_bands", {}).get("high", 0.75))
+                if atr_now < low_th:
+                    sl_pct = float(self.params.get("premium_sl_pct_low", 22.0))
+                elif atr_now < high_th:
+                    sl_pct = float(self.params.get("premium_sl_pct_norm", 28.0))
+                else:
+                    sl_pct = float(self.params.get("premium_sl_pct_high", 35.0))
                 sl_price = entry_price * (1.0 - sl_pct / 100.0)
+                tp_price = entry_price * (1 + self.partial_lock_1)  # Use first target as TP
             else:
+                # Legacy SL calculation
                 sl_price = entry_price * (1.0 - self.pct_sl)  # 35% down (legacy)
+                tp_price = entry_price * (1 + self.partial_lock_1)  # Use first target as TP
             trail_price = sl_price  # will update dynamically
 
             # --- simulate walk-forward on hourly option bars ---
