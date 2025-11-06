@@ -3002,6 +3002,30 @@ elif tab == "Backtest":
                             st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
                             st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                             
+                            # ========== CAPITAL ANALYSIS (backtest-only) ==========
+                            st.divider()
+                            st.subheader("💰 Capital Analysis")
+                            
+                            # Average capital required per trade
+                            avg_cap_req = results.get('avg_capital_required', 0.0)
+                            st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
+                            
+                            # Capital exhaustion warning
+                            if results.get('capital_exhausted', False):
+                                trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
+                                st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
+                                st.warning(
+                                    f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
+                                    f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
+                                    f"Consider:\n"
+                                    f"- Increasing initial capital\n"
+                                    f"- Reducing position size\n"
+                                    f"- Tightening stop losses\n"
+                                    f"- Reviewing strategy parameters"
+                                )
+                            else:
+                                st.success("✅ Capital remained positive throughout the backtest period")
+                            
                             # Equity curve
                             if results.get('equity_curve'):
                                 st.divider()
@@ -3163,9 +3187,34 @@ elif tab == "Backtest":
                     st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
                     st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                     
+                    # ========== CAPITAL ANALYSIS (backtest-only) ==========
+                    st.divider()
+                    st.subheader("💰 Capital Analysis")
+                    
+                    # Average capital required per trade
+                    avg_cap_req = results.get('avg_capital_required', 0.0)
+                    st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
+                    
+                    # Capital exhaustion warning
+                    if results.get('capital_exhausted', False):
+                        trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
+                        st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
+                        st.warning(
+                            f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
+                            f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
+                            f"Consider:\n"
+                            f"- Increasing initial capital\n"
+                            f"- Reducing position size\n"
+                            f"- Tightening stop losses\n"
+                            f"- Reviewing strategy parameters"
+                        )
+                    else:
+                        st.success("✅ Capital remained positive throughout the backtest period")
+                    
                     # Equity curve
                     if results.get('equity_curve'):
-                        st.subheader("Equity Curve")
+                        st.divider()
+                        st.subheader("📈 Equity Curve")
                         equity_df = pd.DataFrame({
                             'Capital': results['equity_curve']
                         })
