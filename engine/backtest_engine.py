@@ -362,6 +362,13 @@ class BacktestEngine:
                     # if not found, skip gracefully
                     logger.debug(f"No option data found for trade at {entry_ts} (expiry: {expiry_dt}, strike: {strike}, direction: {direction})")
                     continue
+                
+                # Check if we used a different strike (nearest-strike fallback)
+                actual_strike = int(opt_slice.iloc[0]['strike'])
+                if actual_strike != strike:
+                    logger.info(f"✓ Nearest-strike fallback applied: Using {actual_strike} instead of requested {strike}")
+                    strike = actual_strike  # Update strike to actual for trade record
+                
                 # enter at first bar open on/after entry_ts
                 entry_price = float(opt_slice.iloc[0]['open'])
                 option_path = opt_slice  # we will iterate this for exit
@@ -606,14 +613,72 @@ class BacktestEngine:
         direction: str,
         entry_ts: pd.Timestamp
     ) -> pd.DataFrame:
+        """
+        Select option data slice for the given parameters.
+        Falls back to nearest available strike if exact match not found.
+        
+        Args:
+            options_df: DataFrame with options data
+            expiry_dt: Expiry timestamp
+            atm: Target strike price (may be ATM, ITM, or OTM)
+            direction: 'CE' or 'PE'
+            entry_ts: Entry timestamp
+        
+        Returns:
+            DataFrame with option data, or empty DataFrame if no data available
+        """
         side = 'CE' if direction == 'CE' else 'PE'
-        mask = (
+        
+        # First try exact match
+        exact_mask = (
             (options_df['expiry'].dt.date == expiry_dt.date()) &
             (options_df['strike'] == atm) &
             (options_df['type'] == side) &
             (options_df['timestamp'] >= entry_ts)
         )
-        return options_df.loc[mask].copy()
+        exact_match = options_df.loc[exact_mask].copy()
+        
+        if not exact_match.empty:
+            # Exact match found - use it
+            return exact_match
+        
+        # No exact match - find nearest available strike
+        logger.debug(f"Exact strike {atm} not found, searching for nearest available strike...")
+        
+        # Get all available strikes for this expiry/type combination
+        candidates_mask = (
+            (options_df['expiry'].dt.date == expiry_dt.date()) &
+            (options_df['type'] == side) &
+            (options_df['timestamp'] >= entry_ts)
+        )
+        candidates_df = options_df[candidates_mask]
+        
+        if candidates_df.empty:
+            logger.debug(f"No option data available for {side} on {expiry_dt.date()} at/after {entry_ts}")
+            return pd.DataFrame()
+        
+        # Get unique strikes
+        available_strikes = candidates_df['strike'].unique()
+        
+        # Find nearest strike to target
+        nearest_strike = int(available_strikes[np.abs(available_strikes - atm).argmin()])
+        
+        # Log the fallback
+        strike_diff = abs(nearest_strike - atm)
+        logger.info(
+            f"📍 Using nearest available strike: {nearest_strike} "
+            f"(requested: {atm}, difference: ±{strike_diff})"
+        )
+        
+        # Select data for nearest strike
+        nearest_mask = (
+            (options_df['expiry'].dt.date == expiry_dt.date()) &
+            (options_df['strike'] == nearest_strike) &
+            (options_df['type'] == side) &
+            (options_df['timestamp'] >= entry_ts)
+        )
+        
+        return options_df.loc[nearest_mask].copy()
 
     # ----- synthetic fallback (only used if options_df not supplied) -----
 
