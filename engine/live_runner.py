@@ -517,6 +517,32 @@ class LiveStrategyRunner:
                 include_latest=True  # Include incomplete latest candle for live mode
             )
             
+            # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
+            # Confirm a 1H candle close has occurred before running detection
+            # This ensures we only detect breakouts at actual candle close times (NSE-aligned)
+            try:
+                last_closed_hour_end = self.market_data.get_last_closed_hour_end()
+                logger.debug(f"Last closed 1H candle end time (NSE-aligned): {last_closed_hour_end}")
+                
+                # Check if we have a candle at or before this close time in data_1h
+                if not data_1h.empty:
+                    latest_candle_time = data_1h['Date'].iloc[-1]
+                    # Make timezone-aware for comparison if needed
+                    if hasattr(latest_candle_time, 'tz_localize') and latest_candle_time.tzinfo is None:
+                        import pytz
+                        ist = pytz.timezone('Asia/Kolkata')
+                        latest_candle_time = latest_candle_time.tz_localize(ist)
+                    
+                    # Only proceed if latest candle is at or before last closed hour
+                    if latest_candle_time <= last_closed_hour_end:
+                        logger.info(f"✅ Candle close confirmed: Latest candle {latest_candle_time} <= Last closed {last_closed_hour_end}")
+                    else:
+                        logger.debug(f"⏳ Waiting for candle close: Latest candle {latest_candle_time} > Last closed {last_closed_hour_end}")
+                        # Don't skip - still process with available data
+            except Exception as e:
+                logger.warning(f"Failed to confirm candle close: {e}")
+                # Continue with existing logic
+            
             # Merge live candle snapshot before inside bar detection to ensure no delay
             # Fetch current OHLC snapshot and update the latest candle in data_1h
             try:

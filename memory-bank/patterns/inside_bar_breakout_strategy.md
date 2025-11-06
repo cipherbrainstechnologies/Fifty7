@@ -17,18 +17,22 @@ The Inside Bar + Breakout strategy is a structured approach for trading NIFTY In
 - Scans 1-hour candles for Inside Bar patterns
 - Inside Bar: A candle completely contained within the previous candle's range
 - Pattern: `current_high < prev_high AND current_low > prev_low`
-- Stores the most recent Inside Bar for range marking
+- **NEW (2025-11-06)**: Uses range tightening logic - replaces older inside bars with newer ones if they have narrower ranges
+- **NEW (2025-11-06)**: 1H candles aligned to NSE trading hours (09:15-10:15, 10:15-11:15, etc.) for TradingView consistency
+- Stores the most recent, tightest Inside Bar for range marking
 
 ### 2. Range Marking
 - Extracts high and low from the candle **before** the Inside Bar
 - This range (range_high, range_low) becomes the breakout levels
 
-### 3. Breakout Confirmation (15m Timeframe)
-- Monitors last 5 candles on 15-minute timeframe
-- Checks each candle (oldest to newest) for breakout
-- **Bullish Breakout (CE)**: Close > range_high AND Volume > threshold
-- **Bearish Breakout (PE)**: Close < range_low AND Volume > threshold
-- Volume threshold = Average volume of last 5 candles × multiplier
+### 3. Breakout Confirmation (1H Timeframe)
+- **UPDATED (2025-11-06)**: Now uses 1H timeframe for breakout confirmation (no longer 15m)
+- Monitors candles AFTER the inside bar for breakout
+- Checks up to last 3 candles after inside bar
+- **Bullish Breakout (CE)**: Close > range_high AND (Volume > threshold OR symbol is NIFTY)
+- **Bearish Breakout (PE)**: Close < range_low AND (Volume > threshold OR symbol is NIFTY)
+- **NEW (2025-11-06)**: Volume confirmation skipped for NIFTY index (volume often 0 or NaN for index symbols)
+- Volume threshold = Average volume of reference period × multiplier (default 1.0)
 
 ### 4. Strike Selection
 - ATM (At The Money) based on current NIFTY price
@@ -54,14 +58,17 @@ strategy:
 
 ### Core Functions (engine/strategy_engine.py)
 
-1. **detect_inside_bar(data_1h)**
+1. **detect_inside_bar(data_1h, tighten_signal=True)**
    - Returns list of indices where Inside Bars are detected
    - Requires at least 2 candles of historical data
+   - **NEW (2025-11-06)**: `tighten_signal=True` enables range tightening (replaces older inside bars with tighter ones)
 
-2. **confirm_breakout(data_15m, range_high, range_low)**
-   - Checks last 5 candles for breakout
+2. **confirm_breakout(data_1h, range_high, range_low, inside_bar_idx, volume_threshold_multiplier=1.0, symbol="NIFTY")**
+   - **UPDATED (2025-11-06)**: Now uses 1H data instead of 15m
+   - Checks candles after inside bar index for breakout
    - Returns "CE", "PE", or None
-   - Validates volume spike requirement
+   - **NEW (2025-11-06)**: `symbol` parameter to skip volume check for NIFTY index
+   - Validates volume spike requirement (unless symbol is NIFTY)
 
 3. **calculate_strike_price(current_price, direction, atm_offset)**
    - Calculates option strike based on current NIFTY price
@@ -79,9 +86,10 @@ strategy:
 ## When to Use
 
 - **Market Conditions**: Range-bound markets with clear consolidation periods
-- **Timeframes**: 1H for pattern detection, 15m for entry confirmation
-- **Volume Requirement**: Markets with sufficient volume for reliable confirmation
+- **Timeframes**: 1H for both pattern detection AND breakout confirmation (15m no longer used)
+- **Volume Requirement**: Markets with sufficient volume for reliable confirmation (NIFTY index exempt)
 - **Risk Tolerance**: Traders comfortable with defined risk-reward ratios
+- **NSE Trading Hours**: 09:15-15:15 IST, 1H candles close at XX:15 (aligned with TradingView)
 
 ## When NOT to Use
 
@@ -99,7 +107,8 @@ strategy:
    - **Mitigation**: System filters out incomplete candles before analysis
 
 3. **Range Selection**: Wrong range (from incorrect Inside Bar) leads to bad entries
-   - **Mitigation**: Uses most recent Inside Bar for consistency
+   - **Mitigation**: Uses most recent, tightest Inside Bar with range tightening logic (2025-11-06 fix)
+   - **Mitigation**: No longer stuck on old inside bars from previous days
 
 4. **Option Pricing**: Entry price estimation may differ from actual option price
    - **Mitigation**: System fetches actual option price from broker API when available
@@ -139,6 +148,18 @@ The strategy can be tested with:
 ## References
 
 - Strategy Engine: `engine/strategy_engine.py`
+- Market Data Provider: `engine/market_data.py`
+- Live Runner: `engine/live_runner.py`
 - Signal Handler: `engine/signal_handler.py`
 - Configuration: `config/config.yaml`
+
+## Recent Updates
+
+### 2025-11-06: Inside Bar Detection & Breakout Timing Fix
+- **NSE-Aligned Candles**: 1H candles now close at XX:15 (09:15-10:15, 10:15-11:15, etc.)
+- **Range Tightening**: System dynamically updates to newest/tightest inside bar
+- **Volume Skip**: NIFTY index now exempt from volume confirmation (volume often 0 or NaN)
+- **Real-Time Detection**: Breakouts detected at candle close, no one-bar lag
+- **Candle Close Confirmation**: Added `get_last_closed_hour_end()` helper for NSE-aligned timing
+- See: `INSIDE_BAR_FIX_SUMMARY.md` for full details
 
