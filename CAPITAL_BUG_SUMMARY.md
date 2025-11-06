@@ -76,12 +76,14 @@ capital_required = self.lot_qty * entry_price
 
 ---
 
-## Next Steps
+## Status Update
 
-1. ✅ **Analysis Complete** (this document)
-2. ⏳ **Apply Fix** to `backtest_engine.py`
+1. ✅ **Analysis Complete** 
+2. ✅ **Fix Applied** to `backtest_engine.py` 
 3. ⏳ **Re-run Backtests** with corrected logic
 4. ⏳ **Verify Results** are realistic
+
+**See `CAPITAL_BUG_FIX_APPLIED.md` for detailed fix documentation.**
 
 ---
 
