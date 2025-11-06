@@ -34,7 +34,10 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
     
     logger.info(f"🔍 Starting Inside Bar detection scan on {len(data_1h)} 1-hour candles")
     
-    for i in range(2, len(data_1h)):
+    # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+    # Changed iteration start from index 2 to index 1 to check latest candle pair immediately
+    # This allows detection of inside bars on the most recent candle pair without waiting
+    for i in range(1, len(data_1h)):
         # Check if current candle is inside the previous candle (i-1)
         current_high = data_1h['High'].iloc[i]
         current_low = data_1h['Low'].iloc[i]
@@ -54,7 +57,7 @@ def detect_inside_bar(data_1h: pd.DataFrame) -> List[int]:
             prev_time = f"Candle_{i-1}"
         
         # Log reference candle (previous candle)
-        if i == 2:
+        if i == 1:
             logger.info(f"📊 Reference candle: {prev_time} => High: {prev_high:.2f}, Low: {prev_low:.2f}")
         
         # Inside bar condition: 

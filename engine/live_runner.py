@@ -8,6 +8,7 @@ from typing import Dict, Optional, List
 from datetime import datetime, timedelta, time as dt_time
 from pytz import timezone
 from logzero import logger
+import pandas as pd
 
 from engine.market_data import MarketDataProvider
 from engine.signal_handler import SignalHandler
@@ -53,7 +54,9 @@ class LiveStrategyRunner:
         
         # Configuration from config file
         market_data_config = config.get('market_data', {})
-        self.polling_interval = market_data_config.get('polling_interval_seconds', 900)  # 15 minutes default
+        # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+        # Reduced polling interval from 900s (15 min) to 10s for real-time signal detection
+        self.polling_interval = market_data_config.get('polling_interval_seconds', 10)  # 10 seconds default
         self.max_retries = market_data_config.get('max_retries', 3)
         self.retry_delay = market_data_config.get('retry_delay_seconds', 5)
         
@@ -500,15 +503,63 @@ class LiveStrategyRunner:
             self.market_data.refresh_data()
             self.last_fetch_time = datetime.now()
             
+            # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
+            # Pass include_latest=True to get current incomplete candle for real-time detection
             # Get aggregated dataframes (prefer direct interval fetching with fallback to resampling)
             data_1h = self.market_data.get_1h_data(
                 window_hours=self.config.get('market_data', {}).get('data_window_hours_1h', 48),
-                use_direct_interval=True  # Try ONE_HOUR interval first
+                use_direct_interval=True,  # Try ONE_HOUR interval first
+                include_latest=True  # Include incomplete latest candle for live mode
             )
             data_15m = self.market_data.get_15m_data(
                 window_hours=self.config.get('market_data', {}).get('data_window_hours_15m', 12),
-                use_direct_interval=True  # Try FIFTEEN_MINUTE interval first
+                use_direct_interval=True,  # Try FIFTEEN_MINUTE interval first
+                include_latest=True  # Include incomplete latest candle for live mode
             )
+            
+            # Merge live candle snapshot before inside bar detection to ensure no delay
+            # Fetch current OHLC snapshot and update the latest candle in data_1h
+            try:
+                ohlc_snapshot = self.market_data.fetch_ohlc(mode="OHLC")
+                if ohlc_snapshot and not data_1h.empty:
+                    current_time = datetime.now()
+                    # Round down to nearest hour for 1H timeframe
+                    rounded_1h = current_time.replace(minute=0, second=0, microsecond=0)
+                    
+                    # Check if latest candle in data_1h matches current hour
+                    latest_candle_time = data_1h['Date'].iloc[-1]
+                    if hasattr(latest_candle_time, 'replace'):
+                        # If latest candle is for current hour, update it with live snapshot
+                        if latest_candle_time.replace(minute=0, second=0, microsecond=0) == rounded_1h:
+                            # Update latest candle with live OHLC data
+                            data_1h.loc[data_1h.index[-1], 'High'] = max(
+                                data_1h.loc[data_1h.index[-1], 'High'],
+                                ohlc_snapshot.get('high', data_1h.loc[data_1h.index[-1], 'High'])
+                            )
+                            data_1h.loc[data_1h.index[-1], 'Low'] = min(
+                                data_1h.loc[data_1h.index[-1], 'Low'],
+                                ohlc_snapshot.get('low', data_1h.loc[data_1h.index[-1], 'Low'])
+                            )
+                            data_1h.loc[data_1h.index[-1], 'Close'] = ohlc_snapshot.get('ltp', ohlc_snapshot.get('close', data_1h.loc[data_1h.index[-1], 'Close']))
+                            if 'Volume' in data_1h.columns:
+                                data_1h.loc[data_1h.index[-1], 'Volume'] = ohlc_snapshot.get('tradeVolume', data_1h.loc[data_1h.index[-1], 'Volume'])
+                            logger.debug(f"Merged live OHLC snapshot into latest 1H candle: H={data_1h.loc[data_1h.index[-1], 'High']:.2f}, L={data_1h.loc[data_1h.index[-1], 'Low']:.2f}, C={data_1h.loc[data_1h.index[-1], 'Close']:.2f}")
+                        else:
+                            # New candle period started, create new row
+                            new_row = pd.DataFrame([{
+                                'Date': rounded_1h,
+                                'Open': ohlc_snapshot.get('open', ohlc_snapshot.get('ltp', 0)),
+                                'High': ohlc_snapshot.get('high', ohlc_snapshot.get('ltp', 0)),
+                                'Low': ohlc_snapshot.get('low', ohlc_snapshot.get('ltp', 0)),
+                                'Close': ohlc_snapshot.get('ltp', ohlc_snapshot.get('close', 0)),
+                                'Volume': ohlc_snapshot.get('tradeVolume', 0)
+                            }])
+                            data_1h = pd.concat([data_1h, new_row], ignore_index=True)
+                            data_1h = data_1h.sort_values('Date').reset_index(drop=True)
+                            logger.debug(f"Added new 1H candle from live snapshot: {rounded_1h}")
+            except Exception as e:
+                logger.warning(f"Failed to merge live candle snapshot: {e}")
+                # Continue with existing data if merge fails
             
             # Check if we have sufficient data - ONLY 1H data required now (1H breakouts only)
             if data_1h.empty:
