@@ -317,8 +317,8 @@ class BacktestEngine:
             entry_ts = data.index[entry_bar_idx]
             spot_at_entry = entry_bar['Open']
             
-            # Calculate strike for capital requirement check
-            strike_for_capital = self._calculate_strike(spot_at_entry, direction)
+            # Calculate strike price for option selection
+            strike = self._calculate_strike(spot_at_entry, direction)
 
             # expiry handling
             expiry_dt = self._get_expiry_for(entry_ts, expiries_df)
@@ -351,8 +351,7 @@ class BacktestEngine:
             # --- determine option entry premium ---
             # Prefer real options_df; else fallback to synthetic using spot & delta 0.5
             if options_df is not None and expiry_dt is not None:
-                # Calculate strike based on selection (ATM/ITM/OTM)
-                strike = strike_for_capital  # Use pre-calculated strike
+                # Use pre-calculated strike (already calculated above)
                 strike_selection = self.config.get("strike_selection", "ATM 0")
                 logger.debug(f"Strike selection: {strike_selection} | Spot: {spot_at_entry:.2f} | Direction: {direction} | Calculated Strike: {strike}")
                 opt_slice = self._select_option_slice(
@@ -380,13 +379,15 @@ class BacktestEngine:
                 )
             
             # ========== CAPITAL REQUIREMENT CHECK ==========
-            # Capital required = qty * strike price (margin requirement for options trading)
-            capital_required = self.lot_qty * strike_for_capital
+            # Capital required = qty * option premium (the amount paid to BUY the option)
+            # NOTE: When buying options, you pay the PREMIUM, not the strike price!
+            capital_required = self.lot_qty * entry_price
             
             # Check if current capital is sufficient
             if current_capital < capital_required:
                 logger.debug(f"Trade skipped due to insufficient capital at {entry_ts}: "
-                           f"Required: ₹{capital_required:.2f}, Available: ₹{current_capital:.2f}")
+                           f"Required: ₹{capital_required:.2f} (Premium: ₹{entry_price:.2f} × {self.lot_qty} qty), "
+                           f"Available: ₹{current_capital:.2f}")
                 continue
 
             # --- Calculate SL/TP using new strategy ---
@@ -488,7 +489,7 @@ class BacktestEngine:
                 'exit_reason': exit_reason,
                 'expiry': expiry_dt.date().isoformat() if expiry_dt is not None else None,
                 'quantity': self.lot_qty,
-                'strike': int(self._calculate_strike(spot_at_entry, direction)),
+                'strike': int(strike),
                 'notes': notes  # PATCH: filter/sizing reasons
             })
 
