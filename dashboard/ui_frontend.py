@@ -2993,6 +2993,8 @@ elif tab == "Backtest":
                             st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
                             st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
                             st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
+                            st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
+                            st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                             
                             # Equity curve
                             if results.get('equity_curve'):
@@ -3147,6 +3149,8 @@ elif tab == "Backtest":
                     st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
                     st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
                     st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
+                    st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
+                    st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
                     
                     # Equity curve
                     if results.get('equity_curve'):

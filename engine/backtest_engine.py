@@ -316,6 +316,9 @@ class BacktestEngine:
             entry_bar = data.iloc[entry_bar_idx]
             entry_ts = data.index[entry_bar_idx]
             spot_at_entry = entry_bar['Open']
+            
+            # Calculate strike for capital requirement check
+            strike_for_capital = self._calculate_strike(spot_at_entry, direction)
 
             # expiry handling
             expiry_dt = self._get_expiry_for(entry_ts, expiries_df)
@@ -349,7 +352,7 @@ class BacktestEngine:
             # Prefer real options_df; else fallback to synthetic using spot & delta 0.5
             if options_df is not None and expiry_dt is not None:
                 # Calculate strike based on selection (ATM/ITM/OTM)
-                strike = self._calculate_strike(spot_at_entry, direction)
+                strike = strike_for_capital  # Use pre-calculated strike
                 strike_selection = self.config.get("strike_selection", "ATM 0")
                 logger.debug(f"Strike selection: {strike_selection} | Spot: {spot_at_entry:.2f} | Direction: {direction} | Calculated Strike: {strike}")
                 opt_slice = self._select_option_slice(
@@ -368,6 +371,16 @@ class BacktestEngine:
                 option_path = self._build_synthetic_path(
                     data, start_ts=entry_ts, direction=direction, entry_price=entry_price
                 )
+            
+            # ========== CAPITAL REQUIREMENT CHECK ==========
+            # Capital required = qty * strike price (margin requirement for options trading)
+            capital_required = self.lot_qty * strike_for_capital
+            
+            # Check if current capital is sufficient
+            if current_capital < capital_required:
+                logger.debug(f"Trade skipped due to insufficient capital at {entry_ts}: "
+                           f"Required: ₹{capital_required:.2f}, Available: ₹{current_capital:.2f}")
+                continue
 
             # --- Calculate SL/TP using new strategy ---
             use_new_strategy_sl_tp = False
@@ -887,6 +900,7 @@ class BacktestEngine:
                 'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
                 'total_pnl': 0.0, 'win_rate': 0.0,
                 'avg_win': 0.0, 'avg_loss': 0.0, 'max_drawdown': 0.0,
+                'max_winning_streak': 0, 'max_losing_streak': 0,
                 'initial_capital': initial_capital, 'final_capital': final_capital,
                 'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': []
             }
@@ -899,6 +913,28 @@ class BacktestEngine:
         avg_win   = float(winners['pnl'].mean()) if not winners.empty else 0.0
         avg_loss  = float(losers['pnl'].mean()) if not losers.empty else 0.0
         max_dd    = self._calculate_max_drawdown()
+        
+        # ========== CALCULATE WINNING AND LOSING STREAKS ==========
+        max_winning_streak = 0
+        max_losing_streak = 0
+        current_winning_streak = 0
+        current_losing_streak = 0
+        
+        for _, trade in df.iterrows():
+            if trade['pnl'] > 0:
+                # Winning trade
+                current_winning_streak += 1
+                current_losing_streak = 0
+                max_winning_streak = max(max_winning_streak, current_winning_streak)
+            elif trade['pnl'] < 0:
+                # Losing trade
+                current_losing_streak += 1
+                current_winning_streak = 0
+                max_losing_streak = max(max_losing_streak, current_losing_streak)
+            # If pnl == 0 (breakeven), we could reset both or continue - let's reset both
+            else:
+                current_winning_streak = 0
+                current_losing_streak = 0
 
         return {
             'total_trades': int(len(df)),
@@ -907,6 +943,8 @@ class BacktestEngine:
             'total_pnl': total_pnl, 'win_rate': win_rate,
             'avg_win': avg_win, 'avg_loss': avg_loss,
             'max_drawdown': max_dd,
+            'max_winning_streak': int(max_winning_streak),
+            'max_losing_streak': int(max_losing_streak),
             'initial_capital': initial_capital, 'final_capital': final_capital,
             'return_pct': ((final_capital - initial_capital) / initial_capital * 100.0) if initial_capital > 0 else 0.0,
             'equity_curve': self.equity_curve,
