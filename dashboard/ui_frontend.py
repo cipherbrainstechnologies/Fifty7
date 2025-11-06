@@ -2838,12 +2838,12 @@ elif tab == "Backtest":
             'distance_guard_atr': float(distance_guard_atr),
             'adx_min': 0.0,
             'vol_bands': {
-                'low': float(vol_low),
-                'high': float(vol_high)
+                'low': float(vol_band_low),
+                'high': float(vol_band_high)
             },
-            'premium_sl_pct_low': float(prem_sl_low),
-            'premium_sl_pct_norm': float(prem_sl_norm),
-            'premium_sl_pct_high': float(prem_sl_high),
+            'premium_sl_pct_low': float(sl_pct_low),
+            'premium_sl_pct_norm': float(sl_pct_norm),
+            'premium_sl_pct_high': float(sl_pct_high),
             'be_at_r': float(be_at_r),
             'trail_lookback': int(trail_lookback),
             'trail_mult': float(trail_mult),
