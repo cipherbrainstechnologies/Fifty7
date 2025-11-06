@@ -2868,9 +2868,9 @@ elif tab == "Backtest":
                             st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
                             st.write(f"**Winning Trades:** {results['winning_trades']}")
                             st.write(f"**Losing Trades:** {results['losing_trades']}")
-                            st.write(f"**Average Win:** ₹{results['avg_win']:,.2f}")
-                            st.write(f"**Average Loss:** ₹{results['avg_loss']:,.2f}")
-                            st.write(f"**Max Drawdown:** {results['max_drawdown']:.2f}%")
+                            st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
+                            st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
+                            st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
                             
                             # Equity curve
                             if results.get('equity_curve'):
@@ -2995,9 +2995,9 @@ elif tab == "Backtest":
                     st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
                     st.write(f"**Winning Trades:** {results['winning_trades']}")
                     st.write(f"**Losing Trades:** {results['losing_trades']}")
-                    st.write(f"**Average Win:** ₹{results['avg_win']:,.2f}")
-                    st.write(f"**Average Loss:** ₹{results['avg_loss']:,.2f}")
-                    st.write(f"**Max Drawdown:** {results['max_drawdown']:.2f}%")
+                    st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
+                    st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
+                    st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
                     
                     # Equity curve
                     if results.get('equity_curve'):

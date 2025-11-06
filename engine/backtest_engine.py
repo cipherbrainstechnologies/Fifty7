@@ -834,6 +834,7 @@ class BacktestEngine:
             return {
                 'total_trades': 0, 'winning_trades': 0, 'losing_trades': 0,
                 'total_pnl': 0.0, 'win_rate': 0.0,
+                'avg_win': 0.0, 'avg_loss': 0.0, 'max_drawdown': 0.0,
                 'initial_capital': initial_capital, 'final_capital': final_capital,
                 'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': []
             }
