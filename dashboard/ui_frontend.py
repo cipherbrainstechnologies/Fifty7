@@ -56,6 +56,14 @@ from engine.live_runner import LiveStrategyRunner
 from engine.firebase_auth import FirebaseAuth
 from dashboard.auth_page import render_login_page
 
+# Initialize database on startup
+try:
+    from engine.db import init_database
+    init_database(create_all=True)
+    logger.info("Database initialized successfully")
+except Exception as e:
+    logger.warning(f"Database initialization failed (non-critical): {e}")
+
 # Cloud data source
 try:
     from backtesting.datasource_desiquant import stream_data
@@ -757,11 +765,32 @@ if tab == "Dashboard":
         # P&L Summary Card
         try:
             from engine.pnl_service import compute_realized_pnl
+            from engine.db import init_database
+            from sqlalchemy.exc import OperationalError
+            
+            # Ensure database is initialized
+            try:
+                init_database(create_all=True)
+            except Exception:
+                pass  # Non-critical
+            
             org_id = config.get('tenant', {}).get('org_id', 'demo-org')
             user_id = config.get('tenant', {}).get('user_id', 'admin')
-            pnl_data = compute_realized_pnl(org_id, user_id)
-            total_pnl = pnl_data.get('realized_pnl', 0.0)
-        except:
+            
+            try:
+                pnl_data = compute_realized_pnl(org_id, user_id)
+                total_pnl = pnl_data.get('realized_pnl', 0.0)
+            except OperationalError:
+                # Table doesn't exist yet - initialize and retry
+                try:
+                    init_database(create_all=True)
+                    pnl_data = compute_realized_pnl(org_id, user_id)
+                    total_pnl = pnl_data.get('realized_pnl', 0.0)
+                except Exception:
+                    total_pnl = 0.0
+            except Exception:
+                total_pnl = 0.0
+        except Exception:
             total_pnl = 0.0
         
         pnl_color = "🟢" if total_pnl >= 0 else "🔴"
@@ -1652,14 +1681,42 @@ elif tab == "P&L":
     st.header("💹 P&L Analysis")
     try:
         from engine.pnl_service import compute_realized_pnl, pnl_timeseries
+        from engine.db import init_database
+        from sqlalchemy.exc import OperationalError
+        
+        # Ensure database is initialized
+        try:
+            init_database(create_all=True)
+        except Exception as db_init_error:
+            logger.warning(f"Database initialization warning: {db_init_error}")
+        
         # Basic tenant context (dev default); wire real org/user later
         org_id = config.get('tenant', {}).get('org_id', 'demo-org')
         user_id = config.get('tenant', {}).get('user_id', 'admin')
 
-        # Get P&L data
-        res = compute_realized_pnl(org_id, user_id)
-        total_pnl = res.get('realized_pnl', 0.0)
-        series = pnl_timeseries(org_id, user_id)
+        # Get P&L data with error handling
+        try:
+            res = compute_realized_pnl(org_id, user_id)
+            total_pnl = res.get('realized_pnl', 0.0)
+            series = pnl_timeseries(org_id, user_id)
+        except OperationalError as db_error:
+            # Database table doesn't exist - initialize and retry
+            logger.warning(f"Database table missing, initializing: {db_error}")
+            try:
+                init_database(create_all=True)
+                res = compute_realized_pnl(org_id, user_id)
+                total_pnl = res.get('realized_pnl', 0.0)
+                series = pnl_timeseries(org_id, user_id)
+            except Exception as retry_error:
+                logger.error(f"Failed to initialize database: {retry_error}")
+                st.warning("⚠️ Database not initialized. P&L data will be available after first trade execution.")
+                total_pnl = 0.0
+                series = []
+        except Exception as pnl_error:
+            logger.error(f"P&L service error: {pnl_error}")
+            st.warning(f"⚠️ P&L service error: {pnl_error}")
+            total_pnl = 0.0
+            series = []
         
         # Cumulative P&L Card
         pnl_color = "🟢" if total_pnl >= 0 else "🔴"

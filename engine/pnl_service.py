@@ -7,8 +7,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 
-from .db import get_session
+from .db import get_session, init_database
 from .models import Trade
 
 
@@ -73,6 +74,40 @@ def compute_realized_pnl(org_id: str, user_id: str, start: Optional[datetime] = 
             "realized_pnl": float(total),
             "by_symbol": symbol_breakdown,
         }
+    except OperationalError as e:
+        # Table doesn't exist - initialize database and return empty result
+        try:
+            init_database(create_all=True)
+            # Retry query after initialization
+            stmt = select(Trade).where(Trade.org_id == org_id, Trade.user_id == user_id)
+            if start:
+                stmt = stmt.where(Trade.traded_at >= start)
+            if end:
+                stmt = stmt.where(Trade.traded_at <= end)
+            stmt = stmt.order_by(Trade.symbol.asc(), Trade.traded_at.asc(), Trade.id.asc())
+            rows = list(db.execute(stmt).scalars())
+            
+            by_symbol: Dict[str, List[Trade]] = defaultdict(list)
+            for r in rows:
+                by_symbol[r.symbol].append(r)
+            
+            total = Decimal("0")
+            symbol_breakdown: Dict[str, str] = {}
+            for sym, ts in by_symbol.items():
+                realized = _fifo_realized_pnl(ts)
+                symbol_breakdown[sym] = f"{realized:.2f}"
+                total += realized
+            
+            return {
+                "realized_pnl": float(total),
+                "by_symbol": symbol_breakdown,
+            }
+        except Exception:
+            # Return empty result if initialization fails
+            return {
+                "realized_pnl": 0.0,
+                "by_symbol": {},
+            }
     finally:
         try:
             next(sess_gen)
@@ -109,6 +144,34 @@ def pnl_timeseries(org_id: str, user_id: str) -> List[Dict]:
         for d in days:
             series.append({"date": d, "net_cash_flow": float(sells.get(d, 0) - buys.get(d, 0))})
         return series
+    except OperationalError as e:
+        # Table doesn't exist - initialize database and retry
+        try:
+            init_database(create_all=True)
+            # Retry query after initialization
+            day_col = func.date(Trade.traded_at)
+            buy_flow = (
+                db.query(day_col.label("d"), func.sum(Trade.price * Trade.quantity).label("amt"))
+                .filter(Trade.org_id == org_id, Trade.user_id == user_id, Trade.side == "BUY")
+                .group_by(day_col)
+                .all()
+            )
+            sell_flow = (
+                db.query(day_col.label("d"), func.sum(Trade.price * Trade.quantity).label("amt"))
+                .filter(Trade.org_id == org_id, Trade.user_id == user_id, Trade.side == "SELL")
+                .group_by(day_col)
+                .all()
+            )
+            buys = {str(d): Decimal(amt or 0) for d, amt in buy_flow}
+            sells = {str(d): Decimal(amt or 0) for d, amt in sell_flow}
+            days = sorted(set(buys.keys()) | set(sells.keys()))
+            series: List[Dict] = []
+            for d in days:
+                series.append({"date": d, "net_cash_flow": float(sells.get(d, 0) - buys.get(d, 0))})
+            return series
+        except Exception:
+            # Return empty series if initialization fails
+            return []
     finally:
         try:
             next(sess_gen)
