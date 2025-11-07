@@ -9,6 +9,8 @@ import time
 from logzero import logger
 import pytz
 
+IST = pytz.timezone("Asia/Kolkata")
+
 # Retry configuration for resilient API calls
 MAX_RETRIES = 3
 RETRY_DELAY = 5  # seconds
@@ -73,8 +75,7 @@ class MarketDataProvider:
             True if candle is complete, False if still forming
         """
         # Always evaluate completeness in IST to avoid dropping freshly closed candles
-        ist = pytz.timezone("Asia/Kolkata")
-        current_time = datetime.now(tz=ist)
+        current_time = datetime.now(tz=IST)
         
         # Normalize candle_time. Convert pandas Timestamp to Python datetime if needed
         if hasattr(candle_time, 'to_pydatetime'):
@@ -82,9 +83,9 @@ class MarketDataProvider:
         
         # If candle_time is timezone-aware, convert to IST; otherwise localize to IST
         if candle_time.tzinfo is not None:
-            candle_time_ist = candle_time.astimezone(ist)
+            candle_time_ist = candle_time.astimezone(IST)
         else:
-            candle_time_ist = ist.localize(candle_time)
+            candle_time_ist = IST.localize(candle_time)
         
         next_candle_start = candle_time_ist + timedelta(minutes=timeframe_minutes)
         
@@ -194,7 +195,7 @@ class MarketDataProvider:
                     if attempt == max_retries - 1 and error_code in ['AB1004', '']:
                         logger.info("Attempting final retry with smaller date window")
                         # Try with 6-hour window instead of full window
-                        smaller_from = (datetime.now() - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
+                        smaller_from = (datetime.now(tz=IST) - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M")
                         retry_params = params.copy()
                         retry_params['fromdate'] = smaller_from
                         self._rate_limit()
@@ -431,11 +432,11 @@ class MarketDataProvider:
             
             # Default to last 3 days if dates not provided (expanded for reliable resampling)
             if to_date is None:
-                to_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+                to_date = datetime.now(tz=IST).strftime("%Y-%m-%d %H:%M")
             
             if from_date is None:
                 # Expand to 3 days to ensure sufficient data for aggregation
-                from_datetime = datetime.now() - timedelta(days=3)
+                from_datetime = datetime.now(tz=IST) - timedelta(days=3)
                 from_date = from_datetime.strftime("%Y-%m-%d %H:%M")
                 logger.debug(f"Fetching historical data from {from_date} to {to_date} (3-day window)")
             
@@ -717,8 +718,7 @@ class MarketDataProvider:
         Returns:
             Timestamp of last closed 1H candle end time (IST timezone-aware)
         """
-        ist = pytz.timezone('Asia/Kolkata')
-        now = pd.Timestamp.now(tz=ist)
+        now = pd.Timestamp.now(tz=IST)
         
         # Market opens at 09:15, first 1H candle closes at 10:15
         # Subsequent candles close at 11:15, 12:15, 13:15, 14:15, 15:15
@@ -756,8 +756,7 @@ class MarketDataProvider:
         
         # Make timezone-aware if not already
         if raw_data['Date'].dt.tz is None:
-            ist = pytz.timezone('Asia/Kolkata')
-            raw_data['Date'] = raw_data['Date'].dt.tz_localize(ist)
+            raw_data['Date'] = raw_data['Date'].dt.tz_localize(IST)
         else:
             # Convert to IST if in different timezone
             raw_data['Date'] = raw_data['Date'].dt.tz_convert('Asia/Kolkata')
@@ -817,7 +816,7 @@ class MarketDataProvider:
         # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
         # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
-        current_time = datetime.now()
+        current_time = datetime.now(tz=IST)
         to_time = current_time - timedelta(minutes=5)
         from_time = current_time - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
         
@@ -858,7 +857,7 @@ class MarketDataProvider:
                 if not self._data_1h.empty and 'Date' in self._data_1h.columns:
                     latest_cached_date = self._data_1h['Date'].iloc[-1]
                     if isinstance(latest_cached_date, pd.Timestamp):
-                        days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                        days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
                         if days_old > 1:
                             logger.warning(f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). Clearing stale cache.")
                             self._data_1h = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
@@ -895,8 +894,8 @@ class MarketDataProvider:
             # Check if cached data is stale before using fallback
             if not self._data_1h.empty and 'Date' in self._data_1h.columns:
                 latest_cached_date = self._data_1h['Date'].iloc[-1]
-                if isinstance(latest_cached_date, pd.Timestamp):
-                    days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                    if isinstance(latest_cached_date, pd.Timestamp):
+                        days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
                     if days_old > 1:
                         logger.warning(f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). Clearing stale cache.")
                         self._data_1h = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
@@ -904,7 +903,7 @@ class MarketDataProvider:
             # Fallback: Fetch current OHLC and add to buffer
             ohlc = self.fetch_ohlc(mode="OHLC")
             if ohlc:
-                current_time = datetime.now()
+                current_time = datetime.now(tz=IST)
                 new_row = pd.DataFrame([{
                     'Date': current_time.replace(minute=0, second=0, microsecond=0),
                     'Open': ohlc.get('open', 0),
@@ -930,8 +929,8 @@ class MarketDataProvider:
         # Validate cached data freshness
         if not all_candles.empty and 'Date' in all_candles.columns:
             latest_cached_date = all_candles['Date'].iloc[-1]
-            if isinstance(latest_cached_date, pd.Timestamp):
-                days_old = (datetime.now() - latest_cached_date.to_pydatetime()).days
+                if isinstance(latest_cached_date, pd.Timestamp):
+                    days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
                 if days_old > 1:
                     logger.warning(f"⚠️ Cached data is {days_old} days old (latest: {latest_cached_date}). This may cause incorrect signals.")
                 elif days_old > 0:
@@ -971,7 +970,7 @@ class MarketDataProvider:
         # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
         # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
-        current_time = datetime.now()
+        current_time = datetime.now(tz=IST)
         to_time = current_time - timedelta(minutes=5)
         from_time = current_time - timedelta(hours=window_hours + 2)  # Add buffer for complete candles
         
@@ -1041,7 +1040,7 @@ class MarketDataProvider:
             # Fallback: Fetch current OHLC
             ohlc = self.fetch_ohlc(mode="OHLC")
             if ohlc:
-                current_time = datetime.now()
+                current_time = datetime.now(tz=IST)
                 # Round down to nearest 15 minutes
                 rounded_time = current_time.replace(minute=(current_time.minute // 15) * 15, second=0, microsecond=0)
                 
@@ -1114,7 +1113,7 @@ class MarketDataProvider:
         ohlc = self.fetch_ohlc(mode="OHLC")
         
         if ohlc:
-            current_time = datetime.now()
+            current_time = datetime.now(tz=IST)
             
             # Update 15-minute buffer
             rounded_15m = current_time.replace(minute=(current_time.minute // 15) * 15, second=0, microsecond=0)
@@ -1213,7 +1212,7 @@ class MarketDataProvider:
                 'time_remaining_minutes': float
             }
         """
-        current_time = datetime.now()
+        current_time = datetime.now(tz=IST)
         
         if timeframe == "15m":
             rounded_time = current_time.replace(minute=(current_time.minute // 15) * 15, second=0, microsecond=0)
