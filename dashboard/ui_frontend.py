@@ -1151,68 +1151,115 @@ if tab == "Dashboard":
     
     # TradingView Widget for NIFTY and BANKNIFTY
     tradingview_widget_html = """
-    <!-- TradingView Widget BEGIN -->
-    <div class="tradingview-widget-container">
-      <div class="tradingview-widget-container__widget"></div>
-      <div class="tradingview-widget-copyright"><a href="https://www.tradingview.com/symbols/NSE-NIFTY/" rel="noopener nofollow" target="_blank"><span class="blue-text">NIFTY</span></a><span class="and">&nbsp;and&nbsp;</span><a href="https://www.tradingview.com/symbols/NSE-BANKNIFTY/" rel="noopener nofollow" target="_blank"><span class="blue-text">BANKNIFTY quote</span></a><span class="trademark">&nbsp;by TradingView</span></div>
-      <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-symbol-overview.js" async>
-      {
-        "lineWidth": 2,
-        "lineType": 0,
-        "chartType": "area",
-        "showVolume": true,
-        "fontColor": "rgb(106, 109, 120)",
-        "gridLineColor": "rgba(46, 46, 46, 0.06)",
-        "volumeUpColor": "rgba(34, 171, 148, 0.5)",
-        "volumeDownColor": "rgba(247, 82, 95, 0.5)",
-        "backgroundColor": "#ffffff",
-        "widgetFontColor": "#0F0F0F",
-        "upColor": "#22ab94",
-        "downColor": "#f7525f",
-        "borderUpColor": "#22ab94",
-        "borderDownColor": "#f7525f",
-        "wickUpColor": "#22ab94",
-        "wickDownColor": "#f7525f",
-        "colorTheme": "light",
-        "isTransparent": false,
-        "locale": "en",
-        "chartOnly": false,
-        "scalePosition": "right",
-        "scaleMode": "Normal",
-        "fontFamily": "-apple-system, BlinkMacSystemFont, Trebuchet MS, Roboto, Ubuntu, sans-serif",
-        "valuesTracking": "1",
-        "changeMode": "price-and-percent",
-        "symbols": [
-          ["NSE:NIFTY|ALL"],
-          ["NSE:BANKNIFTY|ALL"]
-        ],
-        "dateRanges": [
-          "1d|1",
-          "1m|30",
-          "3m|60",
-          "12m|1D",
-          "60m|1W",
-          "all|1M"
-        ],
-        "fontSize": "10",
-        "headerFontSize": "medium",
-        "autosize": true,
-        "width": "100%",
-        "height": "100%",
-        "noTimeScale": false,
-        "hideDateRanges": false,
-        "hideMarketStatus": false,
-        "hideSymbolLogo": false
-      }
-      </script>
+    <div class="tv-wrapper">
+      <div class="tv-chart" id="tv-nifty"></div>
+      <div class="tv-chart" id="tv-banknifty"></div>
+      <div class="tv-footer">
+        Charts courtesy of <a href="https://www.tradingview.com/" target="_blank" rel="noopener nofollow">TradingView</a>
+      </div>
     </div>
-    <!-- TradingView Widget END -->
+    <script type="text/javascript">
+      (function() {
+        const SCRIPT_ID = "tradingview-widget-loader";
+
+        function initWidgets() {
+          if (!window.TradingView || !window.TradingView.widget) {
+            setTimeout(initWidgets, 200);
+            return;
+          }
+
+          const widgetConfigs = [
+            {
+              container_id: "tv-nifty",
+              symbol: "NSE:NIFTY",
+              interval: "60",
+              timezone: "Asia/Kolkata",
+              theme: "light",
+              style: "1",
+              locale: "en",
+              toolbar_bg: "#f1f3f6",
+              hide_top_toolbar: false,
+              hide_legend: false,
+              withdateranges: true,
+              allow_symbol_change: false,
+              hide_side_toolbar: false,
+              autosize: true,
+              studies: []
+            },
+            {
+              container_id: "tv-banknifty",
+              symbol: "NSE:BANKNIFTY",
+              interval: "60",
+              timezone: "Asia/Kolkata",
+              theme: "light",
+              style: "1",
+              locale: "en",
+              toolbar_bg: "#f1f3f6",
+              hide_top_toolbar: false,
+              hide_legend: false,
+              withdateranges: true,
+              allow_symbol_change: false,
+              hide_side_toolbar: false,
+              autosize: true,
+              studies: []
+            }
+          ];
+
+          widgetConfigs.forEach((config) => {
+            window.TradingView.widget({
+              ...config,
+              container_id: config.container_id,
+              support_host: "https://www.tradingview.com"
+            });
+          });
+        }
+
+        function loadScript() {
+          if (document.getElementById(SCRIPT_ID)) {
+            initWidgets();
+            return;
+          }
+
+          const script = document.createElement("script");
+          script.id = SCRIPT_ID;
+          script.type = "text/javascript";
+          script.src = "https://s3.tradingview.com/tv.js";
+          script.onload = initWidgets;
+          document.head.appendChild(script);
+        }
+
+        loadScript();
+      })();
+    </script>
+    <style>
+      .tv-wrapper {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        width: 100%;
+        height: 100%;
+      }
+      .tv-chart {
+        position: relative;
+        width: 100%;
+        min-height: 380px;
+        height: 380px;
+      }
+      .tv-footer {
+        text-align: right;
+        font-size: 12px;
+        color: #6a6d78;
+      }
+      .tv-footer a {
+        color: inherit;
+      }
+    </style>
     """
     
     # Display TradingView widget using Streamlit components
     try:
         import streamlit.components.v1 as components
-        components.html(tradingview_widget_html, height=600, scrolling=False)
+        components.html(tradingview_widget_html, height=820, scrolling=False)
     except Exception as e:
         # Fallback to markdown if components.html fails
         st.markdown(tradingview_widget_html, unsafe_allow_html=True)
