@@ -2874,8 +2874,8 @@ elif tab == "Backtest":
         'lot_size': lot_size,
         'strike_selection': strike_selection,
         'strike_offset_base': strike_offset_base,
-        'strike_is_itm': strike_is_itm,
-        'strike_is_otm': strike_is_otm
+        'strike_is_itm': is_itm,
+        'strike_is_otm': is_otm
     }
     
     # Initialize engine (used by both modes)
