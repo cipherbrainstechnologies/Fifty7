@@ -1374,7 +1374,7 @@ if tab == "Dashboard":
             data_15m = st.session_state.market_data_provider.get_15m_data(
                 window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
             )
-
+            
             raw_data_1h = data_1h.copy() if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
             raw_data_15m = data_15m.copy() if isinstance(data_15m, pd.DataFrame) else pd.DataFrame()
 
@@ -1383,93 +1383,7 @@ if tab == "Dashboard":
 
             debug_df = data_1h if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
 
-            st.subheader("🧭 Debug Snapshot")
-            local_flag = str(os.getenv("LOCAL_RUN", "")).lower() in {"1", "true", "yes", "local"}
-            st.write("Environment:", "Local" if local_flag else "Hosted")
-            data_source_path = (
-                os.getenv("DATA_SOURCE_PATH")
-                or st.session_state.get("data_source_path")
-                or st.session_state.get("historical_data_path")
-                or "Not set"
-            )
-            st.write("Data Source Path:", data_source_path)
-            st.write("Candle Count:", len(debug_df))
-            st.write("Server Time (IST):", format_ist_timestamp(pd.Timestamp.now(tz='Asia/Kolkata')))
-
-            if not raw_data_1h.empty and 'Date' in raw_data_1h.columns:
-                raw_tz = getattr(raw_data_1h['Date'].dt, "tz", None)
-                st.write("Raw 1H Date dtype:", str(raw_data_1h['Date'].dtype))
-                st.write("Raw 1H timezone: ", str(raw_tz))
-                st.write(
-                    "Raw 1H sample (first 3):",
-                    [str(val) for val in raw_data_1h['Date'].head(3)]
-                )
-                st.write(
-                    "Raw 1H sample (last 3):",
-                    [str(val) for val in raw_data_1h['Date'].tail(3)]
-                )
-
-            if not raw_data_15m.empty and 'Date' in raw_data_15m.columns:
-                raw15_tz = getattr(raw_data_15m['Date'].dt, "tz", None)
-                st.write("Raw 15m Date dtype:", str(raw_data_15m['Date'].dtype))
-                st.write("Raw 15m timezone: ", str(raw15_tz))
-
-            fetch_meta_1h = None
-            fetch_meta_15m = None
-            fetch_meta_1m = None
-            if hasattr(st.session_state.market_data_provider, 'get_last_fetch_meta'):
-                fetch_meta_1h = st.session_state.market_data_provider.get_last_fetch_meta("ONE_HOUR")
-                fetch_meta_15m = st.session_state.market_data_provider.get_last_fetch_meta("FIFTEEN_MINUTE")
-                fetch_meta_1m = st.session_state.market_data_provider.get_last_fetch_meta("ONE_MINUTE")
-
-            if fetch_meta_1h:
-                st.write(
-                    "1H API Window:",
-                    f"{fetch_meta_1h.get('from', '—')} → {fetch_meta_1h.get('to', '—')}"
-                )
-                st.write("1H API Status:", fetch_meta_1h.get('status', 'unknown'))
-                st.write("1H API Rows:", fetch_meta_1h.get('rows', '—'))
-                if fetch_meta_1h.get('last_date'):
-                    st.write("1H API Last Date:", fetch_meta_1h.get('last_date'))
-
-            if fetch_meta_15m:
-                st.write(
-                    "15m API Window:",
-                    f"{fetch_meta_15m.get('from', '—')} → {fetch_meta_15m.get('to', '—')}"
-                )
-                st.write("15m API Status:", fetch_meta_15m.get('status', 'unknown'))
-                st.write("15m API Rows:", fetch_meta_15m.get('rows', '—'))
-                if fetch_meta_15m.get('last_date'):
-                    st.write("15m API Last Date:", fetch_meta_15m.get('last_date'))
-
-            if fetch_meta_1m:
-                st.write(
-                    "1m API Window:",
-                    f"{fetch_meta_1m.get('from', '—')} → {fetch_meta_1m.get('to', '—')}"
-                )
-                st.write("1m API Status:", fetch_meta_1m.get('status', 'unknown'))
-                st.write("1m API Rows:", fetch_meta_1m.get('rows', '—'))
-
-            if not debug_df.empty and 'Date' in debug_df.columns:
-                st.write("Market Hours (IST):", "09:15 AM → 03:30 PM")
-                st.write("Data Range:", format_ist_timestamp(debug_df['Date'].min()), "→", format_ist_timestamp(debug_df['Date'].max()))
-
-                date_series = debug_df['Date']
-                if getattr(date_series.dt, "tz", None) is None:
-                    date_series = date_series.dt.tz_localize('Asia/Kolkata')
-                else:
-                    date_series = date_series.dt.tz_convert('Asia/Kolkata')
-                unique_dates = [d.strftime("%d-%b-%Y") for d in date_series.dt.date.unique()]
-                st.write("Unique Dates:", unique_dates)
-
-                last_timestamps = [format_ist_timestamp(ts) for ts in debug_df['Date'].tail()]
-                st.write("Last 5 Timestamps:", last_timestamps)
-
-                preview_df = debug_df.head().copy()
-                preview_df['Date'] = preview_df['Date'].apply(format_ist_timestamp)
-                st.dataframe(preview_df, use_container_width=True, height=200)
-            else:
-                st.info("1H candle data not available for debugging.")
+            # Debug Snapshot UI temporarily disabled (2025-11-07)
 
             if not data_1h.empty and not data_15m.empty:
                 # Show data availability
@@ -1573,10 +1487,10 @@ if tab == "Dashboard":
                     range_low = data_1h['Low'].iloc[latest_idx - 1]
                     inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
                     ref_time = data_1h['Date'].iloc[latest_idx - 1] if 'Date' in data_1h.columns else f"Index_{latest_idx - 1}"
-
+                    
                     inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
                     ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
-
+                    
                     st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
 
                     st.write("**Most Recent Inside Bar Details:**")
