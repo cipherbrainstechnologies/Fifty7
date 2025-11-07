@@ -48,6 +48,7 @@ class MarketDataProvider:
         self._raw_data_buffer = []  # Store raw OHLC snapshots
         self._data_1h = pd.DataFrame()
         self._data_15m = pd.DataFrame()
+        self._historical_cache: Dict[str, pd.DataFrame] = {}
         
         # Rate limiting
         self._last_request_time = 0
@@ -71,33 +72,23 @@ class MarketDataProvider:
         Returns:
             True if candle is complete, False if still forming
         """
-        # Get current time in IST (timezone-naive, but assume IST)
-        # Note: datetime.now() returns local time (which should be IST for Indian systems)
-        current_time = datetime.now()
+        # Always evaluate completeness in IST to avoid dropping freshly closed candles
+        ist = pytz.timezone("Asia/Kolkata")
+        current_time = datetime.now(tz=ist)
         
-        # Normalize candle_time: if it's timezone-aware (from API), convert to IST-naive
-        # Convert pandas Timestamp to Python datetime if needed
+        # Normalize candle_time. Convert pandas Timestamp to Python datetime if needed
         if hasattr(candle_time, 'to_pydatetime'):
             candle_time = candle_time.to_pydatetime()
         
-        # If candle_time is timezone-aware, convert to IST then remove timezone info
+        # If candle_time is timezone-aware, convert to IST; otherwise localize to IST
         if candle_time.tzinfo is not None:
-            # Convert to IST first, then remove timezone info
-            try:
-                import pytz
-                ist = pytz.timezone('Asia/Kolkata')
-                if candle_time.tzinfo != ist:
-                    # Convert to IST
-                    candle_time = candle_time.astimezone(ist)
-                # Remove timezone info to make it naive (IST)
-                candle_time = candle_time.replace(tzinfo=None)
-            except ImportError:
-                # Fallback: just remove timezone (assume already IST)
-                candle_time = candle_time.replace(tzinfo=None)
+            candle_time_ist = candle_time.astimezone(ist)
+        else:
+            candle_time_ist = ist.localize(candle_time)
         
-        next_candle_start = candle_time + timedelta(minutes=timeframe_minutes)
+        next_candle_start = candle_time_ist + timedelta(minutes=timeframe_minutes)
         
-        # Candle is complete if current time >= next candle start time
+        # Candle is complete if current IST time is past the next candle start
         return current_time >= next_candle_start
     
     def _get_complete_candles(self, df: pd.DataFrame, timeframe_minutes: int) -> pd.DataFrame:
@@ -213,10 +204,14 @@ class MarketDataProvider:
                             if data and len(data) > 0:
                                 logger.info(f"Retry with smaller window succeeded on attempt {attempt + 1}")
                                 return retry_resp
+                        else:
+                            logger.warning("Final retry with smaller window still failed or returned empty data")
                 
                 # If not successful and not last attempt, sleep and retry
                 if attempt < max_retries:
-                    time.sleep(retry_delay)
+                    backoff = retry_delay * attempt
+                    logger.debug(f"Sleeping {backoff} seconds before retry (attempt {attempt + 1})")
+                    time.sleep(backoff)
                     continue
                 else:
                     logger.error(f"All {max_retries} retries failed for getCandleData")
@@ -225,7 +220,9 @@ class MarketDataProvider:
             except Exception as e:
                 logger.error(f"[Retry {attempt}/{max_retries}] Exception occurred: {e}")
                 if attempt < max_retries:
-                    time.sleep(retry_delay)
+                    backoff = retry_delay * attempt
+                    logger.debug(f"Sleeping {backoff} seconds before retry due to exception")
+                    time.sleep(backoff)
                     continue
                 else:
                     logger.error("All retries exhausted due to exceptions")
@@ -260,6 +257,15 @@ class MarketDataProvider:
                 symbol_result = self.broker._search_symbol(self.nifty_exchange, symbol)
                 
                 if not symbol_result:
+                    continue
+                
+                if isinstance(symbol_result, dict) and symbol_result.get('status') is False:
+                    logger.warning(
+                        f"Symbol search rejected for {symbol}: "
+                        f"{symbol_result.get('message', 'no message')} "
+                        f"(code: {symbol_result.get('errorcode', 'N/A')})"
+                    )
+                    # Continue to next symbol but ensure we surface rejection
                     continue
                 
                 # Parse response - check different possible response formats
@@ -421,6 +427,8 @@ class MarketDataProvider:
                 if symbol_token is None:
                     return None
             
+            cache_key = f"{exchange}:{symbol_token}:{interval}"
+            
             # Default to last 3 days if dates not provided (expanded for reliable resampling)
             if to_date is None:
                 to_date = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -444,6 +452,13 @@ class MarketDataProvider:
             response = self._fetch_candles_with_retry(params)
             
             if response is None:
+                if cache_key in self._historical_cache:
+                    cached_len = len(self._historical_cache[cache_key])
+                    logger.warning(
+                        f"Using cached historical data ({cached_len} candles) for {interval} "
+                        f"after API failure with params {params}"
+                    )
+                    return self._historical_cache[cache_key].copy()
                 logger.error("Failed to fetch historical candles after all retries")
                 return None
             
@@ -481,6 +496,13 @@ class MarketDataProvider:
                 # Log error code and message if available
                 if response.get('errorcode'):
                     logger.debug(f"API error code: {response.get('errorcode')}, message: {response.get('message', 'N/A')}")
+                if cache_key in self._historical_cache:
+                    cached_len = len(self._historical_cache[cache_key])
+                    logger.warning(
+                        f"Falling back to cached historical data ({cached_len} candles) for {interval} "
+                        f"after empty response"
+                    )
+                    return self._historical_cache[cache_key].copy()
                 # This might be normal if market is closed or no data for the time range
                 return None
             
@@ -625,6 +647,12 @@ class MarketDataProvider:
                 logger.debug(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
             else:
                 logger.warning(f"No candles returned for interval {interval} from {from_date} to {to_date}")
+            
+            # Cache latest successful dataset for fallback usage
+            try:
+                self._historical_cache[cache_key] = df.copy()
+            except Exception as cache_error:
+                logger.debug(f"Failed to cache historical data for key {cache_key}: {cache_error}")
             
             return df
             
