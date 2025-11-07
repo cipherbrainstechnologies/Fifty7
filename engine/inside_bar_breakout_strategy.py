@@ -14,8 +14,7 @@ Strategy Rules:
 """
 
 import pandas as pd
-import numpy as np
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 from datetime import datetime, timedelta
 import pytz
 from logzero import logger
@@ -28,12 +27,467 @@ from .market_data import MarketDataProvider
 
 
 # Configuration
-LIVE_MODE = True  # Set to False to test without real trades
+LIVE_MODE = False  # Default to safe dry-run mode for development
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 15
 MARKET_CLOSE_HOUR = 15
 MARKET_CLOSE_MINUTE = 15
 IST = pytz.timezone('Asia/Kolkata')
+
+
+def ist_now() -> datetime:
+    """Return current IST-aware datetime."""
+    return datetime.now(IST)
+
+
+def to_ist(dt: Any) -> datetime:
+    """Ensure a datetime-like object is converted to IST-aware datetime."""
+    if dt is None:
+        raise ValueError("Datetime value cannot be None for IST conversion")
+    
+    if isinstance(dt, pd.Timestamp):
+        ts = dt.to_pydatetime()
+    elif isinstance(dt, datetime):
+        ts = dt
+    else:
+        ts = pd.to_datetime(dt).to_pydatetime()
+    
+    if ts.tzinfo is None:
+        return IST.localize(ts)
+    return ts.astimezone(IST)
+
+
+def format_ist_datetime(dt: Any) -> str:
+    """Format datetime in DD-MMM-YYYY HH:MM:SS IST."""
+    return to_ist(dt).strftime("%d-%b-%Y %H:%M:%S IST")
+
+
+def format_ist_date(dt: Any) -> str:
+    """Format datetime in DD-MMM-YYYY."""
+    return to_ist(dt).strftime("%d-%b-%Y")
+
+
+def log_candle(label: str, candle: Dict[str, Any]):
+    """Structured logging for candle OHLC data."""
+    if not candle:
+        logger.debug(f"{label}: No candle data available")
+        return
+    candle_time = candle.get('Date')
+    open_price = candle.get('Open')
+    high_price = candle.get('High')
+    low_price = candle.get('Low')
+    close_price = candle.get('Close')
+    logger.info(
+        f"{label}: {format_ist_datetime(candle_time)} | "
+        f"O={open_price:.2f}, H={high_price:.2f}, "
+        f"L={low_price:.2f}, C={close_price:.2f}"
+    )
+
+
+def _ensure_datetime_column(candles: pd.DataFrame) -> pd.DataFrame:
+    """Ensure candles DataFrame has a Date column with datetime objects."""
+    if candles is None or candles.empty:
+        return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+    
+    working = candles.copy()
+    if 'Date' not in working.columns:
+        if isinstance(working.index, pd.DatetimeIndex):
+            working = working.reset_index().rename(columns={'index': 'Date'})
+        else:
+            raise ValueError("Candles DataFrame must include a 'Date' column or DateTimeIndex")
+    
+    working['Date'] = pd.to_datetime(working['Date'])
+    return working
+
+
+def _candle_end_time(candle_time: Any) -> datetime:
+    """Return the end time (close) of a 1-hour candle."""
+    return to_ist(candle_time) + timedelta(hours=1)
+
+
+def get_hourly_candles(
+    market_data: Optional[MarketDataProvider] = None,
+    window_hours: int = 48,
+    data: Optional[pd.DataFrame] = None,
+    current_time: Optional[datetime] = None
+) -> pd.DataFrame:
+    """
+    Fetch closed hourly candles aligned to IST market hours.
+    Excludes incomplete candles but retains the just-closed candle.
+    """
+    source = "provided_data" if data is not None else "market_data"
+    
+    if data is not None:
+        candles = _ensure_datetime_column(data)
+    else:
+        if market_data is None:
+            raise ValueError("market_data provider is required when data is not supplied")
+        raw_candles = market_data.get_1h_data(
+            window_hours=window_hours,
+            use_direct_interval=True,
+            include_latest=True
+        )
+        candles = _ensure_datetime_column(raw_candles) if raw_candles is not None else pd.DataFrame()
+    
+    if candles.empty:
+        logger.warning("No hourly candles available after initial fetch")
+        return candles
+    
+    candles = candles.drop_duplicates(subset=['Date']).sort_values('Date').reset_index(drop=True)
+    
+    # Normalize to IST-aware timestamps
+    try:
+        candles['Date'] = pd.to_datetime(candles['Date'], utc=False)
+        if getattr(candles['Date'].dt, "tz", None) is None:
+            candles['Date'] = candles['Date'].dt.tz_localize(IST)
+        else:
+            candles['Date'] = candles['Date'].dt.tz_convert(IST)
+    except Exception as tz_error:
+        logger.warning(f"Failed to normalize candle timestamps to IST: {tz_error}")
+        candles['Date'] = candles['Date'].apply(to_ist)
+    
+    # Determine reference time for completeness checks
+    if current_time is not None:
+        reference_time = to_ist(current_time)
+    elif market_data is not None:
+        try:
+            reference_time = market_data.get_last_closed_hour_end()
+        except Exception as err:
+            logger.warning(f"Unable to fetch last closed hour end from market data: {err}")
+            reference_time = ist_now()
+    else:
+        reference_time = ist_now()
+    
+    def is_complete(row) -> bool:
+        return _candle_end_time(row['Date']) <= reference_time
+    
+    completeness_mask = candles.apply(is_complete, axis=1)
+    incomplete = candles.loc[~completeness_mask]
+    if not incomplete.empty:
+        excluded_labels = ", ".join(format_ist_datetime(ts) for ts in incomplete['Date'])
+        logger.info(f"Excluded {len(incomplete)} incomplete 1-hour candle(s): {excluded_labels}")
+    
+    closed_candles = candles.loc[completeness_mask].reset_index(drop=True)
+    closed_candles['Date'] = closed_candles['Date'].dt.tz_localize(None)
+    
+    logger.info(f"Prepared {len(closed_candles)} closed 1-hour candles (source={source})")
+    return closed_candles
+
+
+def detect_inside_bar(candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """
+    Detect the preferred inside bar from the provided candles.
+    Preference order:
+      1. Inside bar formed today (IST)
+      2. Most recent inside bar
+      3. Narrowest range if multiple candidates share the same timestamp
+    """
+    candles = _ensure_datetime_column(candles)
+    if len(candles) < 2:
+        logger.debug("Insufficient candles for inside bar detection")
+        return None
+    
+    today_date = ist_now().date()
+    candidates: List[Dict[str, Any]] = []
+    
+    for idx in range(1, len(candles)):
+        current = candles.iloc[idx]
+        previous = candles.iloc[idx - 1]
+        
+        is_inside = (current['High'] < previous['High']) and (current['Low'] > previous['Low'])
+        logger.debug(
+            f"Inside bar check at index {idx}: "
+            f"High {current['High']:.2f} < {previous['High']:.2f} "
+            f"and Low {current['Low']:.2f} > {previous['Low']:.2f} => {is_inside}"
+        )
+        
+        if not is_inside:
+            continue
+        
+        inside_time = to_ist(current['Date'])
+        signal_time = to_ist(previous['Date'])
+        range_width = previous['High'] - previous['Low']
+        
+        candidate = {
+            'inside_bar_idx': idx,
+            'inside_bar_time': inside_time,
+            'inside_bar': {
+                'Date': inside_time,
+                'Open': current['Open'],
+                'High': current['High'],
+                'Low': current['Low'],
+                'Close': current['Close'],
+            },
+            'signal_idx': idx - 1,
+            'signal_time': signal_time,
+            'signal_candle': {
+                'Date': signal_time,
+                'Open': previous['Open'],
+                'High': previous['High'],
+                'Low': previous['Low'],
+                'Close': previous['Close'],
+            },
+            'range_high': previous['High'],
+            'range_low': previous['Low'],
+            'range_width': range_width,
+            'priority': (
+                0 if inside_time.date() == today_date else 1,
+                -idx,
+                range_width
+            )
+        }
+        candidates.append(candidate)
+    
+    if not candidates:
+        logger.debug("No inside bar candidates detected")
+        return None
+    
+    selected = min(candidates, key=lambda c: c['priority'])
+    logger.info(
+        f"Inside bar selected at {format_ist_datetime(selected['inside_bar_time'])} | "
+        f"Signal candle at {format_ist_datetime(selected['signal_time'])} | "
+        f"Range: {selected['range_low']:.2f}-{selected['range_high']:.2f} "
+        f"(width {selected['range_width']:.2f})"
+    )
+    return selected
+
+
+def get_active_signal(
+    candles: pd.DataFrame,
+    previous_signal: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Maintain the active signal using the most recent (preferably today's) inside bar.
+    Keeps existing signal active until a newer inside bar supersedes it.
+    """
+    candidate = detect_inside_bar(candles)
+    if candidate is None:
+        if previous_signal:
+            logger.debug("No new inside bar detected; retaining existing active signal")
+            return previous_signal
+        return None
+    
+    if previous_signal:
+        prev_idx = previous_signal.get('inside_bar_idx')
+        prev_time = to_ist(previous_signal.get('inside_bar_time'))
+        if prev_idx == candidate['inside_bar_idx'] and prev_time == candidate['inside_bar_time']:
+            logger.debug("Inside bar unchanged; keeping existing active signal")
+            return previous_signal
+        if prev_time > candidate['inside_bar_time']:
+            logger.debug("Existing signal is more recent; retaining it")
+            return previous_signal
+    
+    signal = {
+        'inside_bar_idx': candidate['inside_bar_idx'],
+        'inside_bar_time': candidate['inside_bar_time'],
+        'inside_bar': candidate['inside_bar'],
+        'signal_idx': candidate['signal_idx'],
+        'signal_time': candidate['signal_time'],
+        'signal_candle': candidate['signal_candle'],
+        'range_high': candidate['range_high'],
+        'range_low': candidate['range_low']
+    }
+    
+    logger.info(
+        f"Active signal updated → Inside bar {format_ist_datetime(signal['inside_bar_time'])} "
+        f"| Signal range {signal['range_low']:.2f}-{signal['range_high']:.2f}"
+    )
+    log_candle("Signal candle", signal['signal_candle'])
+    log_candle("Inside bar candle", signal['inside_bar'])
+    return signal
+
+
+def confirm_breakout_on_hour_close(
+    candles: pd.DataFrame,
+    signal: Optional[Dict[str, Any]],
+    current_time: Optional[datetime] = None
+) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """
+    Confirm breakout using only closed 1-hour candles.
+    
+    Returns:
+        direction ("CE"/"PE") if breakout detected, otherwise None
+        latest_closed_candle dict for observability/logging
+    """
+    if signal is None:
+        logger.debug("No active signal to evaluate breakout against")
+        return None, None
+    
+    candles = _ensure_datetime_column(candles)
+    if current_time is None:
+        current_time = ist_now()
+    current_time = to_ist(current_time)
+    
+    start_idx = signal['inside_bar_idx'] + 1
+    if start_idx >= len(candles):
+        logger.debug("No candles available after inside bar for breakout evaluation")
+        return None, None
+    
+    latest_closed: Optional[Dict[str, Any]] = None
+    for idx in range(start_idx, len(candles)):
+        candle = candles.iloc[idx]
+        candle_start = to_ist(candle['Date'])
+        candle_end = candle_start + timedelta(hours=1)
+        
+        if candle_end > current_time:
+            continue  # Incomplete candle
+        
+        close_price = candle['Close']
+        breakout_low = close_price < signal['range_low']
+        breakout_high = close_price > signal['range_high']
+        
+        logger.info(
+            f"Breakout evaluation at {format_ist_datetime(candle_end)} | "
+            f"close={close_price:.2f}, "
+            f"close < signal_low ({signal['range_low']:.2f}) = {breakout_low}, "
+            f"close > signal_high ({signal['range_high']:.2f}) = {breakout_high}"
+        )
+        
+        latest_closed = {
+            'index': idx,
+            'Date': candle_end,
+            'Open': candle['Open'],
+            'High': candle['High'],
+            'Low': candle['Low'],
+            'Close': close_price
+        }
+        
+        if breakout_high:
+            log_candle("Breakout candle (CE)", latest_closed)
+            logger.info("Breakout confirmed on CE side based on 1-hour close")
+            return "CE", latest_closed
+        
+        if breakout_low:
+            log_candle("Breakout candle (PE)", latest_closed)
+            logger.info("Breakout confirmed on PE side based on 1-hour close")
+            return "PE", latest_closed
+    
+    if latest_closed:
+        log_candle("Latest closed 1H candle (no breakout)", latest_closed)
+    else:
+        logger.debug("No closed 1H candles available after inside bar yet")
+    return None, latest_closed
+
+
+def check_margin(
+    broker: Optional[BrokerInterface],
+    quantity_lots: int,
+    lot_size: int,
+    entry_price: Optional[float]
+) -> Tuple[bool, float, float]:
+    """
+    Check available margin. Returns (has_margin, available_margin, required_margin).
+    """
+    if quantity_lots <= 0:
+        logger.warning("Quantity lots must be positive for margin check")
+        return False, 0.0, 0.0
+    
+    required_margin = (entry_price or 0) * quantity_lots * lot_size
+    if required_margin <= 0:
+        # Conservative fallback estimate per lot if entry price unavailable
+        required_margin = quantity_lots * 50000
+    
+    if broker is None:
+        logger.info("No broker instance; assuming sufficient margin for simulation mode")
+        return True, float('inf'), required_margin
+    
+    try:
+        available_margin = broker.get_available_margin()
+    except Exception as err:
+        logger.exception(f"Failed to retrieve available margin: {err}")
+        return False, 0.0, required_margin
+    
+    if available_margin >= required_margin:
+        logger.info(
+            f"Margin check → available ₹{available_margin:,.2f} "
+            f">= required ₹{required_margin:,.2f}"
+        )
+        return True, available_margin, required_margin
+    
+    logger.warning(
+        f"Insufficient margin → available ₹{available_margin:,.2f} "
+        f"< required ₹{required_margin:,.2f}"
+    )
+    return False, available_margin, required_margin
+
+
+def place_order(
+    broker: Optional[BrokerInterface],
+    symbol: str,
+    strike: int,
+    direction: str,
+    quantity_lots: int,
+    live_mode: bool,
+    execution_armed: bool
+) -> Dict[str, Any]:
+    """
+    Place order with safety guardrails.
+    Returns broker response or simulated result.
+    """
+    attempt_timestamp = format_ist_datetime(ist_now())
+    logger.info(
+        f"[Order Attempt {attempt_timestamp}] {direction} {symbol} {strike} | "
+        f"Quantity: {quantity_lots} lot(s) | live_mode={live_mode}, armed={execution_armed}"
+    )
+    
+    if not live_mode:
+        order_id = f"SIM_{ist_now().strftime('%Y%m%d%H%M%S')}"
+        logger.info(f"LIVE_MODE disabled → Dry-run order {order_id}")
+        return {
+            'status': True,
+            'order_id': order_id,
+            'message': 'Simulated order (LIVE_MODE=False)',
+            'response': None,
+            'simulated': True
+        }
+    
+    if not execution_armed:
+        logger.warning("Live mode enabled but execution not armed. Skipping real order (dry run).")
+        return {
+            'status': False,
+            'order_id': None,
+            'message': 'Execution not armed (dry run)',
+            'response': None,
+            'simulated': True
+        }
+    
+    if broker is None:
+        logger.error("Broker instance not available for live order placement")
+        return {
+            'status': False,
+            'order_id': None,
+            'message': 'Broker not configured',
+            'response': None
+        }
+    
+    try:
+        response = broker.place_order(
+            symbol=symbol,
+            strike=strike,
+            direction=direction,
+            quantity=quantity_lots,
+            order_type="MARKET",
+            transaction_type="BUY"
+        )
+        logger.info(f"Order API response: {response}")
+        return response
+    except Exception as err:
+        logger.exception(f"Order placement raised exception: {err}")
+        return {
+            'status': False,
+            'order_id': None,
+            'message': f'Exception during order placement: {err}',
+            'response': None
+        }
+
+
+# Internal aliases so class methods can reuse functional helpers without recursion
+_GET_HOURLY_CANDLES = get_hourly_candles
+_DETECT_INSIDE_BAR = detect_inside_bar
+_GET_ACTIVE_SIGNAL = get_active_signal
+_CONFIRM_BREAKOUT = confirm_breakout_on_hour_close
+_CHECK_MARGIN = check_margin
+_PLACE_ORDER = place_order
 
 
 class InsideBarBreakoutStrategy:
@@ -69,7 +523,8 @@ class InsideBarBreakoutStrategy:
         self.symbol = symbol
         self.lot_size = lot_size
         self.quantity_lots = quantity_lots
-        self.live_mode = live_mode
+        self.live_mode = bool(live_mode and LIVE_MODE)
+        self.execution_armed = False
         self.csv_export_path = csv_export_path or "logs/inside_bar_breakout_results.csv"
         self.config = config or {}
         
@@ -79,18 +534,18 @@ class InsideBarBreakoutStrategy:
         self.atm_offset = self.config.get('strategy', {}).get('atm_offset', 0)  # Strike offset
         
         # Strategy state
-        self.signal_candle_high = None
-        self.signal_candle_low = None
-        self.signal_candle_date = None
-        self.inside_bar_date = None
-        self.last_checked_candle_idx = -1
+        self.active_signal: Optional[Dict[str, Any]] = None
+        self.last_breakout_candle_idx: Optional[int] = None
         
         # Ensure CSV directory exists
         if self.csv_export_path:
             os.makedirs(os.path.dirname(self.csv_export_path) or '.', exist_ok=True)
             self._initialize_csv()
         
-        logger.info(f"Inside Bar Breakout Strategy initialized (Live Mode: {self.live_mode})")
+        logger.info(
+            f"Inside Bar Breakout Strategy initialized "
+            f"(Live Mode Enabled: {self.live_mode}, LIVE_MODE flag: {LIVE_MODE})"
+        )
     
     def _initialize_csv(self):
         """Initialize CSV file with headers if it doesn't exist."""
@@ -198,153 +653,30 @@ class InsideBarBreakoutStrategy:
         
         return market_open <= dt <= market_close
     
-    def get_hourly_candles(self, window_hours: int = 48, data: Optional[pd.DataFrame] = None) -> Optional[pd.DataFrame]:
+    def get_hourly_candles(
+        self,
+        window_hours: int = 48,
+        data: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
         """
-        Fetch 1-hour candles from market data provider or use provided data.
-        
-        Args:
-            window_hours: Number of hours of data to fetch (default: 48)
-            data: Optional DataFrame with candles (for backtesting mode)
-        
-        Returns:
-            DataFrame with 1-hour OHLC candles or None if error
+        Wrapper around module-level get_hourly_candles to maintain backwards compatibility.
         """
-        # Backtesting mode: use provided data
-        if data is not None:
-            candles = data.copy()
-            # Ensure Date column exists or use index
-            if 'Date' not in candles.columns and isinstance(candles.index, pd.DatetimeIndex):
-                candles = candles.reset_index()
-                if 'Date' not in candles.columns and len(candles.columns) > 0:
-                    # Use first datetime column as Date
-                    for col in candles.columns:
-                        if pd.api.types.is_datetime64_any_dtype(candles[col]):
-                            candles.rename(columns={col: 'Date'}, inplace=True)
-                            break
-            logger.info(f"✅ Using provided {len(candles)} hourly candles (backtesting mode)")
-            return candles
-        
-        # Live mode: fetch from market data provider
-        if self.market_data is None:
-            logger.error("Market data provider not available and no data provided")
-            return None
-        
         try:
-            # Use market data provider to fetch 1-hour candles
-            # include_latest=True for live mode to get current incomplete candle
-            candles = self.market_data.get_1h_data(
+            candles = _GET_HOURLY_CANDLES(
+                market_data=self.market_data,
                 window_hours=window_hours,
-                use_direct_interval=True,
-                include_latest=True  # Include latest incomplete candle for live trading
+                data=data
             )
-            
-            if candles is None or candles.empty:
-                logger.warning("No hourly candles fetched from market data provider")
-                return None
-            
-            # Ensure Date column is datetime
-            if 'Date' in candles.columns:
-                if not pd.api.types.is_datetime64_any_dtype(candles['Date']):
-                    candles['Date'] = pd.to_datetime(candles['Date'])
-                
-                # Normalize to IST if timezone-aware
-                if candles['Date'].dt.tz is not None:
-                    candles['Date'] = candles['Date'].dt.tz_convert(IST).dt.tz_localize(None)
-            
-            # Filter to market hours only
-            if 'Date' in candles.columns:
-                candles = candles[candles['Date'].apply(self._is_market_hours)]
-            
-            # Log latest candle for debugging
-            if not candles.empty and 'Date' in candles.columns:
-                latest_candle_date = candles['Date'].iloc[-1]
-                logger.info(f"✅ Fetched {len(candles)} hourly candles | Latest candle: {latest_candle_date}")
-            else:
-                logger.info(f"✅ Fetched {len(candles)} hourly candles")
             return candles
-            
-        except Exception as e:
-            logger.exception(f"Error fetching hourly candles: {e}")
-            return None
+        except Exception as err:
+            logger.exception(f"Error retrieving hourly candles: {err}")
+            return pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
     
-    def detect_inside_bar(self, candles: pd.DataFrame) -> Optional[Dict]:
+    def detect_inside_bar(self, candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """
-        Detect the most recent inside bar candle.
-        
-        An inside bar is when:
-        - current_high < previous_high
-        - current_low > previous_low
-        
-        Args:
-            candles: DataFrame with 1-hour OHLC candles
-        
-        Returns:
-            Dictionary with inside bar info or None if not found:
-            {
-                'inside_bar_idx': int,
-                'inside_bar_date': datetime,
-                'signal_candle_high': float,
-                'signal_candle_low': float,
-                'signal_candle_date': datetime
-            }
+        Backwards-compatible wrapper for module-level detect_inside_bar utility.
         """
-        if candles is None or len(candles) < 2:
-            logger.debug("Insufficient candles for inside bar detection (need at least 2)")
-            return None
-        
-        # Scan from most recent to oldest
-        # We want the most recent inside bar
-        # Log latest candle for debugging
-        if 'Date' in candles.columns:
-            latest_candle_date = candles['Date'].iloc[-1]
-            logger.debug(f"🔍 Scanning for inside bars from latest candle: {latest_candle_date}")
-        
-        for i in range(len(candles) - 1, 0, -1):
-            current_high = candles['High'].iloc[i]
-            current_low = candles['Low'].iloc[i]
-            prev_high = candles['High'].iloc[i - 1]
-            prev_low = candles['Low'].iloc[i - 1]
-            
-            # Get dates for logging
-            if 'Date' in candles.columns:
-                current_date = candles['Date'].iloc[i]
-                prev_date = candles['Date'].iloc[i - 1]
-            else:
-                current_date = f"Index_{i}"
-                prev_date = f"Index_{i-1}"
-            
-            # Inside bar condition: current is completely inside previous
-            is_inside = (current_high < prev_high) and (current_low > prev_low)
-            
-            logger.debug(f"Checking candle {i} ({current_date}) vs {i-1} ({prev_date}): High {current_high:.2f} < {prev_high:.2f} = {current_high < prev_high}, Low {current_low:.2f} > {prev_low:.2f} = {current_low > prev_low}")
-            
-            if is_inside:
-                # Get dates
-                if 'Date' in candles.columns:
-                    inside_bar_date = candles['Date'].iloc[i]
-                    signal_candle_date = candles['Date'].iloc[i - 1]
-                else:
-                    inside_bar_date = candles.index[i]
-                    signal_candle_date = candles.index[i - 1]
-                
-                result = {
-                    'inside_bar_idx': i,
-                    'inside_bar_date': inside_bar_date,
-                    'signal_candle_high': prev_high,
-                    'signal_candle_low': prev_low,
-                    'signal_candle_date': signal_candle_date
-                }
-                
-                logger.info(
-                    f"✅ Inside Bar detected at {self._format_datetime_ist(inside_bar_date)} | "
-                    f"Signal Candle: {self._format_datetime_ist(signal_candle_date)} | "
-                    f"High: {prev_high:.2f}, Low: {prev_low:.2f}"
-                )
-                
-                return result
-        
-        logger.debug("No inside bar pattern detected in candles")
-        return None
+        return _DETECT_INSIDE_BAR(candles)
     
     def check_breakout(
         self,
@@ -354,51 +686,19 @@ class InsideBarBreakoutStrategy:
         start_idx: int = 0
     ) -> Optional[str]:
         """
-        Check for breakout on 1-hour candle close.
-        
-        Breakout conditions:
-        - Close > signal_high → CE (Call) trade
-        - Close < signal_low → PE (Put) trade
-        
-        Args:
-            candles: DataFrame with 1-hour OHLC candles
-            signal_high: Signal candle high (breakout level for CE)
-            signal_low: Signal candle low (breakout level for PE)
-            start_idx: Index to start checking from (default: 0)
-        
-        Returns:
-            "CE" for bullish breakout, "PE" for bearish breakout, or None
+        Compatibility wrapper around confirm_breakout_on_hour_close.
         """
         if candles is None or candles.empty:
             return None
         
-        # Check candles from start_idx onwards
-        for i in range(start_idx, len(candles)):
-            close = candles['Close'].iloc[i]
-            
-            # Get candle date for logging
-            if 'Date' in candles.columns:
-                candle_date = candles['Date'].iloc[i]
-            else:
-                candle_date = candles.index[i]
-            
-            # Bullish breakout: close above signal high
-            if close > signal_high:
-                logger.info(
-                    f"🟢 Breakout Confirmed: CE at {self._format_datetime_ist(candle_date)} | "
-                    f"Close: {close:.2f} > Signal High: {signal_high:.2f}"
-                )
-                return "CE"
-            
-            # Bearish breakout: close below signal low
-            elif close < signal_low:
-                logger.info(
-                    f"🔴 Breakout Confirmed: PE at {self._format_datetime_ist(candle_date)} | "
-                    f"Close: {close:.2f} < Signal Low: {signal_low:.2f}"
-                )
-                return "PE"
-        
-        return None
+        inside_idx = max(start_idx - 1, 0)
+        signal_stub = {
+            'inside_bar_idx': inside_idx,
+            'range_high': signal_high,
+            'range_low': signal_low
+        }
+        direction, _ = _CONFIRM_BREAKOUT(candles, signal_stub)
+        return direction
     
     def calculate_strike_price(self, current_price: float, direction: str, atm_offset: int = 0) -> int:
         """
@@ -444,138 +744,90 @@ class InsideBarBreakoutStrategy:
         
         return (stop_loss, take_profit)
     
-    def check_margin(self) -> Tuple[bool, float]:
+    def check_margin(self, entry_price: Optional[float]) -> Tuple[bool, float, float]:
         """
-        Check available margin using RMS API.
-        
-        Returns:
-            Tuple of (has_sufficient_margin, available_margin)
+        Wrapper around module-level check_margin utility.
         """
-        try:
-            available_margin = self.broker.get_available_margin()
-            
-            if available_margin <= 0:
-                logger.warning(f"⚠️ No available margin: ₹{available_margin:.2f}")
-                return False, available_margin
-            
-            # Estimate required margin (rough estimate: 1 lot = ~50k for NIFTY options)
-            required_margin = self.quantity_lots * 50000  # Conservative estimate
-            
-            if available_margin >= required_margin:
-                logger.info(f"✅ Sufficient margin: ₹{available_margin:,.2f} (Required: ₹{required_margin:,.2f})")
-                return True, available_margin
-            else:
-                logger.warning(
-                    f"⚠️ Insufficient margin: Available ₹{available_margin:,.2f}, "
-                    f"Required ₹{required_margin:,.2f}"
-                )
-                return False, available_margin
-                
-        except Exception as e:
-            logger.exception(f"Error checking margin: {e}")
-            return False, 0.0
+        return _CHECK_MARGIN(
+            broker=self.broker,
+            quantity_lots=self.quantity_lots,
+            lot_size=self.lot_size,
+            entry_price=entry_price
+        )
     
     def place_trade(
         self,
         direction: str,
         strike: int,
-        current_price: float
-    ) -> Dict:
+        entry_price: Optional[float]
+    ) -> Dict[str, Any]:
         """
-        Place trade via AngelOne API.
-        
-        Args:
-            direction: "CE" for Call, "PE" for Put
-            strike: Strike price
-            current_price: Current NIFTY price (for logging)
-        
-        Returns:
-            Dictionary with order result:
-            {
-                'status': bool,
-                'order_id': str or None,
-                'message': str,
-                'response': dict or None
-            }
+        Place or simulate trade via broker with safety checks.
         """
-        if not self.live_mode:
-            logger.info(f"🔒 LIVE_MODE=False: Simulating trade | Direction: {direction}, Strike: {strike}")
-            return {
-                'status': True,
-                'order_id': f"SIM_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                'message': 'Trade simulated (LIVE_MODE=False)',
-                'response': None
-            }
-        
-        try:
-            # Check margin before placing order
-            has_margin, available_margin = self.check_margin()
-            if not has_margin:
-                return {
-                    'status': False,
-                    'order_id': None,
-                    'message': f'Insufficient margin: ₹{available_margin:,.2f}',
-                    'response': None
-                }
-            
-            # Place order via broker
-            logger.info(f"📤 Placing {direction} order: Strike {strike}, Quantity {self.quantity_lots} lots")
-            
-            order_result = self.broker.place_order(
-                symbol=self.symbol,
-                strike=strike,
-                direction=direction,
-                quantity=self.quantity_lots,
-                order_type="MARKET",
-                transaction_type="BUY"
+        has_margin, available_margin, required_margin = self.check_margin(entry_price)
+        if not has_margin:
+            message = (
+                f'Insufficient margin: available ₹{available_margin:,.2f}, '
+                f'required ₹{required_margin:,.2f}'
             )
-            
-            # Log full response
-            logger.info(f"📥 Order Response: {order_result}")
-            
-            if order_result.get('status'):
-                order_id = order_result.get('order_id')
-                logger.info(f"✅ Order placed successfully: Order ID {order_id}")
-                return {
-                    'status': True,
-                    'order_id': order_id,
-                    'message': 'Order placed successfully',
-                    'response': order_result
-                }
-            else:
-                error_msg = order_result.get('message', 'Unknown error')
-                logger.error(f"❌ Order placement failed: {error_msg}")
-                return {
-                    'status': False,
-                    'order_id': None,
-                    'message': error_msg,
-                    'response': order_result
-                }
-                
-        except Exception as e:
-            logger.exception(f"Error placing trade: {e}")
+            logger.warning(message)
             return {
                 'status': False,
                 'order_id': None,
-                'message': f'Error: {str(e)}',
-                'response': None
+                'message': message,
+                'response': None,
+                'simulated': not self.live_mode,
+                'available_margin': available_margin,
+                'required_margin': required_margin
             }
+        
+        order_response = _PLACE_ORDER(
+            broker=self.broker,
+            symbol=self.symbol,
+            strike=strike,
+            direction=direction,
+            quantity_lots=self.quantity_lots,
+            live_mode=self.live_mode,
+            execution_armed=self.execution_armed
+        )
+        order_response.setdefault('available_margin', available_margin)
+        order_response.setdefault('required_margin', required_margin)
+        return order_response
+    
+    def get_active_signal(self, candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """
+        Update and return the active signal based on latest candles.
+        """
+        self.active_signal = _GET_ACTIVE_SIGNAL(candles, self.active_signal)
+        return self.active_signal
+    
+    def arm_live_execution(self) -> bool:
+        """
+        Require explicit arming before actual orders are placed in live mode.
+        """
+        if not self.live_mode:
+            logger.warning("Live execution cannot be armed because LIVE_MODE is disabled.")
+            return False
+        self.execution_armed = True
+        logger.info("Live execution armed. Next eligible breakout will place a real order.")
+        return True
+    
+    def disarm_live_execution(self):
+        """
+        Disarm live execution; subsequent trades will run as dry-run.
+        """
+        self.execution_armed = False
+        logger.info("Live execution disarmed. Orders will remain in dry-run mode.")
     
     def run_strategy(self, data: Optional[pd.DataFrame] = None) -> Dict:
         """
-        Main strategy execution function.
-        Runs complete Inside Bar Breakout strategy workflow.
-        
-        Returns:
-            Dictionary with strategy execution result
+        Execute one evaluation cycle of the Inside Bar breakout strategy.
         """
         try:
-            # Get current time in IST
-            now_ist = datetime.now(IST)
-            current_time_str = self._format_datetime_ist(now_ist)
+            now_ist = ist_now()
+            current_time_str = format_ist_datetime(now_ist)
             
-            # Check if market is open
-            if not self._is_market_hours():
+            if not self._is_market_hours(now_ist):
                 logger.info(f"⏸️ Market is closed. Current time: {current_time_str}")
                 return {
                     'status': 'market_closed',
@@ -585,148 +837,131 @@ class InsideBarBreakoutStrategy:
             
             logger.info(f"🚀 Running Inside Bar Breakout Strategy | Time: {current_time_str}")
             
-            # Step 1: Fetch hourly candles (or use provided data for backtesting)
             candles = self.get_hourly_candles(window_hours=48, data=data)
             if candles is None or candles.empty:
+                logger.error("No closed hourly candles available for strategy evaluation")
                 return {
                     'status': 'error',
-                    'message': 'Failed to fetch hourly candles'
-                }
-            
-            # Step 2: Detect inside bar
-            inside_bar_info = self.detect_inside_bar(candles)
-            
-            if inside_bar_info is None:
-                logger.info("📊 No inside bar detected. Waiting for pattern...")
-                return {
-                    'status': 'no_signal',
-                    'message': 'No inside bar pattern detected',
-                    'current_price': candles['Close'].iloc[-1] if not candles.empty else None
-                }
-            
-            # Update strategy state
-            self.signal_candle_high = inside_bar_info['signal_candle_high']
-            self.signal_candle_low = inside_bar_info['signal_candle_low']
-            self.signal_candle_date = inside_bar_info['signal_candle_date']
-            self.inside_bar_date = inside_bar_info['inside_bar_date']
-            
-            # Step 3: Check for breakout
-            # Start checking from the candle after the inside bar
-            start_check_idx = inside_bar_info['inside_bar_idx'] + 1
-            
-            # Only check new candles (after last checked index)
-            if start_check_idx <= self.last_checked_candle_idx:
-                start_check_idx = self.last_checked_candle_idx + 1
-            
-            if start_check_idx >= len(candles):
-                logger.info("⏳ Waiting for new candles after inside bar...")
-                return {
-                    'status': 'waiting',
-                    'message': 'Waiting for new candles after inside bar',
-                    'signal_date': self._format_date_ist(self.signal_candle_date),
-                    'signal_high': self.signal_candle_high,
-                    'signal_low': self.signal_candle_low,
-                    'current_price': candles['Close'].iloc[-1] if not candles.empty else None
-                }
-            
-            breakout_direction = self.check_breakout(
-                candles,
-                self.signal_candle_high,
-                self.signal_candle_low,
-                start_idx=start_check_idx
-            )
-            
-            # Update last checked index
-            self.last_checked_candle_idx = len(candles) - 1
-            
-            # Step 4: Execute trade if breakout confirmed
-            if breakout_direction:
-                current_price = candles['Close'].iloc[-1]
-                strike = self.calculate_strike_price(current_price, breakout_direction, self.atm_offset)
-                
-                # Get entry price (option premium)
-                # In live mode, fetch from broker; in backtest mode, use synthetic or provided
-                entry_price = current_price  # Placeholder - should fetch actual option price
-                if self.broker and self.live_mode:
-                    # Try to fetch actual option price from broker
-                    option_price = self.broker.get_option_price(self.symbol, strike, breakout_direction)
-                    if option_price:
-                        entry_price = option_price
-                
-                # Calculate SL/TP levels
-                stop_loss, take_profit = self.calculate_sl_tp_levels(
-                    entry_price,
-                    self.sl_points,
-                    self.rr_ratio
-                )
-                
-                # Place trade
-                trade_result = self.place_trade(breakout_direction, strike, current_price)
-                
-                # Prepare output
-                result = {
-                    'status': 'breakout_confirmed',
-                    'breakout_direction': breakout_direction,
-                    'signal_date': self._format_date_ist(self.signal_candle_date),
-                    'signal_high': self.signal_candle_high,
-                    'signal_low': self.signal_candle_low,
-                    'current_price': current_price,
-                    'strike': strike,
-                    'entry_price': entry_price,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'order_id': trade_result.get('order_id'),
-                    'order_status': trade_result.get('status'),
-                    'order_message': trade_result.get('message'),
+                    'message': 'Closed hourly candles unavailable',
                     'time': current_time_str
                 }
-                
-                # Export to CSV
+            
+            current_price = candles['Close'].iloc[-1] if not candles.empty else None
+            
+            active_signal = self.get_active_signal(candles)
+            if active_signal is None:
+                logger.info("📊 No qualifying inside bar signal active for current day")
+                return {
+                    'status': 'no_signal',
+                    'message': 'No inside bar pattern detected for current session',
+                    'current_price': current_price,
+                    'time': current_time_str
+                }
+            
+            breakout_direction, latest_closed = _CONFIRM_BREAKOUT(
+                candles,
+                active_signal,
+                current_time=now_ist
+            )
+            
+            if latest_closed is None and not candles.empty:
+                last_candle = candles.iloc[-1]
+                latest_closed = {
+                    'index': len(candles) - 1,
+                    'Date': to_ist(last_candle['Date']),
+                    'Open': last_candle['Open'],
+                    'High': last_candle['High'],
+                    'Low': last_candle['Low'],
+                    'Close': last_candle['Close']
+                }
+            
+            if breakout_direction is None:
+                return {
+                    'status': 'no_breakout',
+                    'message': 'Awaiting 1-hour candle close beyond signal range',
+                    'signal_date': format_ist_date(active_signal['signal_time']),
+                    'signal_high': active_signal['range_high'],
+                    'signal_low': active_signal['range_low'],
+                    'last_closed_close': latest_closed['Close'] if latest_closed else None,
+                    'time': current_time_str
+                }
+            
+            breakout_idx = latest_closed.get('index') if latest_closed else None
+            if breakout_idx is not None and breakout_idx == self.last_breakout_candle_idx:
+                logger.info(
+                    f"Breakout already processed for candle index {breakout_idx}; skipping duplicate execution"
+                )
+                return {
+                    'status': 'duplicate_breakout',
+                    'message': 'Breakout already processed for this candle',
+                    'breakout_direction': breakout_direction,
+                    'time': current_time_str
+                }
+            
+            entry_price = latest_closed['Close'] if latest_closed else current_price
+            strike = self.calculate_strike_price(entry_price, breakout_direction, self.atm_offset)
+            stop_loss, take_profit = self.calculate_sl_tp_levels(
+                entry_price,
+                self.sl_points,
+                self.rr_ratio
+            )
+            
+            order_response = self.place_trade(breakout_direction, strike, entry_price)
+            order_success = bool(order_response.get('status'))
+            status = 'breakout_confirmed' if order_success else 'order_failed'
+            
+            if breakout_idx is not None:
+                self.last_breakout_candle_idx = breakout_idx
+            
+            result = {
+                'status': status,
+                'breakout_direction': breakout_direction,
+                'signal_date': format_ist_date(active_signal['signal_time']),
+                'signal_high': active_signal['range_high'],
+                'signal_low': active_signal['range_low'],
+                'latest_candle_close': entry_price,
+                'strike': strike,
+                'entry_price': entry_price,
+                'stop_loss': stop_loss,
+                'take_profit': take_profit,
+                'order_id': order_response.get('order_id'),
+                'order_status': order_response.get('status'),
+                'order_message': order_response.get('message'),
+                'available_margin': order_response.get('available_margin'),
+                'required_margin': order_response.get('required_margin'),
+                'simulated': order_response.get('simulated', not self.live_mode),
+                'live_mode': self.live_mode,
+                'execution_armed': self.execution_armed,
+                'time': current_time_str
+            }
+            
+            if status in ('breakout_confirmed', 'order_failed'):
                 self._export_to_csv({
-                    'Date': self._format_date_ist(now_ist),
+                    'Date': format_ist_date(now_ist),
                     'Time': now_ist.strftime("%H:%M:%S"),
-                    'Signal_Date': self._format_date_ist(self.signal_candle_date),
-                    'Signal_High': f"{self.signal_candle_high:.2f}",
-                    'Signal_Low': f"{self.signal_candle_low:.2f}",
-                    'Current_Price': f"{current_price:.2f}",
+                    'Signal_Date': format_ist_date(active_signal['signal_time']),
+                    'Signal_High': f"{active_signal['range_high']:.2f}",
+                    'Signal_Low': f"{active_signal['range_low']:.2f}",
+                    'Current_Price': f"{entry_price:.2f}",
                     'Breakout_Direction': breakout_direction,
                     'Strike': strike,
                     'Entry_Price': f"{entry_price:.2f}",
                     'Stop_Loss': f"{stop_loss:.2f}",
                     'Take_Profit': f"{take_profit:.2f}",
-                    'Order_ID': trade_result.get('order_id', ''),
-                    'Status': 'SUCCESS' if trade_result.get('status') else 'FAILED',
-                    'Message': trade_result.get('message', '')
+                    'Order_ID': order_response.get('order_id', ''),
+                    'Status': 'SUCCESS' if order_success else 'FAILED',
+                    'Message': order_response.get('message', '')
                 })
-                
-                # Print summary
-                self._print_summary(result)
-                
-                return result
-            else:
-                # No breakout yet
-                current_price = candles['Close'].iloc[-1]
-                
-                result = {
-                    'status': 'no_breakout',
-                    'message': 'No breakout yet',
-                    'signal_date': self._format_date_ist(self.signal_candle_date),
-                    'signal_high': self.signal_candle_high,
-                    'signal_low': self.signal_candle_low,
-                    'current_price': current_price,
-                    'time': current_time_str
-                }
-                
-                # Print summary
-                self._print_summary(result)
-                
-                return result
-                
-        except Exception as e:
-            logger.exception(f"Error running strategy: {e}")
+            
+            self._print_summary(result)
+            return result
+        
+        except Exception as err:
+            logger.exception(f"Error running strategy: {err}")
             return {
                 'status': 'error',
-                'message': f'Error: {str(e)}'
+                'message': f'Error: {err}',
+                'time': format_ist_datetime(ist_now())
             }
     
     def _print_summary(self, result: Dict):
@@ -740,10 +975,10 @@ class InsideBarBreakoutStrategy:
         print("INSIDE BAR BREAKOUT STRATEGY - EXECUTION SUMMARY")
         print("="*70)
         
-        if result.get('status') == 'breakout_confirmed':
+        if result.get('status') in ('breakout_confirmed', 'order_failed'):
             print(f"✅ Inside Bar Detected on {result.get('signal_date', 'N/A')}")
             print(f"Signal Candle: High={result.get('signal_high', 0):.2f}, Low={result.get('signal_low', 0):.2f}")
-            print(f"Current Price: {result.get('current_price', 0):.2f}")
+            print(f"Latest Close: {result.get('latest_candle_close', 0):.2f}")
             
             direction = result.get('breakout_direction', '')
             if direction == 'CE':
@@ -763,13 +998,16 @@ class InsideBarBreakoutStrategy:
         elif result.get('status') == 'no_breakout':
             print(f"✅ Inside Bar Detected on {result.get('signal_date', 'N/A')}")
             print(f"Signal Candle: High={result.get('signal_high', 0):.2f}, Low={result.get('signal_low', 0):.2f}")
-            print(f"Current Price: {result.get('current_price', 0):.2f}")
+            print(f"Latest Closed Price: {result.get('last_closed_close', 0):.2f}")
             print("⏳ No breakout yet")
         
         elif result.get('status') == 'no_signal':
             print("📊 No inside bar pattern detected")
             if result.get('current_price'):
                 print(f"Current Price: {result.get('current_price', 0):.2f}")
+        
+        elif result.get('status') == 'duplicate_breakout':
+            print("⚠️ Breakout already processed for this candle. No new trade executed.")
         
         print(f"Time: {result.get('time', 'N/A')}")
         print("="*70 + "\n")
