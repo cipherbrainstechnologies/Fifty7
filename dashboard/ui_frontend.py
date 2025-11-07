@@ -184,13 +184,20 @@ def align_dataframe_to_ist(df: pd.DataFrame, column: str = 'Date') -> pd.DataFra
     try:
         dt_series = pd.to_datetime(aligned[column], errors='coerce')
 
-        if getattr(dt_series.dt, "tz", None) is None:
+        tz_attr = getattr(dt_series.dt, "tz", None)
+
+        if tz_attr is None:
             try:
-                dt_series = dt_series.dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
-            except TypeError:
                 dt_series = dt_series.dt.tz_localize('Asia/Kolkata')
+            except TypeError:
+                # Fallback: coerce via pandas Timestamp directly
+                dt_series = pd.to_datetime(dt_series.astype(str), errors='coerce').dt.tz_localize('Asia/Kolkata')
         else:
-            dt_series = dt_series.dt.tz_convert('Asia/Kolkata')
+            try:
+                dt_series = dt_series.dt.tz_convert('Asia/Kolkata')
+            except Exception:
+                # If conversion fails, coerce and localize
+                dt_series = pd.to_datetime(dt_series.astype(str), errors='coerce').dt.tz_localize('Asia/Kolkata')
 
         aligned[column] = dt_series
     except Exception as exc:
@@ -1368,6 +1375,9 @@ if tab == "Dashboard":
                 window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
             )
 
+            raw_data_1h = data_1h.copy() if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
+            raw_data_15m = data_15m.copy() if isinstance(data_15m, pd.DataFrame) else pd.DataFrame()
+
             data_1h = align_dataframe_to_ist(data_1h)
             data_15m = align_dataframe_to_ist(data_15m)
 
@@ -1384,6 +1394,24 @@ if tab == "Dashboard":
             )
             st.write("Data Source Path:", data_source_path)
             st.write("Candle Count:", len(debug_df))
+
+            if not raw_data_1h.empty and 'Date' in raw_data_1h.columns:
+                raw_tz = getattr(raw_data_1h['Date'].dt, "tz", None)
+                st.write("Raw 1H Date dtype:", str(raw_data_1h['Date'].dtype))
+                st.write("Raw 1H timezone: ", str(raw_tz))
+                st.write(
+                    "Raw 1H sample (first 3):",
+                    [str(val) for val in raw_data_1h['Date'].head(3)]
+                )
+                st.write(
+                    "Raw 1H sample (last 3):",
+                    [str(val) for val in raw_data_1h['Date'].tail(3)]
+                )
+
+            if not raw_data_15m.empty and 'Date' in raw_data_15m.columns:
+                raw15_tz = getattr(raw_data_15m['Date'].dt, "tz", None)
+                st.write("Raw 15m Date dtype:", str(raw_data_15m['Date'].dtype))
+                st.write("Raw 15m timezone: ", str(raw15_tz))
 
             if not debug_df.empty and 'Date' in debug_df.columns:
                 st.write("Market Hours (IST):", "09:15 AM → 03:30 PM")

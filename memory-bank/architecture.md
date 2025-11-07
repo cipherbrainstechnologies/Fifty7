@@ -100,6 +100,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - 15-minute candles remain timezone-naive (assumed IST) to preserve compatibility with existing aggregation routines.
 - 2025-11-07: Market data provider now sources all scheduling timestamps using Asia/Kolkata, preventing UTC-hosted deployments from truncating candle windows relative to local runs.
 - 2025-11-07: All dashboard timestamps render in 12-hour IST format (HH:MM AM/PM) matching NSE market hours (09:15 AM – 03:30 PM IST).
+- 2025-11-07: Debug view now displays raw timestamp dtype/timezone before normalization to detect double-localization or UTC drift across environments.
 
 ## Debug Instrumentation
 
