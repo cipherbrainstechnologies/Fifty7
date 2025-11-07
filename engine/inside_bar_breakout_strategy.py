@@ -695,6 +695,51 @@ _PLACE_ORDER = place_order
 _LOG_RECENT_CANDLES = log_recent_hourly_candles
 
 
+def calculate_strike_price(current_price: float, direction: str, atm_offset: int = 0) -> int:
+    """
+    Calculate option strike price based on current NIFTY price.
+    
+    Args:
+        current_price: Current NIFTY index price
+        direction: "CE" for Call, "PE" for Put
+        atm_offset: Offset from ATM (0 = ATM, positive = OTM for calls)
+    
+    Returns:
+        Strike price rounded to nearest 50 (NIFTY strikes are multiples of 50)
+    """
+    # NIFTY strikes are in multiples of 50
+    base_strike = round(current_price / 50) * 50
+    
+    if direction == "CE":
+        return int(base_strike + atm_offset)
+    elif direction == "PE":
+        return int(base_strike - atm_offset)
+    else:
+        return int(base_strike)
+
+
+def calculate_sl_tp_levels(
+    entry_price: float,
+    stop_loss_points: int,
+    risk_reward_ratio: float
+) -> Tuple[float, float]:
+    """
+    Calculate Stop Loss and Take Profit levels based on entry and risk parameters.
+    
+    Args:
+        entry_price: Entry price of the option
+        stop_loss_points: Stop loss in points
+        risk_reward_ratio: Risk-Reward ratio (e.g., 1.8 = 1.8x risk)
+    
+    Returns:
+        Tuple of (stop_loss_price, take_profit_price)
+    """
+    stop_loss = entry_price - stop_loss_points
+    take_profit = entry_price + (stop_loss_points * risk_reward_ratio)
+    
+    return (stop_loss, take_profit)
+
+
 class InsideBarBreakoutStrategy:
     """
     Production-grade Inside Bar Breakout Strategy implementation.
@@ -908,6 +953,7 @@ class InsideBarBreakoutStrategy:
     def calculate_strike_price(self, current_price: float, direction: str, atm_offset: int = 0) -> int:
         """
         Calculate option strike price based on current NIFTY price.
+        Delegates to module-level function.
         
         Args:
             current_price: Current NIFTY index price
@@ -917,15 +963,7 @@ class InsideBarBreakoutStrategy:
         Returns:
             Strike price rounded to nearest 50 (NIFTY strikes are multiples of 50)
         """
-        # NIFTY strikes are in multiples of 50
-        base_strike = round(current_price / 50) * 50
-        
-        if direction == "CE":
-            return int(base_strike + atm_offset)
-        elif direction == "PE":
-            return int(base_strike - atm_offset)
-        else:
-            return int(base_strike)
+        return calculate_strike_price(current_price, direction, atm_offset)
     
     def calculate_sl_tp_levels(
         self,
@@ -935,6 +973,7 @@ class InsideBarBreakoutStrategy:
     ) -> Tuple[float, float]:
         """
         Calculate Stop Loss and Take Profit levels based on entry and risk parameters.
+        Delegates to module-level function.
         
         Args:
             entry_price: Entry price of the option
@@ -944,10 +983,7 @@ class InsideBarBreakoutStrategy:
         Returns:
             Tuple of (stop_loss_price, take_profit_price)
         """
-        stop_loss = entry_price - stop_loss_points
-        take_profit = entry_price + (stop_loss_points * risk_reward_ratio)
-        
-        return (stop_loss, take_profit)
+        return calculate_sl_tp_levels(entry_price, stop_loss_points, risk_reward_ratio)
     
     def check_margin(self, entry_price: Optional[float]) -> Tuple[bool, float, float]:
         """
