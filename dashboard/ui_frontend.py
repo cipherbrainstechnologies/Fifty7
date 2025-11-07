@@ -198,6 +198,27 @@ def align_dataframe_to_ist(df: pd.DataFrame, column: str = 'Date') -> pd.DataFra
 
     return aligned
 
+
+def format_ist_timestamp(value) -> str:
+    """Format timestamps into 12-hour IST representation."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+
+    try:
+        ts = pd.to_datetime(value)
+    except Exception:
+        return str(value)
+
+    try:
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.tz_localize('Asia/Kolkata')
+        else:
+            ts = ts.tz_convert('Asia/Kolkata')
+    except Exception:
+        return str(value)
+
+    return ts.strftime("%d-%b-%Y %I:%M %p IST")
+
 # ===================================================================
 # FIREBASE AUTHENTICATION
 # ===================================================================
@@ -1020,14 +1041,14 @@ if tab == "Dashboard":
         with col3:
             if status['last_fetch_time']:
                 fetch_time = datetime.fromisoformat(status['last_fetch_time'])
-                st.metric("Last Data Fetch", fetch_time.strftime("%H:%M:%S"))
+                st.metric("Last Data Fetch", fetch_time.strftime("%I:%M:%S %p"))
             else:
                 st.metric("Last Data Fetch", "Never")
         
         with col4:
             if status['last_signal_time']:
                 signal_time = datetime.fromisoformat(status['last_signal_time'])
-                st.metric("Last Signal", signal_time.strftime("%H:%M:%S"))
+                st.metric("Last Signal", signal_time.strftime("%I:%M:%S %p"))
             else:
                 st.metric("Last Signal", "None")
         
@@ -1365,10 +1386,23 @@ if tab == "Dashboard":
             st.write("Candle Count:", len(debug_df))
 
             if not debug_df.empty and 'Date' in debug_df.columns:
-                st.write("Data Range:", debug_df['Date'].min(), "→", debug_df['Date'].max())
-                st.write("Unique Dates:", debug_df['Date'].dt.date.unique().tolist())
-                st.write("Last 5 Timestamps:", debug_df['Date'].tail().tolist())
-                st.dataframe(debug_df.head(), use_container_width=True, height=200)
+                st.write("Market Hours (IST):", "09:15 AM → 03:30 PM")
+                st.write("Data Range:", format_ist_timestamp(debug_df['Date'].min()), "→", format_ist_timestamp(debug_df['Date'].max()))
+
+                date_series = debug_df['Date']
+                if getattr(date_series.dt, "tz", None) is None:
+                    date_series = date_series.dt.tz_localize('Asia/Kolkata')
+                else:
+                    date_series = date_series.dt.tz_convert('Asia/Kolkata')
+                unique_dates = [d.strftime("%d-%b-%Y") for d in date_series.dt.date.unique()]
+                st.write("Unique Dates:", unique_dates)
+
+                last_timestamps = [format_ist_timestamp(ts) for ts in debug_df['Date'].tail()]
+                st.write("Last 5 Timestamps:", last_timestamps)
+
+                preview_df = debug_df.head().copy()
+                preview_df['Date'] = preview_df['Date'].apply(format_ist_timestamp)
+                st.dataframe(preview_df, use_container_width=True, height=200)
             else:
                 st.info("1H candle data not available for debugging.")
 
@@ -1405,9 +1439,8 @@ if tab == "Dashboard":
                     time_val = recent_data.iloc[i]['Date'] if 'Date' in recent_data.columns else f"Row_{original_idx}"
                     if isinstance(time_val, pd.Timestamp) or hasattr(time_val, 'strftime'):
                         try:
-                            # Format as IST time string
-                            time_str = time_val.strftime("%Y-%m-%d %H:%M:%S IST") if hasattr(time_val, 'strftime') else str(time_val)
-                        except:
+                            time_str = format_ist_timestamp(time_val)
+                        except Exception:
                             time_str = str(time_val)
                     else:
                         time_str = str(time_val)
@@ -1470,21 +1503,22 @@ if tab == "Dashboard":
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
                 
                 if inside_bars:
-                    # Get the most recent Inside Bar (last in list means highest index)
                     latest_idx = inside_bars[-1]
                     range_high = data_1h['High'].iloc[latest_idx - 1]
                     range_low = data_1h['Low'].iloc[latest_idx - 1]
                     inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
                     ref_time = data_1h['Date'].iloc[latest_idx - 1] if 'Date' in data_1h.columns else f"Index_{latest_idx - 1}"
-                    
-                    st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_time}")
-                    
-                    # Show Inside Bar details
+
+                    inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
+                    ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
+
+                    st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
+
                     st.write("**Most Recent Inside Bar Details:**")
                     details_col1, details_col2 = st.columns(2)
                     with details_col1:
-                        st.write(f"📊 **Inside Bar Time:** {inside_bar_time}")
-                        st.write(f"📊 **Reference Candle:** {ref_time}")
+                        st.write(f"📊 **Inside Bar Time:** {inside_bar_label}")
+                        st.write(f"📊 **Reference Candle:** {ref_time_label}")
                         st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
                     with details_col2:
                         st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
