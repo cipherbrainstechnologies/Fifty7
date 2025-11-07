@@ -1090,8 +1090,14 @@ class MarketDataProvider:
             
             # Update 15-minute buffer
             rounded_15m = current_time.replace(minute=(current_time.minute // 15) * 15, second=0, microsecond=0)
-            # Update 1-hour buffer
-            rounded_1h = current_time.replace(minute=0, second=0, microsecond=0)
+            # Update 1-hour buffer (ensure timezone-aware to match aggregated data)
+            rounded_1h_naive = current_time.replace(minute=0, second=0, microsecond=0)
+            ist = pytz.timezone('Asia/Kolkata')
+            rounded_1h = pd.Timestamp(rounded_1h_naive)
+            if rounded_1h.tzinfo is None:
+                rounded_1h = rounded_1h.tz_localize(ist)
+            else:
+                rounded_1h = rounded_1h.tz_convert(ist)
             
             # Try to get historical data for proper aggregation
             # Otherwise, just update with current OHLC
@@ -1131,7 +1137,18 @@ class MarketDataProvider:
                     self._data_15m.loc[last_idx, 'Close'] = ohlc.get('ltp', ohlc.get('close', 0))
                     self._data_15m.loc[last_idx, 'Volume'] = ohlc.get('tradeVolume', 0)
                 
-                if self._data_1h.empty or self._data_1h.iloc[-1]['Date'] < rounded_1h:
+                last_1h_date = None
+                if not self._data_1h.empty:
+                    date_series = pd.to_datetime(self._data_1h['Date'])
+                    # Normalize existing 1H dates to IST timezone-aware timestamps
+                    if getattr(date_series.dt, "tz", None) is None:
+                        date_series = date_series.dt.tz_localize(ist)
+                    else:
+                        date_series = date_series.dt.tz_convert(ist)
+                    self._data_1h['Date'] = date_series
+                    last_1h_date = date_series.iloc[-1]
+                
+                if last_1h_date is None or last_1h_date < rounded_1h:
                     new_row_1h = pd.DataFrame([{
                         'Date': rounded_1h,
                         'Open': ohlc.get('open', 0),
