@@ -66,8 +66,8 @@ backtesting:
   
   # Market Data API Configuration (Requires API key)
   marketdata:
-    enabled: false  # Set to true to enable Market Data API
-    api_key: ""  # Your Market Data API key (get from https://www.marketdata.app/)
+    enabled: true  # Set to true to enable Market Data API
+    api_key: "azZCREFyMWh3d0h6RnBOSTF0Qld0UWFMQ1laWURQY2pvU3QtTU9jU1ItMD0"  # Your Market Data API key (get from https://www.marketdata.app/)
     base_url: "https://api.marketdata.app/v1"
     request_delay: 0.2  # Delay between requests (seconds) to respect rate limits
     
