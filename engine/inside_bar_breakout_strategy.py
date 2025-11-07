@@ -1063,7 +1063,7 @@ class InsideBarBreakoutStrategy:
                 'status': 'error',
                 'message': f'Error: {err}',
                 'time': format_ist_datetime(ist_now())
-            }"}
+            }
     
     def _print_summary(self, result: Dict):
         """
