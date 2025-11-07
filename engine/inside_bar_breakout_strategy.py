@@ -254,12 +254,29 @@ def detect_inside_bar(candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
 def get_active_signal(
     candles: pd.DataFrame,
-    previous_signal: Optional[Dict[str, Any]] = None
+    previous_signal: Optional[Dict[str, Any]] = None,
+    mark_signal_invalid: bool = False
 ) -> Optional[Dict[str, Any]]:
     """
     Maintain the active signal using the most recent (preferably today's) inside bar.
-    Keeps existing signal active until a newer inside bar supersedes it.
+    Keeps existing signal active until a newer inside bar supersedes it OR until explicitly invalidated.
+    
+    Args:
+        candles: DataFrame with hourly candles
+        previous_signal: Previously active signal (if any)
+        mark_signal_invalid: If True, discard current signal (used after breakout attempt)
+    
+    Returns:
+        Active signal dict or None
     """
+    # If signal is being explicitly invalidated (e.g., after breakout attempt)
+    if mark_signal_invalid and previous_signal:
+        logger.info(
+            f"🗑️ Signal invalidated: Inside bar from {format_ist_datetime(previous_signal['inside_bar_time'])} "
+            f"discarded after breakout attempt"
+        )
+        return None
+    
     candidate = detect_inside_bar(candles)
     if candidate is None:
         if previous_signal:
@@ -268,12 +285,14 @@ def get_active_signal(
         return None
     
     if previous_signal:
-        prev_idx = previous_signal.get('inside_bar_idx')
         prev_time = to_ist(previous_signal.get('inside_bar_time'))
-        if prev_idx == candidate['inside_bar_idx'] and prev_time == candidate['inside_bar_time']:
+        candidate_time = candidate['inside_bar_time']
+        
+        # Compare by timestamp, not index
+        if prev_time == candidate_time:
             logger.debug("Inside bar unchanged; keeping existing active signal")
             return previous_signal
-        if prev_time > candidate['inside_bar_time']:
+        if prev_time > candidate_time:
             logger.debug("Existing signal is more recent; retaining it")
             return previous_signal
     
@@ -285,11 +304,12 @@ def get_active_signal(
         'signal_time': candidate['signal_time'],
         'signal_candle': candidate['signal_candle'],
         'range_high': candidate['range_high'],
-        'range_low': candidate['range_low']
+        'range_low': candidate['range_low'],
+        'breakout_attempted': False  # Track if breakout has been attempted
     }
     
     logger.info(
-        f"Active signal updated → Inside bar {format_ist_datetime(signal['inside_bar_time'])} "
+        f"✨ Active signal updated → Inside bar {format_ist_datetime(signal['inside_bar_time'])} "
         f"| Signal range {signal['range_low']:.2f}-{signal['range_high']:.2f}"
     )
     log_candle("Signal candle", signal['signal_candle'])
@@ -304,6 +324,7 @@ def confirm_breakout_on_hour_close(
 ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
     """
     Confirm breakout using only closed 1-hour candles.
+    Uses TIMESTAMP-BASED comparison instead of indices to work across days.
     
     Returns:
         direction ("CE"/"PE") if breakout detected, otherwise None
@@ -314,58 +335,102 @@ def confirm_breakout_on_hour_close(
         return None, None
     
     candles = _ensure_datetime_column(candles)
+    if candles.empty:
+        logger.debug("Candles DataFrame is empty")
+        return None, None
+    
     if current_time is None:
         current_time = ist_now()
     current_time = to_ist(current_time)
     
-    start_idx = signal['inside_bar_idx'] + 1
-    if start_idx >= len(candles):
-        logger.debug("No candles available after inside bar for breakout evaluation")
+    # Get inside bar timestamp from signal (timestamp-based, not index-based)
+    inside_bar_time = to_ist(signal['inside_bar_time'])
+    logger.info(
+        f"🔍 Checking for breakout AFTER inside bar at {format_ist_datetime(inside_bar_time)} | "
+        f"Signal range: {signal['range_low']:.2f} - {signal['range_high']:.2f}"
+    )
+    
+    # Filter candles that come AFTER the inside bar (timestamp-based)
+    candles_after_inside = candles[pd.to_datetime(candles['Date']) > inside_bar_time].copy()
+    
+    if candles_after_inside.empty:
+        logger.debug(f"No candles available after inside bar time {format_ist_datetime(inside_bar_time)}")
         return None, None
     
+    logger.info(f"Found {len(candles_after_inside)} candle(s) after inside bar for breakout evaluation")
+    
     latest_closed: Optional[Dict[str, Any]] = None
-    for idx in range(start_idx, len(candles)):
-        candle = candles.iloc[idx]
+    
+    # Check each candle AFTER inside bar
+    for idx, candle in candles_after_inside.iterrows():
         candle_start = to_ist(candle['Date'])
         candle_end = candle_start + timedelta(hours=1)
         
+        # Skip incomplete candles
         if candle_end > current_time:
-            continue  # Incomplete candle
+            logger.debug(f"⏭️ Skipping incomplete candle at {format_ist_datetime(candle_start)}")
+            continue
         
         close_price = candle['Close']
+        open_price = candle['Open']
+        high_price = candle['High']
+        low_price = candle['Low']
         breakout_low = close_price < signal['range_low']
         breakout_high = close_price > signal['range_high']
+        inside_range = not breakout_low and not breakout_high
         
+        # Enhanced logging for EVERY hourly candle
         logger.info(
-            f"Breakout evaluation at {format_ist_datetime(candle_end)} | "
-            f"close={close_price:.2f}, "
-            f"close < signal_low ({signal['range_low']:.2f}) = {breakout_low}, "
-            f"close > signal_high ({signal['range_high']:.2f}) = {breakout_high}"
+            f"\n{'='*80}\n"
+            f"📊 Hourly Candle Check: {format_ist_datetime(candle_start)} to {format_ist_datetime(candle_end)}\n"
+            f"   O={open_price:.2f}, H={high_price:.2f}, L={low_price:.2f}, C={close_price:.2f}\n"
+            f"   Signal Range: Low={signal['range_low']:.2f}, High={signal['range_high']:.2f}\n"
+            f"   Close < Low ({close_price:.2f} < {signal['range_low']:.2f}): {breakout_low}\n"
+            f"   Close > High ({close_price:.2f} > {signal['range_high']:.2f}): {breakout_high}\n"
+            f"   Inside Range: {inside_range}\n"
+            f"{'='*80}"
         )
         
         latest_closed = {
             'index': idx,
             'Date': candle_end,
-            'Open': candle['Open'],
-            'High': candle['High'],
-            'Low': candle['Low'],
-            'Close': close_price
+            'Open': open_price,
+            'High': high_price,
+            'Low': low_price,
+            'Close': close_price,
+            'candle_start': candle_start
         }
         
         if breakout_high:
-            log_candle("Breakout candle (CE)", latest_closed)
-            logger.info("Breakout confirmed on CE side based on 1-hour close")
+            logger.info(
+                f"\n{'🟢'*40}\n"
+                f"✅ BREAKOUT DETECTED (CE) at {format_ist_datetime(candle_end)}\n"
+                f"   Close {close_price:.2f} > Signal High {signal['range_high']:.2f}\n"
+                f"   Breakout by {close_price - signal['range_high']:.2f} points\n"
+                f"{'🟢'*40}"
+            )
             return "CE", latest_closed
         
         if breakout_low:
-            log_candle("Breakout candle (PE)", latest_closed)
-            logger.info("Breakout confirmed on PE side based on 1-hour close")
+            logger.info(
+                f"\n{'🔴'*40}\n"
+                f"✅ BREAKOUT DETECTED (PE) at {format_ist_datetime(candle_end)}\n"
+                f"   Close {close_price:.2f} < Signal Low {signal['range_low']:.2f}\n"
+                f"   Breakout by {signal['range_low'] - close_price:.2f} points\n"
+                f"{'🔴'*40}"
+            )
             return "PE", latest_closed
+        
+        logger.info(f"⏳ No breakout yet - candle closed inside signal range")
     
     if latest_closed:
-        log_candle("Latest closed 1H candle (no breakout)", latest_closed)
+        logger.info(
+            f"📋 Latest closed candle: {format_ist_datetime(latest_closed['Date'])} | "
+            f"Close={latest_closed['Close']:.2f} (still inside range)"
+        )
     else:
         logger.debug("No closed 1H candles available after inside bar yet")
+    
     return None, latest_closed
 
 
@@ -822,6 +887,7 @@ class InsideBarBreakoutStrategy:
     def run_strategy(self, data: Optional[pd.DataFrame] = None) -> Dict:
         """
         Execute one evaluation cycle of the Inside Bar breakout strategy.
+        Now with improved signal invalidation after first breakout attempt.
         """
         try:
             now_ist = ist_now()
@@ -846,9 +912,27 @@ class InsideBarBreakoutStrategy:
                     'time': current_time_str
                 }
             
+            # Log candle data info for diagnostics
+            logger.info(f"📦 Loaded {len(candles)} hourly candles for analysis")
+            if not candles.empty:
+                first_candle_date = format_ist_datetime(candles['Date'].iloc[0])
+                last_candle_date = format_ist_datetime(candles['Date'].iloc[-1])
+                logger.info(f"   Date range: {first_candle_date} to {last_candle_date}")
+            
+            # Check for volume data availability (AngelOne API may not provide volume for NIFTY index)
+            if 'Volume' in candles.columns:
+                volume_available = candles['Volume'].notna().any() and (candles['Volume'] > 0).any()
+                if not volume_available:
+                    logger.warning(
+                        "⚠️ Volume data is not available or all zeros (Angel API limitation for NIFTY index). "
+                        "Volume-based filters are DISABLED. Breakout confirmation uses price only."
+                    )
+            else:
+                logger.warning("⚠️ Volume column not present in candles data. Volume checks disabled.")
+            
             current_price = candles['Close'].iloc[-1] if not candles.empty else None
             
-            active_signal = self.get_active_signal(candles)
+            active_signal = self.get_active_signal(candles, self.active_signal)
             if active_signal is None:
                 logger.info("📊 No qualifying inside bar signal active for current day")
                 return {
@@ -857,6 +941,9 @@ class InsideBarBreakoutStrategy:
                     'current_price': current_price,
                     'time': current_time_str
                 }
+            
+            # Store active signal for next iteration
+            self.active_signal = active_signal
             
             breakout_direction, latest_closed = _CONFIRM_BREAKOUT(
                 candles,
@@ -886,17 +973,26 @@ class InsideBarBreakoutStrategy:
                     'time': current_time_str
                 }
             
-            breakout_idx = latest_closed.get('index') if latest_closed else None
-            if breakout_idx is not None and breakout_idx == self.last_breakout_candle_idx:
-                logger.info(
-                    f"Breakout already processed for candle index {breakout_idx}; skipping duplicate execution"
-                )
-                return {
-                    'status': 'duplicate_breakout',
-                    'message': 'Breakout already processed for this candle',
-                    'breakout_direction': breakout_direction,
-                    'time': current_time_str
-                }
+            # Check if this is a duplicate breakout (same candle timestamp)
+            if latest_closed and hasattr(self, 'last_breakout_timestamp'):
+                breakout_timestamp = to_ist(latest_closed.get('candle_start', latest_closed['Date']))
+                if breakout_timestamp == self.last_breakout_timestamp:
+                    logger.info(
+                        f"⏭️ Breakout already processed for candle at {format_ist_datetime(breakout_timestamp)}; skipping duplicate"
+                    )
+                    return {
+                        'status': 'duplicate_breakout',
+                        'message': 'Breakout already processed for this candle',
+                        'breakout_direction': breakout_direction,
+                        'time': current_time_str
+                    }
+            
+            # IMPORTANT: Mark signal as invalid after first breakout attempt
+            # This ensures the signal is discarded and won't trigger again
+            logger.info(
+                f"🔔 First breakout detected for signal from {format_ist_date(active_signal['signal_time'])}. "
+                f"Signal will be discarded after this attempt."
+            )
             
             entry_price = latest_closed['Close'] if latest_closed else current_price
             strike = self.calculate_strike_price(entry_price, breakout_direction, self.atm_offset)
@@ -910,8 +1006,13 @@ class InsideBarBreakoutStrategy:
             order_success = bool(order_response.get('status'))
             status = 'breakout_confirmed' if order_success else 'order_failed'
             
-            if breakout_idx is not None:
-                self.last_breakout_candle_idx = breakout_idx
+            # Record breakout timestamp to prevent duplicates
+            if latest_closed:
+                self.last_breakout_timestamp = to_ist(latest_closed.get('candle_start', latest_closed['Date']))
+            
+            # Invalidate signal after breakout attempt (whether successful or not)
+            self.active_signal = None
+            logger.info("🗑️ Signal discarded after breakout attempt. Will look for new inside bar next cycle.")
             
             result = {
                 'status': status,
@@ -962,7 +1063,7 @@ class InsideBarBreakoutStrategy:
                 'status': 'error',
                 'message': f'Error: {err}',
                 'time': format_ist_datetime(ist_now())
-            }
+            }"}
     
     def _print_summary(self, result: Dict):
         """
