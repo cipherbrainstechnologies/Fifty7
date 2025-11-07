@@ -135,27 +135,27 @@ def log_recent_hourly_candles(
         close_val = row['Close']
         
         # Determine status
-        status = \"Normal\"
-        reference_range = \"-\"
+        status = "Normal"
+        reference_range = "-"
         
         if signal:
             if candle_time == inside_bar_time:
-                status = \"\ud83d\udfe2 Inside Bar\"
-                reference_range = f\"Range: {range_low:.2f}-{range_high:.2f}\"
+                status = "\ud83d\udfe2 Inside Bar"
+                reference_range = f"Range: {range_low:.2f}-{range_high:.2f}"
             elif candle_time == signal_time:
-                status = \"\ud83d\udd35 Signal Candle\"
-                reference_range = f\"Range: {range_low:.2f}-{range_high:.2f}\"
+                status = "\ud83d\udd35 Signal Candle"
+                reference_range = f"Range: {range_low:.2f}-{range_high:.2f}"
             elif candle_time > inside_bar_time:
                 # Check if breakout
                 if close_val > range_high:
-                    status = \"\ud83d\udfe2 Breakout CE\"
-                    reference_range = f\"Close > {range_high:.2f}\"
+                    status = "\ud83d\udfe2 Breakout CE"
+                    reference_range = f"Close > {range_high:.2f}"
                 elif close_val < range_low:
-                    status = \"\ud83d\udd34 Breakout PE\"
-                    reference_range = f\"Close < {range_low:.2f}\"
+                    status = "\ud83d\udd34 Breakout PE"
+                    reference_range = f"Close < {range_low:.2f}"
                 else:
-                    status = \"\u23f3 Inside Range\"
-                    reference_range = f\"{range_low:.2f}-{range_high:.2f}\"
+                    status = "\u23f3 Inside Range"
+                    reference_range = f"{range_low:.2f}-{range_high:.2f}"
         
         table += f"{timestamp_str:<22} | {open_val:>8.2f} | {high_val:>8.2f} | {low_val:>8.2f} | {close_val:>8.2f} | {status:<15} | {reference_range}\n"
     
@@ -1099,7 +1099,11 @@ class InsideBarBreakoutStrategy:
                     f"⚠️ Trade missed: Breakout candle for {breakout_direction} already closed at "
                     f"{format_ist_datetime(latest_closed['Date']) if latest_closed else 'unknown time'}. "
                     f"Invalidating current range and waiting for new inside bar setup."
-                )\n                # Invalidate signal and reset state\n                self.active_signal = None\n                self.last_breakout_timestamp = None\n                return {
+                )
+                # Invalidate signal and reset state
+                self.active_signal = None
+                self.last_breakout_timestamp = None
+                return {
                     'status': 'missed_trade',
                     'message': f'Breakout {breakout_direction} missed - candle already closed',
                     'breakout_direction': breakout_direction,
