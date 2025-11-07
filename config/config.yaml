@@ -49,3 +49,37 @@ market_data:
   use_direct_intervals: true  # Prefer direct interval fetching (ONE_HOUR, FIFTEEN_MINUTE) over resampling
   api_delay_minutes: 5  # Request data up to N minutes ago to avoid API delays
 
+# Backtesting Data Sources Configuration
+backtesting:
+  data_source: "desiquant"  # Options: "csv", "desiquant", "marketdata"
+  
+  # CSV Data Source Configuration
+  csv:
+    spot_data_path: "data/historical/nifty_spot_1h.csv"
+    options_data_path: "data/historical/nifty_options_1h.csv"
+    expiries_path: "data/historical/expiries.csv"
+  
+  # DesiQuant S3 Data Source Configuration (Free, no API key required)
+  desiquant:
+    enabled: true
+    # Uses public S3 credentials (built into datasource_desiquant.py)
+  
+  # Market Data API Configuration (Requires API key)
+  marketdata:
+    enabled: false  # Set to true to enable Market Data API
+    api_key: ""  # Your Market Data API key (get from https://www.marketdata.app/)
+    base_url: "https://api.marketdata.app/v1"
+    request_delay: 0.2  # Delay between requests (seconds) to respect rate limits
+    
+    # Symbol mapping
+    symbols:
+      NIFTY: "NIFTY"
+      BANKNIFTY: "BANKNIFTY"
+      FINNIFTY: "FINNIFTY"
+    
+    # Strike configuration
+    strikes:
+      NIFTY: 50  # Strike step for NIFTY (multiples of 50)
+      BANKNIFTY: 100  # Strike step for BANKNIFTY (multiples of 100)
+      FINNIFTY: 50  # Strike step for FINNIFTY (multiples of 50)
+
