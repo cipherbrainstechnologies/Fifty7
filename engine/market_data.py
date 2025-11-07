@@ -894,10 +894,13 @@ class MarketDataProvider:
             # Check if cached data is stale before using fallback
             if not self._data_1h.empty and 'Date' in self._data_1h.columns:
                 latest_cached_date = self._data_1h['Date'].iloc[-1]
-                    if isinstance(latest_cached_date, pd.Timestamp):
-                        days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
+                if isinstance(latest_cached_date, pd.Timestamp):
+                    days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
                     if days_old > 1:
-                        logger.warning(f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). Clearing stale cache.")
+                        logger.warning(
+                            f"⚠️ API failed and cached data is {days_old} days old (latest: {latest_cached_date}). "
+                            "Clearing stale cache."
+                        )
                         self._data_1h = pd.DataFrame(columns=['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
             
             # Fallback: Fetch current OHLC and add to buffer
@@ -929,12 +932,16 @@ class MarketDataProvider:
         # Validate cached data freshness
         if not all_candles.empty and 'Date' in all_candles.columns:
             latest_cached_date = all_candles['Date'].iloc[-1]
-                if isinstance(latest_cached_date, pd.Timestamp):
-                    days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
+            if isinstance(latest_cached_date, pd.Timestamp):
+                days_old = (datetime.now(tz=IST) - latest_cached_date.to_pydatetime()).days
                 if days_old > 1:
-                    logger.warning(f"⚠️ Cached data is {days_old} days old (latest: {latest_cached_date}). This may cause incorrect signals.")
+                    logger.warning(
+                        f"⚠️ Cached data is {days_old} days old (latest: {latest_cached_date}). This may cause incorrect signals."
+                    )
                 elif days_old > 0:
-                    logger.warning(f"⚠️ Using cached data from {latest_cached_date} (yesterday). API may have failed.")
+                    logger.warning(
+                        f"⚠️ Using cached data from {latest_cached_date} (yesterday). API may have failed."
+                    )
         
         if include_latest:
             # Live mode: return all candles including incomplete latest candle
