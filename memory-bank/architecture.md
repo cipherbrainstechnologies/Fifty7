@@ -94,3 +94,8 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - Range high/low
 - Signal reason and timestamp
 
+## Timezone Handling
+
+- Market data refresh normalizes fallback 1-hour candle timestamps to timezone-aware IST values before comparisons (2025-11-07 fix).
+- 15-minute candles remain timezone-naive (assumed IST) to preserve compatibility with existing aggregation routines.
+
