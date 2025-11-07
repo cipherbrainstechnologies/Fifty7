@@ -51,6 +51,7 @@ class MarketDataProvider:
         self._data_1h = pd.DataFrame()
         self._data_15m = pd.DataFrame()
         self._historical_cache: Dict[str, pd.DataFrame] = {}
+        self._last_fetch_meta: Dict[str, Dict] = {}
         
         # Rate limiting
         self._last_request_time = 0
@@ -143,6 +144,29 @@ class MarketDataProvider:
             time.sleep(sleep_time)
         
         self._last_request_time = time.time()
+
+    def _get_trading_day_close(self, timeframe_minutes: int) -> datetime:
+        """Return the expected close time for the current trading day in IST."""
+        now_ist = datetime.now(tz=IST)
+
+        # NSE regular session opens at 09:15 IST
+        market_open = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+        if now_ist < market_open:
+            # before market open: use previous calendar day
+            reference = (now_ist - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            reference = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        close_hour = 15
+        close_minute = 15
+        if timeframe_minutes not in (15, 60):
+            close_minute = 30
+
+        trading_close = reference + timedelta(hours=close_hour, minutes=close_minute)
+        return trading_close
+
+    def get_last_fetch_meta(self, interval: str) -> Dict:
+        return self._last_fetch_meta.get(interval, {})
     
     def _fetch_candles_with_retry(
         self,
@@ -448,6 +472,14 @@ class MarketDataProvider:
                 "fromdate": from_date,
                 "todate": to_date
             }
+
+            self._last_fetch_meta[interval] = {
+                "exchange": exchange,
+                "symboltoken": symbol_token,
+                "from": from_date,
+                "to": to_date,
+                "status": "pending"
+            }
             
             # Call SmartAPI getCandleData with retry logic
             response = self._fetch_candles_with_retry(params)
@@ -461,6 +493,7 @@ class MarketDataProvider:
                     )
                     return self._historical_cache[cache_key].copy()
                 logger.error("Failed to fetch historical candles after all retries")
+                self._last_fetch_meta[interval]["status"] = "failed"
                 return None
             
             # Parse response
@@ -490,6 +523,7 @@ class MarketDataProvider:
             
             if not data or len(data) == 0:
                 logger.warning(f"No historical candle data returned for interval {interval} from {from_date} to {to_date}")
+                self._last_fetch_meta[interval]["status"] = "empty"
                 logger.debug(f"Response keys: {list(response.keys()) if isinstance(response, dict) else 'N/A'}")
                 if isinstance(response.get('data'), dict):
                     logger.debug(f"Response data keys: {list(response.get('data', {}).keys())}")
@@ -534,6 +568,7 @@ class MarketDataProvider:
             # Check if DataFrame is empty
             if df.empty:
                 logger.warning("Empty DataFrame after conversion")
+                self._last_fetch_meta[interval]["status"] = "empty_df"
                 return None
             
             # Standardize column names
@@ -646,8 +681,16 @@ class MarketDataProvider:
             if len(df) > 0:
                 logger.info(f"Fetched {len(df)} historical candles from {from_date} to {to_date} (interval: {interval})")
                 logger.debug(f"Date range: {df['Date'].min()} to {df['Date'].max()}")
+                self._last_fetch_meta[interval]["status"] = "ok"
+                self._last_fetch_meta[interval]["rows"] = len(df)
+                try:
+                    self._last_fetch_meta[interval]["first_date"] = str(df['Date'].iloc[0])
+                    self._last_fetch_meta[interval]["last_date"] = str(df['Date'].iloc[-1])
+                except Exception:
+                    pass
             else:
                 logger.warning(f"No candles returned for interval {interval} from {from_date} to {to_date}")
+                self._last_fetch_meta[interval]["status"] = "empty_df"
             
             # Cache latest successful dataset for fallback usage
             try:
@@ -817,19 +860,43 @@ class MarketDataProvider:
         # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
         current_time = datetime.now(tz=IST)
-        to_time = current_time - timedelta(minutes=5)
-        from_time = current_time - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
+        trading_close_1h = self._get_trading_day_close(60)
+        if current_time < trading_close_1h:
+            to_time_dt = trading_close_1h
+        else:
+            to_time_dt = current_time
+
+        to_time_dt = to_time_dt.replace(second=0, microsecond=0)
+        from_time_dt = to_time_dt - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
         
         # Try direct ONE_HOUR interval first (more efficient)
         if use_direct_interval:
             hist_data_direct = self.get_historical_candles(
                 interval="ONE_HOUR",
-                from_date=from_time.strftime("%Y-%m-%d %H:%M"),
-                to_date=to_time.strftime("%Y-%m-%d %H:%M")
+                from_date=from_time_dt.strftime("%Y-%m-%d %H:%M"),
+                to_date=to_time_dt.strftime("%Y-%m-%d %H:%M")
             )
             
             if hist_data_direct is not None and not hist_data_direct.empty:
                 logger.info(f"Successfully fetched {len(hist_data_direct)} 1-hour candles directly")
+
+                last_ts = pd.to_datetime(hist_data_direct['Date'].iloc[-1]) if 'Date' in hist_data_direct.columns else None
+                if last_ts is not None:
+                    if getattr(last_ts, 'tzinfo', None) is None:
+                        last_ts = IST.localize(last_ts)
+                    else:
+                        last_ts = last_ts.tz_convert(IST)
+
+                    if (current_time - last_ts) > timedelta(minutes=120) or (
+                        current_time >= trading_close_1h and (trading_close_1h - last_ts) > timedelta(minutes=60)
+                    ):
+                        logger.warning(
+                            "Direct ONE_HOUR data appears stale (last=%s, server_now=%s, expected close=%s). Falling back to resampled data.",
+                            last_ts, current_time, trading_close_1h
+                        )
+                        hist_data_direct = None
+
+            if hist_data_direct is not None and not hist_data_direct.empty:
                 self._data_1h = hist_data_direct
                 # Trim to requested window (keep most recent)
                 if len(self._data_1h) > window_hours:
@@ -865,11 +932,10 @@ class MarketDataProvider:
                             logger.warning(f"⚠️ API failed. Using cached data from {latest_cached_date} (yesterday). Data may be stale.")
         
         # Fallback: Fetch 1-minute data and resample
-        fetch_window_days = 3
         hist_data = self.get_historical_candles(
             interval="ONE_MINUTE",
-            from_date=(current_time - timedelta(days=fetch_window_days)).strftime("%Y-%m-%d %H:%M"),
-            to_date=to_time.strftime("%Y-%m-%d %H:%M")
+            from_date=(from_time_dt - timedelta(hours=12)).strftime("%Y-%m-%d %H:%M"),
+            to_date=to_time_dt.strftime("%Y-%m-%d %H:%M")
         )
         
         if hist_data is not None and not hist_data.empty:
@@ -978,19 +1044,43 @@ class MarketDataProvider:
         # Added include_latest flag to allow returning incomplete candles during live trading
         # IMPORTANT: Request data up to 5 minutes ago to avoid API delay issues
         current_time = datetime.now(tz=IST)
-        to_time = current_time - timedelta(minutes=5)
-        from_time = current_time - timedelta(hours=window_hours + 2)  # Add buffer for complete candles
+        trading_close_15m = self._get_trading_day_close(15)
+        if current_time < trading_close_15m:
+            to_time_dt = trading_close_15m
+        else:
+            to_time_dt = current_time
+
+        to_time_dt = to_time_dt.replace(second=0, microsecond=0)
+        from_time_dt = to_time_dt - timedelta(hours=window_hours + 2)  # Add buffer for complete candles
         
         # Try direct FIFTEEN_MINUTE interval first (more efficient)
         if use_direct_interval:
             hist_data_direct = self.get_historical_candles(
                 interval="FIFTEEN_MINUTE",
-                from_date=from_time.strftime("%Y-%m-%d %H:%M"),
-                to_date=to_time.strftime("%Y-%m-%d %H:%M")
+                from_date=from_time_dt.strftime("%Y-%m-%d %H:%M"),
+                to_date=to_time_dt.strftime("%Y-%m-%d %H:%M")
             )
             
             if hist_data_direct is not None and not hist_data_direct.empty:
                 logger.info(f"Successfully fetched {len(hist_data_direct)} 15-minute candles directly")
+
+                last_ts = pd.to_datetime(hist_data_direct['Date'].iloc[-1]) if 'Date' in hist_data_direct.columns else None
+                if last_ts is not None:
+                    if getattr(last_ts, 'tzinfo', None) is None:
+                        last_ts = IST.localize(last_ts)
+                    else:
+                        last_ts = last_ts.tz_convert(IST)
+
+                    if (current_time - last_ts) > timedelta(minutes=45) or (
+                        current_time >= trading_close_15m and (trading_close_15m - last_ts) > timedelta(minutes=30)
+                    ):
+                        logger.warning(
+                            "Direct FIFTEEN_MINUTE data appears stale (last=%s, server_now=%s, expected close=%s). Falling back to resampled data.",
+                            last_ts, current_time, trading_close_15m
+                        )
+                        hist_data_direct = None
+
+            if hist_data_direct is not None and not hist_data_direct.empty:
                 self._data_15m = hist_data_direct
                 # Trim to requested window (keep most recent)
                 max_candles = (window_hours * 60) // 15
@@ -1017,11 +1107,10 @@ class MarketDataProvider:
                 logger.info("Direct FIFTEEN_MINUTE fetch failed or returned empty, falling back to resampling from ONE_MINUTE")
         
         # Fallback: Fetch 1-minute data and resample
-        fetch_window_days = 3
         hist_data = self.get_historical_candles(
             interval="ONE_MINUTE",
-            from_date=(current_time - timedelta(days=fetch_window_days)).strftime("%Y-%m-%d %H:%M"),
-            to_date=to_time.strftime("%Y-%m-%d %H:%M")
+            from_date=(from_time_dt - timedelta(hours=6)).strftime("%Y-%m-%d %H:%M"),
+            to_date=to_time_dt.strftime("%Y-%m-%d %H:%M")
         )
         
         if hist_data is not None and not hist_data.empty:

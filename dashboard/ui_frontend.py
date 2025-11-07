@@ -1394,6 +1394,7 @@ if tab == "Dashboard":
             )
             st.write("Data Source Path:", data_source_path)
             st.write("Candle Count:", len(debug_df))
+            st.write("Server Time (IST):", format_ist_timestamp(pd.Timestamp.now(tz='Asia/Kolkata')))
 
             if not raw_data_1h.empty and 'Date' in raw_data_1h.columns:
                 raw_tz = getattr(raw_data_1h['Date'].dt, "tz", None)
@@ -1412,6 +1413,42 @@ if tab == "Dashboard":
                 raw15_tz = getattr(raw_data_15m['Date'].dt, "tz", None)
                 st.write("Raw 15m Date dtype:", str(raw_data_15m['Date'].dtype))
                 st.write("Raw 15m timezone: ", str(raw15_tz))
+
+            fetch_meta_1h = None
+            fetch_meta_15m = None
+            fetch_meta_1m = None
+            if hasattr(st.session_state.market_data_provider, 'get_last_fetch_meta'):
+                fetch_meta_1h = st.session_state.market_data_provider.get_last_fetch_meta("ONE_HOUR")
+                fetch_meta_15m = st.session_state.market_data_provider.get_last_fetch_meta("FIFTEEN_MINUTE")
+                fetch_meta_1m = st.session_state.market_data_provider.get_last_fetch_meta("ONE_MINUTE")
+
+            if fetch_meta_1h:
+                st.write(
+                    "1H API Window:",
+                    f"{fetch_meta_1h.get('from', '—')} → {fetch_meta_1h.get('to', '—')}"
+                )
+                st.write("1H API Status:", fetch_meta_1h.get('status', 'unknown'))
+                st.write("1H API Rows:", fetch_meta_1h.get('rows', '—'))
+                if fetch_meta_1h.get('last_date'):
+                    st.write("1H API Last Date:", fetch_meta_1h.get('last_date'))
+
+            if fetch_meta_15m:
+                st.write(
+                    "15m API Window:",
+                    f"{fetch_meta_15m.get('from', '—')} → {fetch_meta_15m.get('to', '—')}"
+                )
+                st.write("15m API Status:", fetch_meta_15m.get('status', 'unknown'))
+                st.write("15m API Rows:", fetch_meta_15m.get('rows', '—'))
+                if fetch_meta_15m.get('last_date'):
+                    st.write("15m API Last Date:", fetch_meta_15m.get('last_date'))
+
+            if fetch_meta_1m:
+                st.write(
+                    "1m API Window:",
+                    f"{fetch_meta_1m.get('from', '—')} → {fetch_meta_1m.get('to', '—')}"
+                )
+                st.write("1m API Status:", fetch_meta_1m.get('status', 'unknown'))
+                st.write("1m API Rows:", fetch_meta_1m.get('rows', '—'))
 
             if not debug_df.empty and 'Date' in debug_df.columns:
                 st.write("Market Hours (IST):", "09:15 AM → 03:30 PM")
