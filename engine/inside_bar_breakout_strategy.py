@@ -335,7 +335,8 @@ def detect_inside_bar(candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
 def get_active_signal(
     candles: pd.DataFrame,
     previous_signal: Optional[Dict[str, Any]] = None,
-    mark_signal_invalid: bool = False
+    mark_signal_invalid: bool = False,
+    exclude_before_time: Optional[datetime] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Maintain the active signal using the most recent (preferably today's) inside bar.
@@ -345,6 +346,7 @@ def get_active_signal(
         candles: DataFrame with hourly candles
         previous_signal: Previously active signal (if any)
         mark_signal_invalid: If True, discard current signal (used after breakout attempt)
+        exclude_before_time: If provided, only detect inside bars AFTER this time (used after breakout)
     
     Returns:
         Active signal dict or None
@@ -357,9 +359,23 @@ def get_active_signal(
         )
         return None
     
-    candidate = detect_inside_bar(candles)
+    # Filter candles if we need to exclude old inside bars (after breakout)
+    filtered_candles = candles
+    if exclude_before_time:
+        candles_date = pd.to_datetime(candles['Date'])
+        if candles_date.dt.tz is None:
+            candles_date_aware = candles_date.dt.tz_localize(IST)
+        else:
+            candles_date_aware = candles_date.dt.tz_convert(IST)
+        filtered_candles = candles[candles_date_aware > exclude_before_time].copy()
+        if filtered_candles.empty:
+            logger.debug(f"No candles available after exclusion time {format_ist_datetime(exclude_before_time)}")
+            return None
+        logger.debug(f"Filtering inside bars: excluding any before {format_ist_datetime(exclude_before_time)}")
+    
+    candidate = detect_inside_bar(filtered_candles)
     if candidate is None:
-        if previous_signal:
+        if previous_signal and not exclude_before_time:
             logger.debug("No new inside bar detected; retaining existing active signal")
             return previous_signal
         return None
@@ -440,7 +456,16 @@ def confirm_breakout_on_hour_close(
     )
     
     # Filter candles that come AFTER the inside bar (timestamp-based)
-    candles_after_inside = candles[pd.to_datetime(candles['Date']) > inside_bar_time].copy()
+    # Ensure timezone compatibility for comparison
+    candles_date = pd.to_datetime(candles['Date'])
+    # Localize timezone-naive dates to IST for comparison
+    if candles_date.dt.tz is None:
+        candles_date_aware = candles_date.dt.tz_localize(IST)
+    else:
+        candles_date_aware = candles_date.dt.tz_convert(IST)
+    
+    # Create comparison using timezone-aware values
+    candles_after_inside = candles[candles_date_aware > inside_bar_time].copy()
     
     if candles_after_inside.empty:
         logger.debug(f"No candles available after inside bar time {format_ist_datetime(inside_bar_time)}")
@@ -1051,7 +1076,8 @@ class InsideBarBreakoutStrategy:
             
             current_price = candles['Close'].iloc[-1] if not candles.empty else None
             
-            active_signal = self.get_active_signal(candles, self.active_signal)
+            # Get or update active signal
+            active_signal = self.get_active_signal(candles)
             if active_signal is None:
                 logger.info("📊 No qualifying inside bar signal active for current day")
                 return {
@@ -1060,9 +1086,6 @@ class InsideBarBreakoutStrategy:
                     'current_price': current_price,
                     'time': current_time_str
                 }
-            
-            # Store active signal for next iteration
-            self.active_signal = active_signal
             
             breakout_direction, latest_closed, is_missed_trade = _CONFIRM_BREAKOUT(
                 candles,
@@ -1095,25 +1118,67 @@ class InsideBarBreakoutStrategy:
             
             # Handle missed trade scenario
             if is_missed_trade:
-                logger.warning(
-                    f"⚠️ Trade missed: Breakout candle for {breakout_direction} already closed at "
-                    f"{format_ist_datetime(latest_closed['Date']) if latest_closed else 'unknown time'}. "
-                    f"Invalidating current range and waiting for new inside bar setup."
+                breakout_time_str = format_ist_datetime(latest_closed['Date']) if latest_closed else 'unknown time'
+                logger.error(
+                    f"\n{'⚠️'*40}\n"
+                    f"🚨 MISSED TRADE DETECTED\n"
+                    f"   Direction: {breakout_direction}\n"
+                    f"   Breakout Candle Close: {breakout_time_str}\n"
+                    f"   Signal Range: {active_signal['range_low']:.2f} - {active_signal['range_high']:.2f}\n"
+                    f"   Close Price: {latest_closed['Close']:.2f}\n"
+                    f"   Reason: System was offline/delayed when breakout occurred\n"
+                    f"\n   ➡️ Invalidating signal and scanning for NEW inside bar\n"
+                    f"{'⚠️'*40}"
                 )
+                
                 # Invalidate signal and reset state
                 self.active_signal = None
-                self.last_breakout_timestamp = None
-                return {
-                    'status': 'missed_trade',
-                    'message': f'Breakout {breakout_direction} missed - candle already closed',
-                    'breakout_direction': breakout_direction,
-                    'signal_date': format_ist_date(active_signal['signal_time']),
-                    'signal_high': active_signal['range_high'],
-                    'signal_low': active_signal['range_low'],
-                    'breakout_candle_close_time': format_ist_datetime(latest_closed['Date']) if latest_closed else None,
-                    'missed_reason': 'System was offline or delayed when breakout occurred',
-                    'time': current_time_str
-                }
+                if hasattr(self, 'last_breakout_timestamp'):
+                    self.last_breakout_timestamp = None
+                
+                # Immediately try to detect NEW inside bar after invalidation
+                # Exclude inside bars that occurred before or during the breakout candle
+                breakout_candle_time = to_ist(latest_closed['Date'])
+                logger.info(
+                    f"🔄 Scanning for new inside bar pattern after missed trade...\n"
+                    f"   Excluding inside bars before: {format_ist_datetime(breakout_candle_time)}"
+                )
+                new_signal = _GET_ACTIVE_SIGNAL(
+                    candles, 
+                    previous_signal=None, 
+                    mark_signal_invalid=False,
+                    exclude_before_time=breakout_candle_time
+                )
+                
+                if new_signal:
+                    self.active_signal = new_signal
+                    logger.info(
+                        f"✅ NEW inside bar detected: {format_ist_datetime(new_signal['inside_bar_time'])} | "
+                        f"Range: {new_signal['range_low']:.2f} - {new_signal['range_high']:.2f}"
+                    )
+                    return {
+                        'status': 'missed_trade_new_signal_found',
+                        'message': f'Missed breakout {breakout_direction}. New inside bar found and tracking started.',
+                        'missed_breakout_direction': breakout_direction,
+                        'missed_breakout_time': breakout_time_str,
+                        'new_signal_date': format_ist_date(new_signal['signal_time']),
+                        'new_signal_high': new_signal['range_high'],
+                        'new_signal_low': new_signal['range_low'],
+                        'time': current_time_str
+                    }
+                else:
+                    logger.info("⏳ No new inside bar found yet. Will continue scanning in next cycle.")
+                    return {
+                        'status': 'missed_trade',
+                        'message': f'Missed breakout {breakout_direction}. Awaiting new inside bar pattern.',
+                        'breakout_direction': breakout_direction,
+                        'signal_date': format_ist_date(active_signal['signal_time']),
+                        'signal_high': active_signal['range_high'],
+                        'signal_low': active_signal['range_low'],
+                        'breakout_candle_close_time': breakout_time_str,
+                        'missed_reason': 'System was offline or delayed when breakout occurred',
+                        'time': current_time_str
+                    }
             
             # Check if this is a duplicate breakout (same candle timestamp)
             if latest_closed and hasattr(self, 'last_breakout_timestamp'):
@@ -1132,8 +1197,13 @@ class InsideBarBreakoutStrategy:
             # IMPORTANT: Mark signal as invalid after first breakout attempt
             # This ensures the signal is discarded and won't trigger again
             logger.info(
-                f"🔔 First breakout detected for signal from {format_ist_date(active_signal['signal_time'])}. "
-                f"Signal will be discarded after this attempt."
+                f"\n{'🔔'*40}\n"
+                f"🎯 BREAKOUT CONFIRMED & TRADE EXECUTION\n"
+                f"   Direction: {breakout_direction}\n"
+                f"   Signal from: {format_ist_date(active_signal['signal_time'])}\n"
+                f"   Breakout Range: {active_signal['range_low']:.2f} - {active_signal['range_high']:.2f}\n"
+                f"   ➡️ Signal will be discarded after this trade attempt\n"
+                f"{'🔔'*40}"
             )
             
             entry_price = latest_closed['Close'] if latest_closed else current_price
@@ -1153,8 +1223,45 @@ class InsideBarBreakoutStrategy:
                 self.last_breakout_timestamp = to_ist(latest_closed.get('candle_start', latest_closed['Date']))
             
             # Invalidate signal after breakout attempt (whether successful or not)
+            old_signal_time = format_ist_date(active_signal['signal_time'])
+            old_range = f"{active_signal['range_low']:.2f} - {active_signal['range_high']:.2f}"
             self.active_signal = None
-            logger.info("🗑️ Signal discarded after breakout attempt. Will look for new inside bar next cycle.")
+            
+            logger.info(
+                f"\n{'🗑️'*40}\n"
+                f"✅ SIGNAL DISCARDED AFTER BREAKOUT ATTEMPT\n"
+                f"   Old Signal: {old_signal_time}\n"
+                f"   Old Range: {old_range}\n"
+                f"   ➡️ Will scan for NEW inside bar in next cycle\n"
+                f"{'🗑️'*40}"
+            )
+            
+            # Immediately try to detect NEW inside bar for next opportunity
+            # Exclude inside bars that occurred before or during the breakout candle
+            breakout_candle_time = to_ist(latest_closed.get('candle_start', latest_closed['Date']))
+            logger.info(
+                f"🔄 Scanning for new inside bar pattern after trade execution...\n"
+                f"   Excluding inside bars before: {format_ist_datetime(breakout_candle_time)}"
+            )
+            new_signal = _GET_ACTIVE_SIGNAL(
+                candles, 
+                previous_signal=None, 
+                mark_signal_invalid=False,
+                exclude_before_time=breakout_candle_time
+            )
+            
+            if new_signal:
+                self.active_signal = new_signal
+                logger.info(
+                    f"\n{'✨'*40}\n"
+                    f"🆕 NEW INSIDE BAR DETECTED\n"
+                    f"   Signal Time: {format_ist_datetime(new_signal['inside_bar_time'])}\n"
+                    f"   New Range: {new_signal['range_low']:.2f} - {new_signal['range_high']:.2f}\n"
+                    f"   Status: Active and tracking\n"
+                    f"{'✨'*40}"
+                )
+            else:
+                logger.info("⏳ No new inside bar found yet. Will continue scanning in next cycle.")
             
             result = {
                 'status': status,
@@ -1207,6 +1314,37 @@ class InsideBarBreakoutStrategy:
                 'time': format_ist_datetime(ist_now())
             }
     
+    def get_current_state(self) -> Dict:
+        """
+        Get current strategy state as JSON for UI consumption.
+        
+        Returns:
+            Dictionary with current strategy state
+        """
+        state = {
+            'timestamp': format_ist_datetime(ist_now()),
+            'has_active_signal': self.active_signal is not None,
+            'signal': None,
+            'last_breakout_timestamp': None,
+            'live_mode': self.live_mode,
+            'execution_armed': self.execution_armed
+        }
+        
+        if self.active_signal:
+            state['signal'] = {
+                'inside_bar_time': format_ist_datetime(self.active_signal['inside_bar_time']),
+                'signal_time': format_ist_datetime(self.active_signal['signal_time']),
+                'range_high': float(self.active_signal['range_high']),
+                'range_low': float(self.active_signal['range_low']),
+                'range_width': float(self.active_signal['range_high'] - self.active_signal['range_low']),
+                'breakout_attempted': self.active_signal.get('breakout_attempted', False)
+            }
+        
+        if hasattr(self, 'last_breakout_timestamp') and self.last_breakout_timestamp:
+            state['last_breakout_timestamp'] = format_ist_datetime(self.last_breakout_timestamp)
+        
+        return state
+    
     def _print_summary(self, result: Dict):
         """
         Print formatted strategy summary.
@@ -1252,7 +1390,32 @@ class InsideBarBreakoutStrategy:
         elif result.get('status') == 'duplicate_breakout':
             print("⚠️ Breakout already processed for this candle. No new trade executed.")
         
-        print(f"Time: {result.get('time', 'N/A')}")
+        elif result.get('status') == 'missed_trade':
+            print(f"🚨 MISSED TRADE DETECTED")
+            print(f"Breakout Direction: {result.get('breakout_direction')} (would have been {'Call' if result.get('breakout_direction') == 'CE' else 'Put'})")
+            print(f"Missed Signal from: {result.get('signal_date', 'N/A')}")
+            print(f"Breakout occurred at: {result.get('breakout_candle_close_time', 'N/A')}")
+            print(f"Reason: {result.get('missed_reason', 'Unknown')}")
+            print(f"\n⏳ Status: Awaiting new inside bar pattern")
+        
+        elif result.get('status') == 'missed_trade_new_signal_found':
+            print(f"🚨 MISSED TRADE - But NEW inside bar found!")
+            print(f"Missed: {result.get('missed_breakout_direction')} breakout at {result.get('missed_breakout_time', 'N/A')}")
+            print(f"\n✅ NEW Inside Bar Active:")
+            print(f"Signal Date: {result.get('new_signal_date', 'N/A')}")
+            print(f"New Range: {result.get('new_signal_low', 0):.2f} - {result.get('new_signal_high', 0):.2f}")
+            print(f"Status: Tracking for next breakout")
+        
+        print(f"\nTime: {result.get('time', 'N/A')}")
+        
+        # Print current state
+        current_state = self.get_current_state()
+        print(f"\n📊 Current State:")
+        print(f"   Active Signal: {'Yes' if current_state['has_active_signal'] else 'No'}")
+        if current_state['has_active_signal']:
+            print(f"   Signal Range: {current_state['signal']['range_low']:.2f} - {current_state['signal']['range_high']:.2f}")
+            print(f"   Signal Time: {current_state['signal']['signal_time']}")
+        
         print("="*70 + "\n")
 
 
