@@ -173,6 +173,31 @@ def get_config_value(section, key, default=None):
     
     return default
 
+
+def align_dataframe_to_ist(df: pd.DataFrame, column: str = 'Date') -> pd.DataFrame:
+    """Ensure the specified datetime column is timezone-aware in Asia/Kolkata."""
+    if df is None or df.empty or column not in df.columns:
+        return df
+
+    aligned = df.copy()
+
+    try:
+        dt_series = pd.to_datetime(aligned[column], errors='coerce')
+
+        if getattr(dt_series.dt, "tz", None) is None:
+            try:
+                dt_series = dt_series.dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
+            except TypeError:
+                dt_series = dt_series.dt.tz_localize('Asia/Kolkata')
+        else:
+            dt_series = dt_series.dt.tz_convert('Asia/Kolkata')
+
+        aligned[column] = dt_series
+    except Exception as exc:
+        logger.warning(f"Timezone alignment failed for column '{column}': {exc}")
+
+    return aligned
+
 # ===================================================================
 # FIREBASE AUTHENTICATION
 # ===================================================================
@@ -1321,7 +1346,32 @@ if tab == "Dashboard":
             data_15m = st.session_state.market_data_provider.get_15m_data(
                 window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
             )
-            
+
+            data_1h = align_dataframe_to_ist(data_1h)
+            data_15m = align_dataframe_to_ist(data_15m)
+
+            debug_df = data_1h if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
+
+            st.subheader("🧭 Debug Snapshot")
+            local_flag = str(os.getenv("LOCAL_RUN", "")).lower() in {"1", "true", "yes", "local"}
+            st.write("Environment:", "Local" if local_flag else "Hosted")
+            data_source_path = (
+                os.getenv("DATA_SOURCE_PATH")
+                or st.session_state.get("data_source_path")
+                or st.session_state.get("historical_data_path")
+                or "Not set"
+            )
+            st.write("Data Source Path:", data_source_path)
+            st.write("Candle Count:", len(debug_df))
+
+            if not debug_df.empty and 'Date' in debug_df.columns:
+                st.write("Data Range:", debug_df['Date'].min(), "→", debug_df['Date'].max())
+                st.write("Unique Dates:", debug_df['Date'].dt.date.unique().tolist())
+                st.write("Last 5 Timestamps:", debug_df['Date'].tail().tolist())
+                st.dataframe(debug_df.head(), use_container_width=True, height=200)
+            else:
+                st.info("1H candle data not available for debugging.")
+
             if not data_1h.empty and not data_15m.empty:
                 # Show data availability
                 col1, col2 = st.columns(2)
@@ -1560,7 +1610,7 @@ elif tab == "Portfolio":
         st.warning("⚠️ Broker not initialized. Please check your broker configuration in Settings.")
     else:
         # Cached fetchers to respect API rate limits
-        @st.cache_data(ttl=15)
+        @st.cache_data(ttl=0)
         def _fetch_holdings():
             import time
             attempts = 0
@@ -1573,7 +1623,7 @@ elif tab == "Portfolio":
                     time.sleep(2)
             return []
 
-        @st.cache_data(ttl=15)
+        @st.cache_data(ttl=0)
         def _fetch_all_holdings():
             import time
             attempts = 0
@@ -1586,7 +1636,7 @@ elif tab == "Portfolio":
                     time.sleep(2)
             return {}
 
-        @st.cache_data(ttl=15)
+        @st.cache_data(ttl=0)
         def _fetch_positions_book():
             import time
             attempts = 0
@@ -2031,7 +2081,7 @@ elif tab == "Orders & Trades":
     if st.session_state.broker is None:
         st.warning("Broker not initialized.")
     else:
-        @st.cache_data(ttl=15)
+        @st.cache_data(ttl=0)
         def _fetch_order_book():
             import time
             attempts = 0
@@ -2047,7 +2097,7 @@ elif tab == "Orders & Trades":
                     time.sleep(2)
             return []
 
-        @st.cache_data(ttl=15)
+        @st.cache_data(ttl=0)
         def _fetch_trade_book():
             import time
             attempts = 0

@@ -99,3 +99,9 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - Market data refresh normalizes fallback 1-hour candle timestamps to timezone-aware IST values before comparisons (2025-11-07 fix).
 - 15-minute candles remain timezone-naive (assumed IST) to preserve compatibility with existing aggregation routines.
 
+## Debug Instrumentation
+
+- 2025-11-07: Streamlit dashboard adds an `🧭 Debug Snapshot` panel that captures environment origin (local vs hosted), data source path, candle counts, range diagnostics, and recent timestamps to troubleshoot mismatched datasets.
+- 2025-11-07: Dashboard normalizes visible 1H/15m candle tables to Asia/Kolkata by localizing raw timestamps to UTC and converting to IST before presentation.
+- 2025-11-07: Streamlit cache TTL for broker portfolio/order fetches set to 0 seconds to avoid serving stale remote data during comparative debugging.
+
