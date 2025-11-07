@@ -84,6 +84,86 @@ def log_candle(label: str, candle: Dict[str, Any]):
     )
 
 
+def log_recent_hourly_candles(
+    candles: pd.DataFrame, 
+    count: int = 10,
+    signal: Optional[Dict[str, Any]] = None
+) -> str:
+    """
+    Log recent hourly candles in a formatted table.
+    
+    Args:
+        candles: DataFrame with hourly candles
+        count: Number of recent candles to display (default: 10)
+        signal: Active signal dict with inside bar info (optional)
+    
+    Returns:
+        Formatted table string
+    """
+    if candles is None or candles.empty:
+        return \"No candles available\"
+    
+    # Get most recent 'count' candles
+    recent = candles.tail(count).copy()
+    
+    # Prepare table header
+    table = \"\\n\" + \"=\"*120 + \"\\n\"
+    table += \"RECENT HOURLY CANDLES (1H TIMEFRAME - IST)\\n\"
+    table += \"=\"*120 + \"\\n\"
+    table += f\"{'Timestamp':<22} | {'Open':>8} | {'High':>8} | {'Low':>8} | {'Close':>8} | {'Status':<15} | {'Reference Range'}\\n\"
+    table += \"-\"*120 + \"\\n\"
+    
+    # Determine inside bar and signal candle indices if signal exists
+    inside_bar_time = None
+    signal_time = None
+    range_high = None
+    range_low = None
+    
+    if signal:
+        inside_bar_time = to_ist(signal.get('inside_bar_time'))
+        signal_time = to_ist(signal.get('signal_time'))
+        range_high = signal.get('range_high')
+        range_low = signal.get('range_low')
+    
+    # Process each candle
+    for idx, row in recent.iterrows():
+        candle_time = to_ist(row['Date'])
+        timestamp_str = format_ist_datetime(candle_time)
+        open_val = row['Open']
+        high_val = row['High']
+        low_val = row['Low']
+        close_val = row['Close']
+        
+        # Determine status
+        status = \"Normal\"
+        reference_range = \"-\"
+        
+        if signal:
+            if candle_time == inside_bar_time:
+                status = \"\ud83d\udfe2 Inside Bar\"
+                reference_range = f\"Range: {range_low:.2f}-{range_high:.2f}\"
+            elif candle_time == signal_time:
+                status = \"\ud83d\udd35 Signal Candle\"
+                reference_range = f\"Range: {range_low:.2f}-{range_high:.2f}\"
+            elif candle_time > inside_bar_time:
+                # Check if breakout
+                if close_val > range_high:
+                    status = \"\ud83d\udfe2 Breakout CE\"
+                    reference_range = f\"Close > {range_high:.2f}\"
+                elif close_val < range_low:
+                    status = \"\ud83d\udd34 Breakout PE\"
+                    reference_range = f\"Close < {range_low:.2f}\"
+                else:
+                    status = \"\u23f3 Inside Range\"
+                    reference_range = f\"{range_low:.2f}-{range_high:.2f}\"
+        
+        table += f\"{timestamp_str:<22} | {open_val:>8.2f} | {high_val:>8.2f} | {low_val:>8.2f} | {close_val:>8.2f} | {status:<15} | {reference_range}\\n\"
+    
+    table += \"=\"*120 + \"\\n\"
+    
+    return table
+
+
 def _ensure_datetime_column(candles: pd.DataFrame) -> pd.DataFrame:
     """Ensure candles DataFrame has a Date column with datetime objects."""
     if candles is None or candles.empty:
@@ -320,24 +400,33 @@ def get_active_signal(
 def confirm_breakout_on_hour_close(
     candles: pd.DataFrame,
     signal: Optional[Dict[str, Any]],
-    current_time: Optional[datetime] = None
-) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    current_time: Optional[datetime] = None,
+    check_missed_trade: bool = True
+) -> Tuple[Optional[str], Optional[Dict[str, Any]], bool]:
     """
     Confirm breakout using only closed 1-hour candles.
     Uses TIMESTAMP-BASED comparison instead of indices to work across days.
     
+    Args:
+        candles: DataFrame with hourly candles
+        signal: Active signal dict with inside bar info
+        current_time: Current time for completeness checks
+        check_missed_trade: If True, detect missed trade opportunities
+    
     Returns:
-        direction ("CE"/"PE") if breakout detected, otherwise None
-        latest_closed_candle dict for observability/logging
+        Tuple of:
+        - direction ("CE"/"PE") if breakout detected, otherwise None
+        - latest_closed_candle dict for observability/logging
+        - is_missed_trade (True if breakout happened but trade was missed)
     """
     if signal is None:
         logger.debug("No active signal to evaluate breakout against")
-        return None, None
+        return None, None, False
     
     candles = _ensure_datetime_column(candles)
     if candles.empty:
         logger.debug("Candles DataFrame is empty")
-        return None, None
+        return None, None, False
     
     if current_time is None:
         current_time = ist_now()
@@ -355,13 +444,16 @@ def confirm_breakout_on_hour_close(
     
     if candles_after_inside.empty:
         logger.debug(f"No candles available after inside bar time {format_ist_datetime(inside_bar_time)}")
-        return None, None
+        return None, None, False
     
     logger.info(f"Found {len(candles_after_inside)} candle(s) after inside bar for breakout evaluation")
     
     latest_closed: Optional[Dict[str, Any]] = None
+    first_breakout_candle: Optional[Dict[str, Any]] = None
+    breakout_direction: Optional[str] = None
+    is_missed_trade = False
     
-    # Check each candle AFTER inside bar
+    # Check each candle AFTER inside bar (process in chronological order)
     for idx, candle in candles_after_inside.iterrows():
         candle_start = to_ist(candle['Date'])
         candle_end = candle_start + timedelta(hours=1)
@@ -401,37 +493,59 @@ def confirm_breakout_on_hour_close(
             'candle_start': candle_start
         }
         
-        if breakout_high:
+        # Check for breakout on THIS candle
+        if breakout_high and first_breakout_candle is None:
+            first_breakout_candle = latest_closed.copy()
+            breakout_direction = "CE"
             logger.info(
                 f"\n{'🟢'*40}\n"
-                f"✅ BREAKOUT DETECTED (CE) at {format_ist_datetime(candle_end)}\n"
+                f"✅ FIRST BREAKOUT DETECTED (CE) at {format_ist_datetime(candle_end)}\n"
                 f"   Close {close_price:.2f} > Signal High {signal['range_high']:.2f}\n"
                 f"   Breakout by {close_price - signal['range_high']:.2f} points\n"
                 f"{'🟢'*40}"
             )
-            return "CE", latest_closed
+            # Check if this is a missed trade (candle already closed more than 5 min ago)
+            time_since_close = (current_time - candle_end).total_seconds()
+            if check_missed_trade and time_since_close > 300:  # 5 minutes threshold
+                is_missed_trade = True
+                logger.warning(
+                    f"⚠️ MISSED TRADE: Breakout candle closed {int(time_since_close/60)} minutes ago at {format_ist_datetime(candle_end)}. "
+                    f"System was offline or delayed."
+                )
+            break  # Only process first breakout candle
         
-        if breakout_low:
+        if breakout_low and first_breakout_candle is None:
+            first_breakout_candle = latest_closed.copy()
+            breakout_direction = "PE"
             logger.info(
                 f"\n{'🔴'*40}\n"
-                f"✅ BREAKOUT DETECTED (PE) at {format_ist_datetime(candle_end)}\n"
+                f"✅ FIRST BREAKOUT DETECTED (PE) at {format_ist_datetime(candle_end)}\n"
                 f"   Close {close_price:.2f} < Signal Low {signal['range_low']:.2f}\n"
                 f"   Breakout by {signal['range_low'] - close_price:.2f} points\n"
                 f"{'🔴'*40}"
             )
-            return "PE", latest_closed
+            # Check if this is a missed trade
+            time_since_close = (current_time - candle_end).total_seconds()
+            if check_missed_trade and time_since_close > 300:  # 5 minutes threshold
+                is_missed_trade = True
+                logger.warning(
+                    f"⚠️ MISSED TRADE: Breakout candle closed {int(time_since_close/60)} minutes ago at {format_ist_datetime(candle_end)}. "
+                    f"System was offline or delayed."
+                )
+            break  # Only process first breakout candle
         
-        logger.info(f"⏳ No breakout yet - candle closed inside signal range")
+        if inside_range:
+            logger.info(f"⏳ No breakout yet - candle closed inside signal range")
     
-    if latest_closed:
+    if latest_closed and not first_breakout_candle:
         logger.info(
             f"📋 Latest closed candle: {format_ist_datetime(latest_closed['Date'])} | "
             f"Close={latest_closed['Close']:.2f} (still inside range)"
         )
-    else:
+    elif not latest_closed:
         logger.debug("No closed 1H candles available after inside bar yet")
     
-    return None, latest_closed
+    return breakout_direction, first_breakout_candle or latest_closed, is_missed_trade
 
 
 def check_margin(
@@ -553,6 +667,7 @@ _GET_ACTIVE_SIGNAL = get_active_signal
 _CONFIRM_BREAKOUT = confirm_breakout_on_hour_close
 _CHECK_MARGIN = check_margin
 _PLACE_ORDER = place_order
+_LOG_RECENT_CANDLES = log_recent_hourly_candles
 
 
 class InsideBarBreakoutStrategy:
@@ -918,6 +1033,10 @@ class InsideBarBreakoutStrategy:
                 first_candle_date = format_ist_datetime(candles['Date'].iloc[0])
                 last_candle_date = format_ist_datetime(candles['Date'].iloc[-1])
                 logger.info(f"   Date range: {first_candle_date} to {last_candle_date}")
+                
+                # Log recent hourly candles table (before checking for active signal)
+                candles_table = _LOG_RECENT_CANDLES(candles, count=10, signal=self.active_signal)
+                logger.info(candles_table)
             
             # Check for volume data availability (AngelOne API may not provide volume for NIFTY index)
             if 'Volume' in candles.columns:
@@ -945,10 +1064,11 @@ class InsideBarBreakoutStrategy:
             # Store active signal for next iteration
             self.active_signal = active_signal
             
-            breakout_direction, latest_closed = _CONFIRM_BREAKOUT(
+            breakout_direction, latest_closed, is_missed_trade = _CONFIRM_BREAKOUT(
                 candles,
                 active_signal,
-                current_time=now_ist
+                current_time=now_ist,
+                check_missed_trade=True
             )
             
             if latest_closed is None and not candles.empty:
@@ -970,6 +1090,21 @@ class InsideBarBreakoutStrategy:
                     'signal_high': active_signal['range_high'],
                     'signal_low': active_signal['range_low'],
                     'last_closed_close': latest_closed['Close'] if latest_closed else None,
+                    'time': current_time_str
+                }
+            
+            # Handle missed trade scenario
+            if is_missed_trade:
+                logger.warning(
+                    f\"\u26a0\ufe0f Trade missed: Breakout candle for {breakout_direction} already closed at \"\n                    f\"{format_ist_datetime(latest_closed['Date']) if latest_closed else 'unknown time'}. \"\n                    f\"Invalidating current range and waiting for new inside bar setup.\"\n                )\n                # Invalidate signal and reset state\n                self.active_signal = None\n                self.last_breakout_timestamp = None\n                return {
+                    'status': 'missed_trade',
+                    'message': f'Breakout {breakout_direction} missed - candle already closed',
+                    'breakout_direction': breakout_direction,
+                    'signal_date': format_ist_date(active_signal['signal_time']),
+                    'signal_high': active_signal['range_high'],
+                    'signal_low': active_signal['range_low'],
+                    'breakout_candle_close_time': format_ist_datetime(latest_closed['Date']) if latest_closed else None,
+                    'missed_reason': 'System was offline or delayed when breakout occurred',
                     'time': current_time_str
                 }
             
