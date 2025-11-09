@@ -244,6 +244,8 @@ if current_positions >= max_positions:
 
 **Issue**: No protection against catastrophic losses in single day
 
+✅ **2025-11-09 Update**: `PositionMonitor` now emits realized P&L events back to `LiveStrategyRunner`, which updates `daily_pnl` and enforces the configured loss threshold. The circuit breaker is active again.
+
 **Fix**:
 ```python
 daily_loss_limit = config.get('daily_loss_limit_pct', 5.0)  # 5% of capital
