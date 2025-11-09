@@ -91,6 +91,7 @@ class LiveStrategyRunner:
         self.daily_loss_limit_pct = config.get('risk_management', {}).get('daily_loss_limit_pct', 5.0)  # 5% default
         self.daily_pnl = 0.0  # Track daily P&L
         self.daily_pnl_date = datetime.now().date()  # Track which day we're on
+        self._orders_to_signals: Dict[str, Dict] = {}
         
         # FIX for Issue #7: Position limits
         self.max_concurrent_positions = config.get('position_management', {}).get('max_concurrent_positions', 
@@ -661,6 +662,8 @@ class LiveStrategyRunner:
             if not all([direction, strike]):
                 logger.error(f"Invalid signal parameters: {signal}")
                 return
+
+            symbol = signal.get('symbol') or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
             
             # FIX for Issue #6: Get and validate expiry
             expiry = self._get_nearest_expiry()
@@ -675,7 +678,7 @@ class LiveStrategyRunner:
                 expiry_date_str = expiry.strftime('%d%b%y').upper()
             
             entry_price = self.broker.get_option_price(
-                symbol="NIFTY",
+                symbol=symbol,
                 strike=strike,
                 direction=direction,
                 expiry_date=expiry_date_str
@@ -686,6 +689,10 @@ class LiveStrategyRunner:
                 return
             
             logger.info(f"Option price fetched: ₹{entry_price:.2f} (estimate was ₹{entry_estimate:.2f})")
+            signal['entry'] = entry_price
+            # Recompute SL/TP based on actual entry for downstream consumers
+            signal['sl'] = entry_price - self.sl_points
+            signal['tp'] = entry_price + (self.sl_points * self.rr_ratio)
             
             # Display strategy summary before execution
             self._display_strategy_summary(signal, entry_price, strike, direction)
@@ -705,7 +712,7 @@ class LiveStrategyRunner:
             # Place order via broker (transaction_type defaults to "BUY")
             # Pass quantity in LOTS (broker will multiply by lot_size internally if needed)
             order_result = self.broker.place_order(
-                symbol="NIFTY",
+                symbol=symbol,
                 strike=strike,
                 direction=direction,
                 quantity=self.order_lots,  # In LOTS (1 lot = 75 units)
@@ -719,18 +726,19 @@ class LiveStrategyRunner:
                 logger.error(f"Order placement failed: {error_msg}")
                 
                 # Log failed trade attempt
-                # Convert lots to units for logging
-                total_units = self.order_lots * self.lot_size
-                self.trade_logger.log_trade(
-                    timestamp=datetime.now().isoformat(),
-                    direction=direction,
-                    strike=strike,
-                    entry_price=entry_price,
-                    quantity=total_units,  # Log in units for clarity
-                    order_id=None,
-                    status="FAILED",
-                    reason=f"Order failed: {error_msg}"
-                )
+                self.trade_logger.log_trade({
+                    'timestamp': datetime.now().isoformat(),
+                    'symbol': symbol,
+                    'strike': strike,
+                    'direction': direction,
+                    'order_id': '',
+                    'entry': entry_price,
+                    'sl': signal.get('sl'),
+                    'tp': signal.get('tp'),
+                    'status': 'failed',
+                    'pre_reason': f"Order failed: {error_msg}",
+                    'quantity': self.order_lots
+                })
                 return
             
             order_id = order_result.get('order_id')
@@ -747,31 +755,33 @@ class LiveStrategyRunner:
             
             # Mark signal as executed
             self.signal_handler.mark_signal_executed(signal, order_id)
+            self._orders_to_signals[order_id] = signal
             
             # Get tradingsymbol from order result for PositionMonitor
             tradingsymbol = order_result.get('order_data', {}).get('tradingsymbol')
             if not tradingsymbol:
                 # Fallback: generate from parameters
                 if expiry_date_str:
-                    tradingsymbol = f"NIFTY{expiry_date_str}{strike}{direction}"
+                    tradingsymbol = f"{symbol}{expiry_date_str}{strike}{direction}"
             
             # Log trade with actual entry price
-            # Convert lots to units for logging (1 lot = 75 units)
-            total_units = self.order_lots * self.lot_size
-            self.trade_logger.log_trade(
-                timestamp=datetime.now().isoformat(),
-                direction=direction,
-                strike=strike,
-                entry_price=entry_price,  # Use actual fetched price
-                quantity=total_units,  # Log in units (lots × lot_size)
-                order_id=order_id,
-                status="OPEN",
-                reason=signal.get('reason', 'Inside Bar breakout')
-            )
+            self.trade_logger.log_trade({
+                'timestamp': datetime.now().isoformat(),
+                'symbol': symbol,
+                'strike': strike,
+                'direction': direction,
+                'order_id': order_id,
+                'entry': entry_price,  # Actual entry price
+                'sl': signal.get('sl'),
+                'tp': signal.get('tp'),
+                'status': 'open',
+                'pre_reason': signal.get('reason', 'Inside Bar breakout'),
+                'quantity': self.order_lots
+            })
             
             logger.info(
                 f"Trade logged: Order {order_id}, {direction} {strike} @ ₹{entry_price:.2f}, "
-                f"{self.order_lots} lot(s) ({total_units} units)"
+                f"{self.order_lots} lot(s) ({self.order_lots * self.lot_size} units)"
             )
 
             # Start PositionMonitor for this position
@@ -798,10 +808,12 @@ class LiveStrategyRunner:
                     total_qty=self.order_lots,  # Quantity in LOTS (1 lot = 75 units)
                     rules=rules,
                     order_id=order_id,
-                    symbol="NIFTY",  # FIX: Add symbol info
+                    symbol=symbol,  # FIX: Add symbol info
                     strike=strike,  # FIX: Add strike info
                     direction=direction,  # FIX: Add direction info
-                    tradingsymbol=tradingsymbol  # FIX: Add tradingsymbol for order placement
+                    tradingsymbol=tradingsymbol,  # FIX: Add tradingsymbol for order placement
+                    lot_size=self.lot_size,
+                    pnl_callback=self._handle_position_update
                 )
                 if monitor.start():
                     self.active_monitors.append(monitor)
@@ -814,6 +826,60 @@ class LiveStrategyRunner:
         except Exception as e:
             logger.exception(f"Error executing trade: {e}")
             self.error_count += 1
+    
+    def _handle_position_update(self, update: Dict):
+        """
+        Receive position updates from PositionMonitor and update P&L / trade state.
+        """
+        if not isinstance(update, dict):
+            return
+
+        logger.info(f"Position update received: {update}")
+
+        pnl_value = update.get('pnl')
+        if pnl_value is not None:
+            self._update_daily_pnl(pnl_value)
+
+        order_id = update.get('order_id')
+        if not order_id:
+            return
+
+        remaining_lots = update.get('remaining_qty_lots')
+        exit_price = update.get('exit_price')
+        total_pnl = update.get('total_pnl')
+        reason = update.get('reason') or update.get('event') or 'exit'
+
+        if remaining_lots == 0:
+            # Update trade journal with exit info
+            if exit_price is not None and total_pnl is not None:
+                try:
+                    self.trade_logger.update_trade_exit(order_id, exit_price, total_pnl, reason)
+                except Exception as log_error:
+                    logger.exception(f"Failed to update trade log for order {order_id}: {log_error}")
+
+            # Mark signal closed if we tracked one for this order
+            signal = self._orders_to_signals.pop(order_id, None)
+            if signal and exit_price is not None and total_pnl is not None:
+                try:
+                    self.signal_handler.mark_signal_closed(signal, exit_price, total_pnl)
+                except Exception as signal_error:
+                    logger.exception(f"Failed to mark signal closed for order {order_id}: {signal_error}")
+
+            # Stop and remove the monitor associated with this order
+            monitor = next((m for m in self.active_monitors if getattr(m, 'order_id', None) == order_id), None)
+            if monitor:
+                try:
+                    monitor.stop()
+                except Exception as stop_error:
+                    logger.exception(f"Error stopping monitor for order {order_id}: {stop_error}")
+                finally:
+                    self.active_monitors = [
+                        m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
+                    ]
+
+            # Re-evaluate daily loss limit post exit
+            if not self._check_daily_loss_limit():
+                logger.error("Daily loss limit breached after position update")
     
     def get_status(self) -> Dict:
         """

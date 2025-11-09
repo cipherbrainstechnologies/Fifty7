@@ -5,7 +5,7 @@ Position monitoring and risk management (SL/TP, trailing, profit booking)
 import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 from datetime import datetime
 from logzero import logger
 
@@ -40,6 +40,8 @@ class PositionMonitor:
         strike: Optional[int] = None,
         direction: Optional[str] = None,
         tradingsymbol: Optional[str] = None,
+        lot_size: int = 75,
+        pnl_callback: Optional[Callable[[Dict], None]] = None,
     ):
         self.broker = broker
         self.symbol_token = symbol_token
@@ -47,6 +49,7 @@ class PositionMonitor:
         self.entry_price = float(entry_price)
         self.total_qty = int(total_qty)
         self.remaining_qty = int(total_qty)
+        self.lot_size = int(lot_size)
         self.rules = rules
         self.order_id = order_id
         
@@ -55,6 +58,7 @@ class PositionMonitor:
         self.strike = strike  # e.g., 19000
         self.direction = direction  # e.g., 'CE' or 'PE'
         self.tradingsymbol = tradingsymbol  # e.g., 'NIFTY29OCT2419000CE'
+        self.pnl_callback = pnl_callback
 
         # Derived levels
         self.stop_loss = self.entry_price - self.rules.sl_points
@@ -71,6 +75,7 @@ class PositionMonitor:
         self.last_quote_time: Optional[datetime] = None
         self.last_ltp: Optional[float] = None
         self.closed = False
+        self.realized_pnl: float = 0.0
 
     def start(self):
         if self._running:
@@ -153,6 +158,52 @@ class PositionMonitor:
             if qty_to_close > 0:
                 self._exit_sl(qty_to_close)
 
+    def _emit_position_event(self, event: str, qty_lots: int, exit_price: float, level: Optional[str] = None):
+        """
+        Notify listeners about realized P&L updates for the position.
+        """
+        if qty_lots <= 0:
+            return
+        try:
+            exit_price = float(exit_price)
+            units_closed = int(qty_lots * self.lot_size)
+            pnl_value = (exit_price - self.entry_price) * units_closed
+            self.realized_pnl += pnl_value
+
+            if event == "book_profit":
+                reason = f"book_profit_{level.lower()}" if level else "book_profit"
+            elif event == "stop_loss":
+                reason = "stop_loss"
+            else:
+                reason = event
+
+            update_payload = {
+                "event": event,
+                "level": level,
+                "reason": reason,
+                "qty_lots": qty_lots,
+                "qty_units": units_closed,
+                "exit_price": exit_price,
+                "entry_price": self.entry_price,
+                "pnl": pnl_value,
+                "total_pnl": self.realized_pnl,
+                "order_id": self.order_id,
+                "symbol": self.symbol,
+                "strike": self.strike,
+                "direction": self.direction,
+                "remaining_qty_lots": self.remaining_qty,
+                "remaining_qty_units": self.remaining_qty * self.lot_size,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            if self.pnl_callback:
+                try:
+                    self.pnl_callback(update_payload)
+                except Exception as callback_error:
+                    logger.exception(f"PositionMonitor callback error: {callback_error}")
+        except Exception as e:
+            logger.exception(f"Failed to emit position event '{event}': {e}")
+
     def _book_profit(self, qty: int, level: str):
         """
         Book profit by placing SELL order to close position.
@@ -219,6 +270,13 @@ class PositionMonitor:
         if self.remaining_qty == 0:
             self.closed = True
             logger.info("Position fully closed (profit targets)")
+        
+        if level == "L2":
+            fallback_points = self.rules.book2_points
+        else:
+            fallback_points = self.rules.book1_points
+        exit_price = self.last_ltp if self.last_ltp is not None else (self.entry_price + fallback_points)
+        self._emit_position_event("book_profit", qty, exit_price, level)
 
     def _exit_sl(self, qty: int):
         """
@@ -266,5 +324,8 @@ class PositionMonitor:
         if self.remaining_qty == 0:
             self.closed = True
             logger.info("Position fully closed (SL)")
+        
+        exit_price = self.last_ltp if self.last_ltp is not None else self.stop_loss
+        self._emit_position_event("stop_loss", qty, exit_price)
 
 
