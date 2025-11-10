@@ -5,7 +5,7 @@ Supports multiple broker APIs (Angel One, Fyers)
 
 from typing import Dict, Optional, List
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 import pyotp
 from logzero import logger
 try:
@@ -148,7 +148,8 @@ class BrokerInterface(ABC):
     
     def get_option_expiries(self, symbol: str) -> List[datetime]:
         """
-        Get list of available expiry dates for an option symbol.
+        Get list of upcoming weekly expiry dates for an option symbol.
+        Adjusted to reflect NIFTY weekly expiry (Tuesday 15:30 IST).
         
         Args:
             symbol: Trading symbol (e.g., 'NIFTY')
@@ -156,7 +157,31 @@ class BrokerInterface(ABC):
         Returns:
             List of expiry datetime objects
         """
-        pass
+        try:
+            expiries = []
+            now = datetime.now()
+
+            # Weekly expiry every Tuesday at 15:30 IST (per new NSE circulars)
+            weekday = now.weekday()  # Monday=0 ... Sunday=6
+            # Tuesday is 1
+            days_ahead = (1 - weekday) % 7
+            market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+            if days_ahead == 0 and now > market_close:
+                days_ahead = 7
+
+            current_expiry = (now + timedelta(days=days_ahead)).replace(
+                hour=15, minute=30, second=0, microsecond=0
+            )
+
+            for i in range(4):
+                expiries.append(current_expiry + timedelta(weeks=i))
+
+            logger.info(f"Generated {len(expiries)} Tuesday expiry dates for {symbol}")
+            return expiries
+             
+        except Exception as e:
+            logger.exception(f"Error fetching option expiries: {e}")
+            return []
 
 
 class AngelOneBroker(BrokerInterface):
@@ -523,7 +548,6 @@ class AngelOneBroker(BrokerInterface):
         Calculate next Tuesday from today and return in DDMMMYY (e.g., 29OCT24).
         If today is Tuesday before market close, use today.
         """
-        from datetime import datetime, timedelta
         now = datetime.now()
         weekday = now.weekday()  # Monday=0 ... Sunday=6
         # Tuesday is 1
@@ -539,7 +563,6 @@ class AngelOneBroker(BrokerInterface):
         """
         Calculate next Tuesday from today and return in DDMMMYYYY (e.g., 29OCT2024) for APIs like optionGreek.
         """
-        from datetime import datetime, timedelta
         now = datetime.now()
         weekday = now.weekday()
         days_ahead = (1 - weekday) % 7
@@ -1187,8 +1210,8 @@ class AngelOneBroker(BrokerInterface):
     
     def get_option_expiries(self, symbol: str) -> List[datetime]:
         """
-        Get list of available expiry dates for an option symbol.
-        FIX for Issue #6: Option expiry validation.
+        Get list of upcoming weekly expiry dates for an option symbol.
+        Adjusted to reflect NIFTY weekly expiry (Tuesday 15:30 IST).
         
         Args:
             symbol: Trading symbol (e.g., 'NIFTY')
@@ -1197,36 +1220,27 @@ class AngelOneBroker(BrokerInterface):
             List of expiry datetime objects
         """
         try:
-            from datetime import datetime, timedelta
-            
-            # For NIFTY, expiries are typically every Thursday (weekly)
-            # But monthly expiries are on last Thursday of month
-            # For simplicity, we'll generate next 4 weekly expiries
-            
             expiries = []
             now = datetime.now()
-            
-            # Start from next Thursday (if today is Thu before 15:30, use today)
+
+            # Weekly expiry every Tuesday at 15:30 IST (per new NSE circulars)
             weekday = now.weekday()  # Monday=0 ... Sunday=6
-            # Thursday is 3
-            days_ahead = (3 - weekday) % 7
-            if days_ahead == 0:
-                # Today is Thursday - check if before market close
-                market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-                if now > market_close:
-                    days_ahead = 7  # Use next Thursday
-            
-            current_expiry = now + timedelta(days=days_ahead)
-            current_expiry = current_expiry.replace(hour=15, minute=30, second=0, microsecond=0)
-            
-            # Generate next 4 weekly expiries
+            # Tuesday is 1
+            days_ahead = (1 - weekday) % 7
+            market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+            if days_ahead == 0 and now > market_close:
+                days_ahead = 7
+
+            current_expiry = (now + timedelta(days=days_ahead)).replace(
+                hour=15, minute=30, second=0, microsecond=0
+            )
+
             for i in range(4):
-                expiry_date = current_expiry + timedelta(weeks=i)
-                expiries.append(expiry_date)
-            
-            logger.info(f"Generated {len(expiries)} expiry dates for {symbol}")
+                expiries.append(current_expiry + timedelta(weeks=i))
+
+            logger.info(f"Generated {len(expiries)} Tuesday expiry dates for {symbol}")
             return expiries
-            
+             
         except Exception as e:
             logger.exception(f"Error fetching option expiries: {e}")
             return []

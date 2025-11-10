@@ -18,7 +18,7 @@ from plotly.subplots import make_subplots
 import threading
 import time
 import pytz
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -47,6 +47,47 @@ except ImportError:
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def _parse_expiry_to_datetime(value: Any) -> Optional[datetime]:
+    """Best-effort parser for broker expiry values."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            ts = float(value)
+            if ts > 1e12:
+                ts /= 1000.0
+            return datetime.fromtimestamp(ts)
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.upper().replace("\n", " ").strip()
+    for candidate in (text, normalized):
+        try:
+            return datetime.fromisoformat(candidate)
+        except Exception:
+            pass
+    patterns = [
+        "%d%b%Y",
+        "%d%b%y",
+        "%d-%b-%Y",
+        "%d-%b-%y",
+        "%d %b %Y",
+        "%d %b %y",
+        "%Y-%m-%d",
+        "%d/%m/%Y",
+        "%d/%m/%y",
+    ]
+    for fmt in patterns:
+        try:
+            return datetime.strptime(normalized, fmt)
+        except Exception:
+            continue
+    return None
 
 from engine import strategy_engine as strategy_engine_module
 
@@ -1357,6 +1398,20 @@ if tab == "Dashboard":
             except:
                 pass
             
+            # Prefer expiry derived from live Option Greeks (if fresher)
+            greeks_expiry_dt = st.session_state.get("option_greeks_expiry_dt")
+            if greeks_expiry_dt:
+                normalized_expiry = greeks_expiry_dt
+                try:
+                    if normalized_expiry.hour == 0 and normalized_expiry.minute == 0:
+                        normalized_expiry = normalized_expiry.replace(hour=15, minute=30)
+                except AttributeError:
+                    pass
+                if nearest_expiry is None or normalized_expiry < nearest_expiry:
+                    nearest_expiry = normalized_expiry
+                    if hasattr(st.session_state.live_runner, '_is_safe_to_trade_expiry'):
+                        expiry_safe = st.session_state.live_runner._is_safe_to_trade_expiry(nearest_expiry)
+            
             # Display safety metrics in columns
             safety_col1, safety_col2, safety_col3, safety_col4 = st.columns(4)
             
@@ -1410,11 +1465,33 @@ if tab == "Dashboard":
             with check_col1:
                 # Expiry validation
                 if nearest_expiry:
-                    days_to_exp = (nearest_expiry - datetime.now()).days
-                    if expiry_safe:
-                        st.success(f"✅ Expiry OK: {days_to_exp} days remaining")
+                    expiry_label = st.session_state.get("option_greeks_expiry_str")
+                    if not expiry_label:
+                        try:
+                            expiry_label = nearest_expiry.strftime("%d %b %Y (%A)")
+                        except Exception:
+                            expiry_label = str(nearest_expiry)
+                    now_ts = datetime.now(nearest_expiry.tzinfo) if getattr(nearest_expiry, "tzinfo", None) else datetime.now()
+                    time_remaining = nearest_expiry - now_ts
+                    remaining_seconds = time_remaining.total_seconds()
+                    if remaining_seconds <= 0:
+                        st.error(f"🚨 Expiry has passed · {expiry_label}")
                     else:
-                        st.error(f"🚨 Expiry too close: {days_to_exp} days")
+                        days = int(remaining_seconds // 86400)
+                        hours = int((remaining_seconds % 86400) // 3600)
+                        minutes = int((remaining_seconds % 3600) // 60)
+                        countdown_parts = []
+                        if days > 0:
+                            countdown_parts.append(f"{days} day{'s' if days != 1 else ''}")
+                        if hours > 0:
+                            countdown_parts.append(f"{hours} h")
+                        if days == 0 and minutes > 0:
+                            countdown_parts.append(f"{minutes} min")
+                        countdown = ", ".join(countdown_parts) if countdown_parts else "< 1 min"
+                        if expiry_safe:
+                            st.success(f"✅ Expiry OK: {countdown} remaining · {expiry_label}")
+                        else:
+                            st.error(f"🚨 Expiry too close: {countdown} · {expiry_label}")
                 else:
                     st.warning("⚠️ Expiry data not available")
             
@@ -1468,6 +1545,25 @@ if tab == "Dashboard":
                 greeks = st.session_state.broker.get_option_greeks("NIFTY")
                 if greeks:
                     greeks_df = pd.DataFrame(greeks)
+                    expiry_candidates = []
+                    for expiry_col in ("expiry", "expiryDate", "expiry_date"):
+                        if expiry_col in greeks_df.columns:
+                            try:
+                                unique_values = greeks_df[expiry_col].dropna().unique()
+                            except Exception:
+                                unique_values = []
+                            for raw_expiry in unique_values:
+                                parsed_expiry = _parse_expiry_to_datetime(raw_expiry)
+                                if parsed_expiry:
+                                    if parsed_expiry.hour == 0 and parsed_expiry.minute == 0:
+                                        parsed_expiry = parsed_expiry.replace(hour=15, minute=30)
+                                    expiry_candidates.append(parsed_expiry)
+                            if expiry_candidates:
+                                break
+                    if expiry_candidates:
+                        earliest_expiry = min(expiry_candidates)
+                        st.session_state.option_greeks_expiry_dt = earliest_expiry
+                        st.session_state.option_greeks_expiry_str = earliest_expiry.strftime("%d %b %Y (%A)")
                     keep_cols = [c for c in [
                         'name','expiry','strikePrice','optionType','delta','gamma','theta','vega','impliedVolatility','tradeVolume'
                     ] if c in greeks_df.columns]
