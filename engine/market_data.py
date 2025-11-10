@@ -2,6 +2,7 @@
 Market Data Provider for fetching live OHLC data from SmartAPI
 """
 
+import math
 import pandas as pd
 from typing import Dict, Optional
 from datetime import datetime, timedelta
@@ -164,6 +165,26 @@ class MarketDataProvider:
 
         trading_close = reference + timedelta(hours=close_hour, minutes=close_minute)
         return trading_close
+
+    def _get_previous_trading_session_start(self, reference_time: datetime) -> Optional[datetime]:
+        """
+        Return the start timestamp (09:15 IST) of the most recent completed trading session
+        prior to the provided reference time.
+
+        Handles weekends and consecutive holidays by scanning backwards up to one week.
+        """
+        if reference_time.tzinfo is None:
+            reference_time = IST.localize(reference_time)
+
+        for days_back in range(1, 8):
+            candidate = reference_time - timedelta(days=days_back)
+            if candidate.weekday() < 5:  # Monday-Friday
+                session_start = candidate.replace(hour=9, minute=15, second=0, microsecond=0)
+                logger.debug(f"Previous trading session start identified at {session_start}")
+                return session_start
+
+        logger.debug("Unable to determine previous trading session within 7 days")
+        return None
 
     def get_last_fetch_meta(self, interval: str) -> Dict:
         return self._last_fetch_meta.get(interval, {})
@@ -884,6 +905,21 @@ class MarketDataProvider:
             minutes_back = (to_time_dt.minute - 15) % 60
             if minutes_back != 0:
                 to_time_dt -= timedelta(minutes=minutes_back)
+        # Dynamically extend window to include most recent completed trading session
+        effective_window_hours = window_hours
+        previous_session_start = self._get_previous_trading_session_start(current_time)
+        if previous_session_start is not None:
+            hours_since_previous_session = (current_time - previous_session_start).total_seconds() / 3600.0
+            required_hours = max(window_hours, math.ceil(hours_since_previous_session) + 12)
+            if required_hours > effective_window_hours:
+                logger.info(
+                    "Extending 1H data window from %s to %s hours to include prior trading session starting at %s",
+                    window_hours,
+                    required_hours,
+                    previous_session_start
+                )
+                effective_window_hours = required_hours
+        window_hours = int(max(window_hours, effective_window_hours))
         from_time_dt = to_time_dt - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
         
         # Try direct ONE_HOUR interval first (more efficient)

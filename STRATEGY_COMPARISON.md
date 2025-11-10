@@ -21,7 +21,7 @@ This document compares the **original strategy** (`engine/strategy_engine.py`) w
 
 **Functions:**
 - `detect_inside_bar(data_1h, tighten_signal=True)` → Returns list of indices
-- `confirm_breakout(data_1h, range_high, range_low, inside_bar_idx, ...)` → Returns "CE"/"PE"/None
+- `confirm_breakout(data_1h, range_high, range_low, inside_bar_idx, mother_idx=None, ...)` → Returns "CE"/"PE"/None
 - `check_for_signal(data_1h, data_15m, config)` → Returns signal dict or None
 - `calculate_strike_price(current_price, direction, atm_offset)`
 - `calculate_sl_tp_levels(entry_price, sl_points, rr_ratio)`

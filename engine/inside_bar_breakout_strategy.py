@@ -164,6 +164,52 @@ def log_recent_hourly_candles(
     return table
 
 
+def _find_latest_inside_structure(candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """
+    Identify the most recent Inside Bar compression structure, preserving the
+    original mother candle until a new mother is formed.
+
+    Returns a dictionary containing the mother index and a list of inside bar
+    indices representing the active compression sequence.
+    """
+    if candles is None or len(candles) < 2:
+        return None
+
+    mother_idx: Optional[int] = None
+    inside_indices: List[int] = []
+    latest_structure: Optional[Dict[str, Any]] = None
+
+    for idx in range(1, len(candles)):
+        current = candles.iloc[idx]
+        previous = candles.iloc[idx - 1]
+
+        if mother_idx is not None:
+            mother = candles.iloc[mother_idx]
+            if (current['High'] <= mother['High']) and (current['Low'] >= mother['Low']):
+                inside_indices.append(idx)
+                latest_structure = {
+                    'mother_idx': mother_idx,
+                    'inside_indices': inside_indices.copy()
+                }
+                continue
+            else:
+                mother_idx = None
+                inside_indices = []
+
+        if (previous['High'] > current['High']) and (previous['Low'] < current['Low']):
+            mother_idx = idx - 1
+            inside_indices = [idx]
+            latest_structure = {
+                'mother_idx': mother_idx,
+                'inside_indices': inside_indices.copy()
+            }
+        else:
+            mother_idx = None
+            inside_indices = []
+
+    return latest_structure
+
+
 def _ensure_datetime_column(candles: pd.DataFrame) -> pd.DataFrame:
     """Ensure candles DataFrame has a Date column with datetime objects."""
     if candles is None or candles.empty:
@@ -257,75 +303,69 @@ def get_hourly_candles(
 def detect_inside_bar(candles: pd.DataFrame) -> Optional[Dict[str, Any]]:
     """
     Detect the preferred inside bar from the provided candles.
-    Preference order:
-      1. Inside bar formed today (IST)
-      2. Most recent inside bar
-      3. Narrowest range if multiple candidates share the same timestamp
+    Preserves the original mother candle until a new mother is formed and
+    returns the most recent compression structure.
     """
     candles = _ensure_datetime_column(candles)
     if len(candles) < 2:
         logger.debug("Insufficient candles for inside bar detection")
         return None
     
-    today_date = ist_now().date()
-    candidates: List[Dict[str, Any]] = []
-    
-    for idx in range(1, len(candles)):
-        current = candles.iloc[idx]
-        previous = candles.iloc[idx - 1]
-        
-        is_inside = (current['High'] < previous['High']) and (current['Low'] > previous['Low'])
-        logger.debug(
-            f"Inside bar check at index {idx}: "
-            f"High {current['High']:.2f} < {previous['High']:.2f} "
-            f"and Low {current['Low']:.2f} > {previous['Low']:.2f} => {is_inside}"
-        )
-        
-        if not is_inside:
-            continue
-        
-        inside_time = to_ist(current['Date'])
-        signal_time = to_ist(previous['Date'])
-        range_width = previous['High'] - previous['Low']
-        
-        candidate = {
-            'inside_bar_idx': idx,
-            'inside_bar_time': inside_time,
-            'inside_bar': {
-                'Date': inside_time,
-                'Open': current['Open'],
-                'High': current['High'],
-                'Low': current['Low'],
-                'Close': current['Close'],
-            },
-            'signal_idx': idx - 1,
-            'signal_time': signal_time,
-            'signal_candle': {
-                'Date': signal_time,
-                'Open': previous['Open'],
-                'High': previous['High'],
-                'Low': previous['Low'],
-                'Close': previous['Close'],
-            },
-            'range_high': previous['High'],
-            'range_low': previous['Low'],
-            'range_width': range_width,
-            'priority': (
-                0 if inside_time.date() == today_date else 1,
-                -idx,
-                range_width
-            )
-        }
-        candidates.append(candidate)
-    
-    if not candidates:
-        logger.debug("No inside bar candidates detected")
+    structure = _find_latest_inside_structure(candles)
+    if not structure:
+        logger.debug("No inside bar compression structure detected")
         return None
-    
-    selected = min(candidates, key=lambda c: c['priority'])
+
+    mother_idx = structure['mother_idx']
+    inside_indices = structure['inside_indices']
+    latest_inside_idx = inside_indices[-1]
+
+    mother_candle = candles.iloc[mother_idx]
+    inside_candle = candles.iloc[latest_inside_idx]
+
+    mother_time = to_ist(mother_candle['Date'])
+    inside_time = to_ist(inside_candle['Date'])
+    range_high = mother_candle['High']
+    range_low = mother_candle['Low']
+    range_width = range_high - range_low
+
+    selected = {
+        'mother_idx': mother_idx,
+        'compression_inside_indices': inside_indices,
+        'compression_count': len(inside_indices),
+        'inside_bar_idx': latest_inside_idx,
+        'inside_bar_time': inside_time,
+        'inside_bar': {
+            'Date': inside_time,
+            'Open': inside_candle['Open'],
+            'High': inside_candle['High'],
+            'Low': inside_candle['Low'],
+            'Close': inside_candle['Close'],
+        },
+        'signal_idx': mother_idx,
+        'signal_time': mother_time,
+        'signal_candle': {
+            'Date': mother_time,
+            'Open': mother_candle['Open'],
+            'High': mother_candle['High'],
+            'Low': mother_candle['Low'],
+            'Close': mother_candle['Close'],
+        },
+        'range_high': range_high,
+        'range_low': range_low,
+        'range_width': range_width,
+        'priority': (
+            0 if inside_time.date() == ist_now().date() else 1,
+            -latest_inside_idx,
+            range_width,
+            -len(inside_indices)
+        )
+    }
+
     logger.info(
         f"Inside bar selected at {format_ist_datetime(selected['inside_bar_time'])} | "
-        f"Signal candle at {format_ist_datetime(selected['signal_time'])} | "
+        f"Mother candle at {format_ist_datetime(selected['signal_time'])} | "
+        f"Compression bars: {len(inside_indices)} | "
         f"Range: {selected['range_low']:.2f}-{selected['range_high']:.2f} "
         f"(width {selected['range_width']:.2f})"
     )
@@ -393,12 +433,15 @@ def get_active_signal(
             return previous_signal
     
     signal = {
+        'mother_idx': candidate.get('mother_idx', candidate['signal_idx']),
         'inside_bar_idx': candidate['inside_bar_idx'],
         'inside_bar_time': candidate['inside_bar_time'],
         'inside_bar': candidate['inside_bar'],
         'signal_idx': candidate['signal_idx'],
         'signal_time': candidate['signal_time'],
         'signal_candle': candidate['signal_candle'],
+        'compression_inside_indices': candidate.get('compression_inside_indices', [candidate['inside_bar_idx']]),
+        'compression_count': candidate.get('compression_count', 1),
         'range_high': candidate['range_high'],
         'range_low': candidate['range_low'],
         'breakout_attempted': False  # Track if breakout has been attempted

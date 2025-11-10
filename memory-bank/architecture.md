@@ -62,14 +62,13 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - Detects when a candle is completely contained within the previous candle's range
 - Pattern condition: `current_high < prev_high AND current_low > prev_low`
 - Requires at least 2 candles of historical data
-- Uses the most recent Inside Bar to mark breakout range
+- Persists the original mother candle (first container) as the breakout range until a new mother forms
 
-### Breakout Confirmation (15m Timeframe)
-- Monitors last 5 candles on 15-minute timeframe for breakout
-- Checks each candle (oldest to newest) for valid breakout
+### Breakout Confirmation (1H Timeframe)
+- Monitors every subsequent 1-hour candle for a decisive close outside the mother range (indefinite window)
 - **Bullish Breakout (CE)**: Close > range_high AND Volume > threshold
 - **Bearish Breakout (PE)**: Close < range_low AND Volume > threshold
-- Volume threshold = Average volume of last 5 candles × multiplier (default 1.0)
+- Volume threshold = Average volume of recent reference candles × multiplier (default 1.0)
 - Direction determines Call (CE) or Put (PE) option selection
 
 ### Strike Selection
@@ -103,6 +102,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - 2025-11-07: Debug view now displays raw timestamp dtype/timezone before normalization to detect double-localization or UTC drift across environments.
 - 2025-11-07: Historical fetch windows pin to NSE close (15:15 IST) when server clocks lag, and stale direct interval responses automatically fall back to resampling 1-minute candles.
 - 2025-11-10: Historical candle requests clamp `to_date` to the most recent completed 15m/1h candle boundary to prevent SmartAPI AB1004 errors during live sessions.
+- 2025-11-10: 1H data window auto-extends to include the previous trading session start (09:15 IST) after weekends/holidays, keeping prior inside-bar structures available for breakout checks.
 
 ## Debug Instrumentation
 

@@ -1394,7 +1394,7 @@ if tab == "Dashboard":
                     st.metric("15m Candles Available", len(data_15m))
                 
                 # Detect Inside Bars and show results
-                from engine.strategy_engine import detect_inside_bar
+                from engine.strategy_engine import detect_inside_bar, find_mother_index
                 inside_bars = detect_inside_bar(data_1h)
                 
                 # Create a set for quick lookup
@@ -1483,51 +1483,56 @@ if tab == "Dashboard":
                 
                 if inside_bars:
                     latest_idx = inside_bars[-1]
-                    range_high = data_1h['High'].iloc[latest_idx - 1]
-                    range_low = data_1h['Low'].iloc[latest_idx - 1]
-                    inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
-                    ref_time = data_1h['Date'].iloc[latest_idx - 1] if 'Date' in data_1h.columns else f"Index_{latest_idx - 1}"
-                    
-                    inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
-                    ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
-                    
-                    st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
-
-                    st.write("**Most Recent Inside Bar Details:**")
-                    details_col1, details_col2 = st.columns(2)
-                    with details_col1:
-                        st.write(f"📊 **Inside Bar Time:** {inside_bar_label}")
-                        st.write(f"📊 **Reference Candle:** {ref_time_label}")
-                        st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
-                    with details_col2:
-                        st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
-                        st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
-                        st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
-                    
-                    # Check for breakout (using 1H data only)
-                    st.write("**Breakout Status:**")
-                    from engine.strategy_engine import confirm_breakout
-                    direction = confirm_breakout(
-                        data_1h, 
-                        range_high, 
-                        range_low, 
-                        latest_idx,  # inside_bar_idx parameter
-                        volume_threshold_multiplier=1.0
-                    )
-                    
-                    if direction:
-                        st.success(f"✅ Breakout Confirmed: {direction} (Call Option)" if direction == "CE" else f"✅ Breakout Confirmed: {direction} (Put Option)")
-                        st.write(f"**Current 1H Close:** {data_1h['Close'].iloc[-1]:.2f}")
-                        st.write(f"**Range High:** {range_high:.2f} | **Range Low:** {range_low:.2f}")
+                    mother_idx = find_mother_index(data_1h, latest_idx)
+                    if mother_idx is None:
+                        st.warning("Unable to determine mother candle for the latest inside bar.")
                     else:
-                        st.info("⏳ Waiting for breakout confirmation...")
-                        current_close = data_1h['Close'].iloc[-1]
-                        if current_close > range_high:
-                            st.write(f"🔺 Above range: {current_close:.2f} > {range_high:.2f} (need volume confirmation)")
-                        elif current_close < range_low:
-                            st.write(f"🔻 Below range: {current_close:.2f} < {range_low:.2f} (need volume confirmation)")
+                        range_high = data_1h['High'].iloc[mother_idx]
+                        range_low = data_1h['Low'].iloc[mother_idx]
+                        inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
+                        ref_time = data_1h['Date'].iloc[mother_idx] if 'Date' in data_1h.columns else f"Index_{mother_idx}"
+                    
+                        inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
+                        ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
+                    
+                        st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
+
+                        st.write("**Most Recent Inside Bar Details:**")
+                        details_col1, details_col2 = st.columns(2)
+                        with details_col1:
+                            st.write(f"📊 **Inside Bar Time:** {inside_bar_label}")
+                            st.write(f"📊 **Mother Candle:** {ref_time_label}")
+                            st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
+                        with details_col2:
+                            st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
+                            st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
+                            st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
+                        
+                        # Check for breakout (using 1H data only)
+                        st.write("**Breakout Status:**")
+                        from engine.strategy_engine import confirm_breakout
+                        direction = confirm_breakout(
+                            data_1h, 
+                            range_high, 
+                            range_low, 
+                            latest_idx,  # inside_bar_idx parameter
+                            mother_idx=mother_idx,
+                            volume_threshold_multiplier=1.0
+                        )
+                        
+                        if direction:
+                            st.success(f"✅ Breakout Confirmed: {direction} (Call Option)" if direction == "CE" else f"✅ Breakout Confirmed: {direction} (Put Option)")
+                            st.write(f"**Current 1H Close:** {data_1h['Close'].iloc[-1]:.2f}")
+                            st.write(f"**Range High:** {range_high:.2f} | **Range Low:** {range_low:.2f}")
                         else:
-                            st.write(f"📊 Within range: {range_low:.2f} ≤ {current_close:.2f} ≤ {range_high:.2f}")
+                            st.info("⏳ Waiting for breakout confirmation...")
+                            current_close = data_1h['Close'].iloc[-1]
+                            if current_close > range_high:
+                                st.write(f"🔺 Above range: {current_close:.2f} > {range_high:.2f} (need volume confirmation)")
+                            elif current_close < range_low:
+                                st.write(f"🔻 Below range: {current_close:.2f} < {range_low:.2f} (need volume confirmation)")
+                            else:
+                                st.write(f"📊 Within range: {range_low:.2f} ≤ {current_close:.2f} ≤ {range_high:.2f}")
                 else:
                     st.info("🔍 No Inside Bar patterns detected in current 1H data")
                     st.caption("💡 Inside Bar requires: candle high < previous high AND candle low > previous low")

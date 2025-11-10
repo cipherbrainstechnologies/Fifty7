@@ -10,6 +10,37 @@ import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Tuple
 from logzero import logger
+def _find_mother_index(data_1h: pd.DataFrame, inside_bar_idx: int) -> Optional[int]:
+    """
+    Traverse backwards from the supplied inside bar index to locate the original
+    mother candle whose range contains the entire compression sequence.
+    """
+    if inside_bar_idx <= 0 or inside_bar_idx >= len(data_1h):
+        return None
+
+    mother_idx = inside_bar_idx - 1
+    mother_high = data_1h['High'].iloc[mother_idx]
+    mother_low = data_1h['Low'].iloc[mother_idx]
+
+    while mother_idx > 0:
+        prev_idx = mother_idx - 1
+        prev_high = data_1h['High'].iloc[prev_idx]
+        prev_low = data_1h['Low'].iloc[prev_idx]
+        if mother_high <= prev_high and mother_low >= prev_low:
+            mother_idx = prev_idx
+            mother_high = prev_high
+            mother_low = prev_low
+        else:
+            break
+
+    return mother_idx
+
+
+def find_mother_index(data_1h: pd.DataFrame, inside_bar_idx: int) -> Optional[int]:
+    """
+    Public wrapper to determine the mother candle index for a given inside bar.
+    """
+    return _find_mother_index(data_1h, inside_bar_idx)
 
 
 def detect_inside_bar(data_1h: pd.DataFrame, tighten_signal: bool = True) -> List[int]:
@@ -201,6 +232,7 @@ def confirm_breakout(
     range_high: float,
     range_low: float,
     inside_bar_idx: int,
+    mother_idx: Optional[int] = None,
     volume_threshold_multiplier: float = 1.0,
     symbol: str = "NIFTY"
 ) -> Optional[str]:
@@ -232,14 +264,18 @@ def confirm_breakout(
         logger.debug("No candles available after inside bar for breakout confirmation")
         return None
     
+    # Determine mother index if not provided
+    if mother_idx is None:
+        mother_idx = _find_mother_index(data_1h, inside_bar_idx)
+    
     # Get candles after the inside bar (excluding the inside bar itself)
     candles_after = data_1h.iloc[inside_bar_idx + 1:]
     
     if len(candles_after) < 1:
         return None
     
-    # Use up to last 3 candles after inside bar for confirmation
-    recent = candles_after.tail(min(3, len(candles_after)))
+    # Evaluate every candle after the inside bar (indefinite confirmation window)
+    recent = candles_after.copy()
     
     # --- [Enhancement: Fix 1H Inside Bar Live Lag + NSE Candle Alignment - 2025-11-06] ---
     # Skip volume confirmation for NIFTY index (volume often 0 or NaN)
@@ -247,7 +283,8 @@ def confirm_breakout(
     
     # Calculate average volume for volume confirmation
     # Use volume from reference period (candles before and including inside bar)
-    volume_period = data_1h.iloc[max(0, inside_bar_idx - 10):inside_bar_idx + 1]
+    volume_reference_start = mother_idx if mother_idx is not None else max(0, inside_bar_idx - 10)
+    volume_period = data_1h.iloc[volume_reference_start:inside_bar_idx + 1]
     if len(volume_period) > 0 and 'Volume' in volume_period.columns:
         avg_volume = volume_period['Volume'].mean()
         volume_threshold = avg_volume * volume_threshold_multiplier
@@ -424,22 +461,27 @@ def check_for_signal(
     # The reference candle (parent) is at 'latest_inside_bar_idx - 1'
     # The range comes from the reference candle (the one that contains the inside bar)
     inside_bar_candle = data_1h.iloc[latest_inside_bar_idx]
-    reference_candle = data_1h.iloc[latest_inside_bar_idx - 1]
+    mother_idx = _find_mother_index(data_1h, latest_inside_bar_idx)
+    if mother_idx is None:
+        logger.warning("Unable to determine mother candle for inside bar structure")
+        return None
+    
+    mother_candle = data_1h.iloc[mother_idx]
     
     # Extract values
     inside_bar_high = inside_bar_candle['High']
     inside_bar_low = inside_bar_candle['Low']
-    range_high = reference_candle['High']  # Parent candle's high
-    range_low = reference_candle['Low']    # Parent candle's low
+    range_high = mother_candle['High']  # Mother candle's high
+    range_low = mother_candle['Low']    # Mother candle's low
     
     # Get timestamps for logging
     # Handle Date column or Date index
     if 'Date' in data_1h.columns:
         inside_bar_time = inside_bar_candle['Date']
-        ref_time = reference_candle['Date']
+        ref_time = mother_candle['Date']
     elif data_1h.index.name == 'Date' or isinstance(data_1h.index, pd.DatetimeIndex):
         inside_bar_time = data_1h.index[latest_inside_bar_idx]
-        ref_time = data_1h.index[latest_inside_bar_idx - 1]
+        ref_time = data_1h.index[mother_idx]
     else:
         inside_bar_time = f"Index_{latest_inside_bar_idx}"
         ref_time = f"Index_{latest_inside_bar_idx - 1}"
@@ -456,17 +498,17 @@ def check_for_signal(
     
     logger.info(
         f"📊 Using most recent Inside Bar at {inside_bar_time_str} | "
-        f"Reference candle: {ref_time_str} | "
+        f"Mother candle: {ref_time_str} | "
         f"Inside Bar Range: {inside_bar_low:.2f} - {inside_bar_high:.2f} | "
-        f"Breakout range (from reference): {range_low:.2f} - {range_high:.2f}"
+        f"Breakout range (mother): {range_low:.2f} - {range_high:.2f}"
     )
     
     # Verify the inside bar logic is correct
-    if not (inside_bar_high < range_high and inside_bar_low > range_low):
+    if not (inside_bar_high <= range_high and inside_bar_low >= range_low):
         logger.error(
             f"⚠️ WARNING: Inside Bar validation failed! "
-            f"Inside Bar High ({inside_bar_high:.2f}) should be < Ref High ({range_high:.2f}) AND "
-            f"Inside Bar Low ({inside_bar_low:.2f}) should be > Ref Low ({range_low:.2f})"
+            f"Inside Bar High ({inside_bar_high:.2f}) should be <= Ref High ({range_high:.2f}) AND "
+            f"Inside Bar Low ({inside_bar_low:.2f}) should be >= Ref Low ({range_low:.2f})"
         )
     
     # Check for breakout confirmation on 1H timeframe (ONLY 1H - no 15m)
@@ -477,6 +519,7 @@ def check_for_signal(
         range_high,
         range_low,
         latest_inside_bar_idx,  # Pass inside bar index
+        mother_idx=mother_idx,
         volume_threshold_multiplier=1.0,
         symbol="NIFTY"  # Skip volume check for NIFTY index
     )

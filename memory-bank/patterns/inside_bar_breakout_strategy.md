@@ -22,13 +22,13 @@ The Inside Bar + Breakout strategy is a structured approach for trading NIFTY In
 - Stores the most recent, tightest Inside Bar for range marking
 
 ### 2. Range Marking
-- Extracts high and low from the candle **before** the Inside Bar
-- This range (range_high, range_low) becomes the breakout levels
+- Identifies the **mother candle** as the first bar whose range contains the current compression
+- Preserves the same mother candle (range_high, range_low) until a new mother forms after compression resets
+- Breakout range always references this mother candle, even across weekends/holidays
 
 ### 3. Breakout Confirmation (1H Timeframe)
-- **UPDATED (2025-11-06)**: Now uses 1H timeframe for breakout confirmation (no longer 15m)
-- Monitors candles AFTER the inside bar for breakout
-- Checks up to last 3 candles after inside bar
+- **UPDATED (2025-11-10)**: Confirmation window remains open indefinitely until a candle closes outside the mother range
+- Monitors every closed 1H candle after the inside bar sequence for breakout
 - **Bullish Breakout (CE)**: Close > range_high AND (Volume > threshold OR symbol is NIFTY)
 - **Bearish Breakout (PE)**: Close < range_low AND (Volume > threshold OR symbol is NIFTY)
 - **NEW (2025-11-06)**: Volume confirmation skipped for NIFTY index (volume often 0 or NaN for index symbols)
@@ -162,4 +162,9 @@ The strategy can be tested with:
 - **Real-Time Detection**: Breakouts detected at candle close, no one-bar lag
 - **Candle Close Confirmation**: Added `get_last_closed_hour_end()` helper for NSE-aligned timing
 - See: `INSIDE_BAR_FIX_SUMMARY.md` for full details
+
+### 2025-11-10: Mother Candle Persistence & Indefinite Breakout Window
+- Mother candle persists across consecutive inside bars until a new mother forms
+- Breakout confirmation scans every subsequent 1H close (no 3-candle limit)
+- Dashboards and strategy engine now surface mother candle diagnostics
 
