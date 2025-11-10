@@ -47,12 +47,22 @@ except ImportError:
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine.strategy_engine import (
-    check_for_signal,
-    detect_inside_bar,
-    confirm_breakout,
-    find_mother_index,
-)
+from engine import strategy_engine as strategy_engine_module
+
+check_for_signal = strategy_engine_module.check_for_signal
+detect_inside_bar = strategy_engine_module.detect_inside_bar
+confirm_breakout = strategy_engine_module.confirm_breakout
+
+if hasattr(strategy_engine_module, "find_mother_index"):
+    find_mother_index = strategy_engine_module.find_mother_index
+elif hasattr(strategy_engine_module, "_find_mother_index"):
+    find_mother_index = strategy_engine_module._find_mother_index  # type: ignore[attr-defined]
+else:
+    def find_mother_index(*args, **kwargs):
+        raise RuntimeError(
+            "find_mother_index helper is not available in engine.strategy_engine; "
+            "please update the engine module."
+        )
 from engine.trade_logger import TradeLogger, log_trade
 from engine.broker_connector import create_broker_interface
 from engine.signal_handler import SignalHandler
@@ -1524,7 +1534,6 @@ if tab == "Dashboard":
                     st.metric("15m Candles Available", len(data_15m))
                 
                 # Detect Inside Bars and show results
-                from engine.strategy_engine import detect_inside_bar, find_mother_index
                 inside_bars = detect_inside_bar(data_1h)
                 
                 # Create a set for quick lookup
@@ -1640,7 +1649,6 @@ if tab == "Dashboard":
                         
                         # Check for breakout (using 1H data only)
                         st.write("**Breakout Status:**")
-                        from engine.strategy_engine import confirm_breakout
                         direction = confirm_breakout(
                             data_1h, 
                             range_high, 
