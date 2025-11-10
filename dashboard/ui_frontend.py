@@ -114,10 +114,48 @@ st.markdown("""
         background-color: #fff3cd;
         border-left: 4px solid #ffc107;
     }
+    .dashboard-hero {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    .dashboard-hero > div {
+        flex: 1 1 260px;
+    }
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+    }
+    div[data-testid="stMetric"] label {
+        font-weight: 600;
+    }
+    div[data-testid="stMetricValue"] {
+        font-weight: 700;
+    }
     /* Responsive adjustments */
     @media (max-width: 768px) {
         .metric-card {
             margin-bottom: 1rem;
+        }
+        .dashboard-hero {
+            flex-direction: column;
+        }
+        div[data-testid="column"] {
+            width: 100% !important;
+        }
+        div[data-testid="stMetric"] {
+            text-align: center;
+            align-items: center;
+        }
+        div[data-testid="stMetricLabel"] {
+            justify-content: center;
+            text-align: center;
+        }
+        .status-card {
+            margin-bottom: 0.75rem;
         }
     }
     /* Empty state styling */
@@ -837,116 +875,120 @@ if tab == "Dashboard":
         except Exception as e:
             logger.debug(f"Active trade summary failed: {e}")
     
-    hero_left, hero_right = st.columns([1.4, 1])
-    
-    with hero_left:
-        status_cols = st.columns(3)
-        status_cols[0].metric("🔌 Algo", "🟢 Running" if engine_status else "🔴 Stopped")
-        broker_value = "🟢 Connected" if broker_connected else "🔴 Not Connected"
-        broker_suffix = f" · {broker_type}" if broker_connected else ""
-        status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
-        status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
+    with st.container():
+        st.markdown('<div class="dashboard-hero">', unsafe_allow_html=True)
+        hero_left, hero_right = st.columns([1.4, 1], gap="medium")
         
-        control_cols = st.columns([1, 1, 1])
-        settings_col, start_col, stop_col = control_cols
-        
-        with settings_col:
-            if st.button("⚙️ Strategy Settings", use_container_width=True, type="secondary"):
-                st.session_state.show_strategy_settings = not st.session_state.show_strategy_settings
-        
-        with start_col:
-            start_disabled = st.session_state.algo_running or st.session_state.live_runner is None
-            if st.button("▶️ Start", use_container_width=True, type="primary", disabled=start_disabled):
-                if st.session_state.live_runner is None:
-                    st.session_state.strategy_settings_feedback = (
-                        "error",
-                        "❌ Live runner not initialized. Check broker configuration."
-                    )
-                else:
-                    try:
-                        success = st.session_state.live_runner.start()
-                        if success:
-                            st.session_state.algo_running = True
-                            st.session_state.strategy_settings_feedback = (
-                                "success",
-                                "✅ Algorithm started – monitoring live market data."
-                            )
-                        else:
-                            st.session_state.strategy_settings_feedback = (
-                                "error",
-                                "❌ Failed to start algorithm. Check logs for details."
-                            )
-                    except Exception as e:
+        with hero_left:
+            status_cols = st.columns(3, gap="small")
+            status_cols[0].metric("🔌 Algo", "🟢 Running" if engine_status else "🔴 Stopped")
+            broker_value = "🟢 Connected" if broker_connected else "🔴 Not Connected"
+            broker_suffix = f" · {broker_type}" if broker_connected else ""
+            status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
+            status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
+            
+            control_cols = st.columns([1, 1, 1], gap="small")
+            settings_col, start_col, stop_col = control_cols
+            
+            with settings_col:
+                if st.button("⚙️ Strategy Settings", use_container_width=True, type="secondary"):
+                    st.session_state.show_strategy_settings = not st.session_state.show_strategy_settings
+            
+            with start_col:
+                start_disabled = st.session_state.algo_running or st.session_state.live_runner is None
+                if st.button("▶️ Start", use_container_width=True, type="primary", disabled=start_disabled):
+                    if st.session_state.live_runner is None:
                         st.session_state.strategy_settings_feedback = (
                             "error",
-                            f"❌ Error starting algorithm: {e}"
+                            "❌ Live runner not initialized. Check broker configuration."
                         )
-                        logger.exception(e)
-                st.experimental_rerun()
-        
-        with stop_col:
-            stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
-            if st.button("⏹️ Stop", use_container_width=True, type="secondary", disabled=stop_disabled):
-                if st.session_state.live_runner is None:
-                    st.session_state.algo_running = False
-                    st.session_state.strategy_settings_feedback = (
-                        "warning",
-                        "⚠️ Algo state reset – live runner unavailable."
-                    )
-                else:
-                    try:
-                        success = st.session_state.live_runner.stop()
-                        if success:
-                            st.session_state.algo_running = False
-                            st.session_state.strategy_settings_feedback = (
-                                "warning",
-                                "⏸️ Algorithm stopped."
-                            )
-                        else:
+                    else:
+                        try:
+                            success = st.session_state.live_runner.start()
+                            if success:
+                                st.session_state.algo_running = True
+                                st.session_state.strategy_settings_feedback = (
+                                    "success",
+                                    "✅ Algorithm started – monitoring live market data."
+                                )
+                            else:
+                                st.session_state.strategy_settings_feedback = (
+                                    "error",
+                                    "❌ Failed to start algorithm. Check logs for details."
+                                )
+                        except Exception as e:
                             st.session_state.strategy_settings_feedback = (
                                 "error",
-                                "❌ Failed to stop algorithm."
+                                f"❌ Error starting algorithm: {e}"
                             )
-                    except Exception as e:
+                            logger.exception(e)
+                    st.rerun()
+            
+            with stop_col:
+                stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
+                if st.button("⏹️ Stop", use_container_width=True, type="secondary", disabled=stop_disabled):
+                    if st.session_state.live_runner is None:
+                        st.session_state.algo_running = False
                         st.session_state.strategy_settings_feedback = (
-                            "error",
-                            f"❌ Error stopping algorithm: {e}"
+                            "warning",
+                            "⚠️ Algo state reset – live runner unavailable."
                         )
-                        logger.exception(e)
-                st.experimental_rerun()
+                    else:
+                        try:
+                            success = st.session_state.live_runner.stop()
+                            if success:
+                                st.session_state.algo_running = False
+                                st.session_state.strategy_settings_feedback = (
+                                    "warning",
+                                    "⏸️ Algorithm stopped."
+                                )
+                            else:
+                                st.session_state.strategy_settings_feedback = (
+                                    "error",
+                                    "❌ Failed to stop algorithm."
+                                )
+                        except Exception as e:
+                            st.session_state.strategy_settings_feedback = (
+                                "error",
+                                f"❌ Error stopping algorithm: {e}"
+                            )
+                            logger.exception(e)
+                    st.rerun()
+            
+            feedback = st.session_state.strategy_settings_feedback
+            if feedback:
+                level, message = feedback
+                if level == "success":
+                    st.success(message)
+                elif level == "warning":
+                    st.warning(message)
+                else:
+                    st.error(message)
+                st.session_state.strategy_settings_feedback = None
         
-        feedback = st.session_state.strategy_settings_feedback
-        if feedback:
-            level, message = feedback
-            if level == "success":
-                st.success(message)
-            elif level == "warning":
-                st.warning(message)
+        with hero_right:
+            st.markdown("#### 🧠 Active Trade")
+            if active_trade:
+                badge = f"{active_trade['direction']} {active_trade['strike']}"
+                qty_label = f"{active_trade['quantity']} lot(s)" if active_trade['quantity'] else "—"
+                st.markdown(f"**{badge}** · {qty_label} · {active_trade['status']}")
+                trade_cols = st.columns(4, gap="small")
+                entry_display = f"₹{active_trade['entry']:.2f}" if active_trade['entry'] is not None else "—"
+                sl_display = f"₹{active_trade['sl']:.2f}" if active_trade['sl'] is not None else "—"
+                tp_display = f"₹{active_trade['tp']:.2f}" if active_trade['tp'] is not None else "—"
+                target_display = f"{active_trade['target_points']:.2f} pts" if active_trade['target_points'] is not None else "—"
+                trade_cols[0].metric("💸 Buy Price", entry_display)
+                trade_cols[1].metric("🛡️ Stop Loss", sl_display)
+                trade_cols[2].metric("🎯 Take Profit", tp_display)
+                trade_cols[3].metric("📈 Target", target_display)
+                if active_trade['order_id']:
+                    st.caption(f"Order ID: `{active_trade['order_id']}`")
             else:
-                st.error(message)
-            st.session_state.strategy_settings_feedback = None
+                st.info("No active trades at the moment.")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
     
-    with hero_right:
-        st.markdown("#### 🧠 Active Trade")
-        if active_trade:
-            badge = f"{active_trade['direction']} {active_trade['strike']}"
-            qty_label = f"{active_trade['quantity']} lot(s)" if active_trade['quantity'] else "—"
-            st.markdown(f"**{badge}** · {qty_label} · {active_trade['status']}")
-            trade_cols = st.columns(4)
-            entry_display = f"₹{active_trade['entry']:.2f}" if active_trade['entry'] is not None else "—"
-            sl_display = f"₹{active_trade['sl']:.2f}" if active_trade['sl'] is not None else "—"
-            tp_display = f"₹{active_trade['tp']:.2f}" if active_trade['tp'] is not None else "—"
-            target_display = f"{active_trade['target_points']:.2f} pts" if active_trade['target_points'] is not None else "—"
-            trade_cols[0].metric("💸 Buy Price", entry_display)
-            trade_cols[1].metric("🛡️ Stop Loss", sl_display)
-            trade_cols[2].metric("🎯 Take Profit", tp_display)
-            trade_cols[3].metric("📈 Target", target_display)
-            if active_trade['order_id']:
-                st.caption(f"Order ID: `{active_trade['order_id']}`")
-        else:
-            st.info("No active trades at the moment.")
-    
-    info_cols = st.columns(3)
+    info_cols = st.columns(3, gap="small")
     with info_cols[0]:
         active_signals = st.session_state.signal_handler.get_active_signals()
         st.metric("📊 Signals Watching", len(active_signals))
@@ -1123,7 +1165,7 @@ if tab == "Dashboard":
                         "warning",
                         "⚠️ Live runner not initialized. Settings saved for next run."
                     )
-                st.experimental_rerun()
+                st.rerun()
     
     st.divider()
     st.subheader("🧩 Inside Bar Snapshot")
