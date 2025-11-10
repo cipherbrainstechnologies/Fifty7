@@ -17,6 +17,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import threading
 import time
+import pytz
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -46,7 +47,12 @@ except ImportError:
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from engine.strategy_engine import check_for_signal
+from engine.strategy_engine import (
+    check_for_signal,
+    detect_inside_bar,
+    confirm_breakout,
+    find_mother_index,
+)
 from engine.trade_logger import TradeLogger, log_trade
 from engine.broker_connector import create_broker_interface
 from engine.signal_handler import SignalHandler
@@ -571,6 +577,10 @@ else:
 # Initialize session state
 if 'algo_running' not in st.session_state:
     st.session_state.algo_running = False
+if 'show_strategy_settings' not in st.session_state:
+    st.session_state.show_strategy_settings = False
+if 'strategy_settings_feedback' not in st.session_state:
+    st.session_state.strategy_settings_feedback = None
 if 'broker' not in st.session_state:
     try:
         # Get broker config safely (from config dict or st.secrets)
@@ -766,126 +776,215 @@ tab = st.sidebar.radio(
 if tab == "Dashboard":
     st.header("📈 Live Algo Status")
     
-    # Status Cards - 3 cards as specified
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        # Engine State Card
-        engine_status = st.session_state.algo_running
-        status_color = "🟢" if engine_status else "🔴"
-        status_text = "Running" if engine_status else "Stopped"
-        status_bg = "status-green" if engine_status else "status-red"
-        st.markdown(f"""
-        <div class="status-card {status_bg}">
-            <h3 style="margin:0; color: {'#155724' if engine_status else '#721c24'};">
-                🔌 Engine State
-            </h3>
-            <p style="font-size:1.5rem; margin:0.5rem 0; font-weight:bold;">
-                {status_color} {status_text}
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        # Broker Connected Card
-        broker_connected = st.session_state.broker is not None
-        # Get broker type safely
-        broker_config = config.get('broker', {})
-        if not isinstance(broker_config, dict) and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
-            try:
-                broker_secrets = getattr(st.secrets, 'broker', None)
-                broker_type = getattr(broker_secrets, 'type', 'Not Configured') if broker_secrets else 'Not Configured'
-            except:
-                broker_type = 'Not Configured'
-        else:
-            broker_type = broker_config.get('type', 'Not Configured') if broker_config else 'Not Configured'
-        broker_type = (broker_type or 'Not Configured').capitalize()
-        status_color = "🟢" if broker_connected else "🔴"
-        status_text = f"Connected ({broker_type})" if broker_connected else "Not Connected"
-        status_bg = "status-green" if broker_connected else "status-red"
-        st.markdown(f"""
-        <div class="status-card {status_bg}">
-            <h3 style="margin:0; color: {'#155724' if broker_connected else '#721c24'};">
-                🧑‍💼 Broker Connected
-            </h3>
-            <p style="font-size:1.2rem; margin:0.5rem 0; font-weight:bold;">
-                {status_color} {status_text}
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        # P&L Summary Card
+    engine_status = st.session_state.algo_running
+    broker_connected = st.session_state.broker is not None
+    broker_config = config.get('broker', {})
+    if not isinstance(broker_config, dict) and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
         try:
-            from engine.pnl_service import compute_realized_pnl
-            from engine.db import init_database
-            from sqlalchemy.exc import OperationalError
-            
-            # Ensure database is initialized
-            try:
-                init_database(create_all=True)
-            except Exception:
-                pass  # Non-critical
-            
-            org_id = config.get('tenant', {}).get('org_id', 'demo-org')
-            user_id = config.get('tenant', {}).get('user_id', 'admin')
-            
-            try:
-                pnl_data = compute_realized_pnl(org_id, user_id)
-                total_pnl = pnl_data.get('realized_pnl', 0.0)
-            except OperationalError:
-                # Table doesn't exist yet - initialize and retry
-                try:
-                    init_database(create_all=True)
-                    pnl_data = compute_realized_pnl(org_id, user_id)
-                    total_pnl = pnl_data.get('realized_pnl', 0.0)
-                except Exception:
-                    total_pnl = 0.0
-            except Exception:
-                total_pnl = 0.0
+            broker_secrets = getattr(st.secrets, 'broker', None)
+            broker_type = getattr(broker_secrets, 'type', 'Not Configured') if broker_secrets else 'Not Configured'
         except Exception:
-            total_pnl = 0.0
+            broker_type = 'Not Configured'
+    else:
+        broker_type = broker_config.get('type', 'Not Configured') if broker_config else 'Not Configured'
+    broker_type = (broker_type or 'Not Configured').capitalize()
+    
+    market_open = False
+    if st.session_state.get('live_runner') is not None and hasattr(st.session_state.live_runner, '_is_market_open'):
+        try:
+            market_open = st.session_state.live_runner._is_market_open()
+        except Exception:
+            market_open = False
+    
+    active_trade = None
+    if st.session_state.get('trade_logger') is not None:
+        try:
+            open_trades = st.session_state.trade_logger.get_open_trades()
+            if not open_trades.empty:
+                open_trades = open_trades.copy()
+                open_trades['__ts__'] = pd.to_datetime(open_trades.get('timestamp', None), errors='coerce')
+                open_trades = open_trades.sort_values('__ts__')
+                latest_trade = open_trades.iloc[-1]
+                
+                def _to_float(value):
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return None
+                
+                entry_price = _to_float(latest_trade.get('entry'))
+                sl_price = _to_float(latest_trade.get('sl'))
+                tp_price = _to_float(latest_trade.get('tp'))
+                target_points = (tp_price - entry_price) if (tp_price is not None and entry_price is not None) else None
+                qty_raw = latest_trade.get('quantity', 0)
+                try:
+                    qty_lots = int(float(qty_raw))
+                except (TypeError, ValueError):
+                    qty_lots = 0
+                
+                active_trade = {
+                    'direction': str(latest_trade.get('direction', '')).upper(),
+                    'strike': latest_trade.get('strike', '—'),
+                    'status': str(latest_trade.get('status', 'open')).title(),
+                    'entry': entry_price,
+                    'sl': sl_price,
+                    'tp': tp_price,
+                    'target_points': target_points,
+                    'quantity': qty_lots,
+                    'timestamp': latest_trade.get('timestamp', ''),
+                    'order_id': latest_trade.get('order_id', '')
+                }
+        except Exception as e:
+            logger.debug(f"Active trade summary failed: {e}")
+    
+    hero_left, hero_right = st.columns([1.4, 1])
+    
+    with hero_left:
+        status_cols = st.columns(3)
+        status_cols[0].metric("🔌 Algo", "🟢 Running" if engine_status else "🔴 Stopped")
+        broker_value = "🟢 Connected" if broker_connected else "🔴 Not Connected"
+        broker_suffix = f" · {broker_type}" if broker_connected else ""
+        status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
+        status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
         
-        pnl_color = "🟢" if total_pnl >= 0 else "🔴"
-        status_bg = "status-green" if total_pnl >= 0 else "status-red"
-        pnl_text = f"₹{total_pnl:,.2f}"
-        st.markdown(f"""
-        <div class="status-card {status_bg}">
-            <h3 style="margin:0; color: {'#155724' if total_pnl >= 0 else '#721c24'};">
-                📊 P&L Summary
-            </h3>
-            <p style="font-size:1.5rem; margin:0.5rem 0; font-weight:bold;">
-                {pnl_color} {pnl_text}
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        control_cols = st.columns([1, 1, 1])
+        settings_col, start_col, stop_col = control_cols
+        
+        with settings_col:
+            if st.button("⚙️ Strategy Settings", use_container_width=True, type="secondary"):
+                st.session_state.show_strategy_settings = not st.session_state.show_strategy_settings
+        
+        with start_col:
+            start_disabled = st.session_state.algo_running or st.session_state.live_runner is None
+            if st.button("▶️ Start", use_container_width=True, type="primary", disabled=start_disabled):
+                if st.session_state.live_runner is None:
+                    st.session_state.strategy_settings_feedback = (
+                        "error",
+                        "❌ Live runner not initialized. Check broker configuration."
+                    )
+                else:
+                    try:
+                        success = st.session_state.live_runner.start()
+                        if success:
+                            st.session_state.algo_running = True
+                            st.session_state.strategy_settings_feedback = (
+                                "success",
+                                "✅ Algorithm started – monitoring live market data."
+                            )
+                        else:
+                            st.session_state.strategy_settings_feedback = (
+                                "error",
+                                "❌ Failed to start algorithm. Check logs for details."
+                            )
+                    except Exception as e:
+                        st.session_state.strategy_settings_feedback = (
+                            "error",
+                            f"❌ Error starting algorithm: {e}"
+                        )
+                        logger.exception(e)
+                st.experimental_rerun()
+        
+        with stop_col:
+            stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
+            if st.button("⏹️ Stop", use_container_width=True, type="secondary", disabled=stop_disabled):
+                if st.session_state.live_runner is None:
+                    st.session_state.algo_running = False
+                    st.session_state.strategy_settings_feedback = (
+                        "warning",
+                        "⚠️ Algo state reset – live runner unavailable."
+                    )
+                else:
+                    try:
+                        success = st.session_state.live_runner.stop()
+                        if success:
+                            st.session_state.algo_running = False
+                            st.session_state.strategy_settings_feedback = (
+                                "warning",
+                                "⏸️ Algorithm stopped."
+                            )
+                        else:
+                            st.session_state.strategy_settings_feedback = (
+                                "error",
+                                "❌ Failed to stop algorithm."
+                            )
+                    except Exception as e:
+                        st.session_state.strategy_settings_feedback = (
+                            "error",
+                            f"❌ Error stopping algorithm: {e}"
+                        )
+                        logger.exception(e)
+                st.experimental_rerun()
+        
+        feedback = st.session_state.strategy_settings_feedback
+        if feedback:
+            level, message = feedback
+            if level == "success":
+                st.success(message)
+            elif level == "warning":
+                st.warning(message)
+            else:
+                st.error(message)
+            st.session_state.strategy_settings_feedback = None
     
-    # Additional metrics row
-    col4, col5 = st.columns(2)
+    with hero_right:
+        st.markdown("#### 🧠 Active Trade")
+        if active_trade:
+            badge = f"{active_trade['direction']} {active_trade['strike']}"
+            qty_label = f"{active_trade['quantity']} lot(s)" if active_trade['quantity'] else "—"
+            st.markdown(f"**{badge}** · {qty_label} · {active_trade['status']}")
+            trade_cols = st.columns(4)
+            entry_display = f"₹{active_trade['entry']:.2f}" if active_trade['entry'] is not None else "—"
+            sl_display = f"₹{active_trade['sl']:.2f}" if active_trade['sl'] is not None else "—"
+            tp_display = f"₹{active_trade['tp']:.2f}" if active_trade['tp'] is not None else "—"
+            target_display = f"{active_trade['target_points']:.2f} pts" if active_trade['target_points'] is not None else "—"
+            trade_cols[0].metric("💸 Buy Price", entry_display)
+            trade_cols[1].metric("🛡️ Stop Loss", sl_display)
+            trade_cols[2].metric("🎯 Take Profit", tp_display)
+            trade_cols[3].metric("📈 Target", target_display)
+            if active_trade['order_id']:
+                st.caption(f"Order ID: `{active_trade['order_id']}`")
+        else:
+            st.info("No active trades at the moment.")
     
-    with col4:
-        # Get active signals count
+    info_cols = st.columns(3)
+    with info_cols[0]:
         active_signals = st.session_state.signal_handler.get_active_signals()
-        st.metric("📊 Active Trades", len(active_signals))
-    
-    with col5:
-        # NIFTY current live price (LTP)
-        ltp_text = "—"
+        st.metric("📊 Signals Watching", len(active_signals))
+    with info_cols[1]:
+        nifty_ltp = "—"
         try:
             if st.session_state.market_data_provider is not None:
                 ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
                 if isinstance(ohlc, dict):
-                    ltp_val = ohlc.get('ltp')
-                    if ltp_val is None:
-                        ltp_val = ohlc.get('close')
+                    ltp_val = ohlc.get('ltp') or ohlc.get('close')
                     if ltp_val is not None:
-                        ltp_text = f"{float(ltp_val):.2f}"
+                        nifty_ltp = f"{float(ltp_val):.2f}"
         except Exception:
             pass
-        st.metric("📈 NIFTY LTP", ltp_text)
+        st.metric("📈 NIFTY LTP", nifty_ltp)
+    with info_cols[2]:
+        realized_pnl = 0.0
+        try:
+            from engine.pnl_service import compute_realized_pnl
+            from engine.db import init_database
+            from sqlalchemy.exc import OperationalError
+            init_database(create_all=True)
+            org_id = config.get('tenant', {}).get('org_id', 'demo-org')
+            user_id = config.get('tenant', {}).get('user_id', 'admin')
+            try:
+                pnl_snapshot = compute_realized_pnl(org_id, user_id)
+                realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
+            except OperationalError:
+                init_database(create_all=True)
+                pnl_snapshot = compute_realized_pnl(org_id, user_id)
+                realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
+        except Exception:
+            realized_pnl = 0.0
+        pnl_prefix = "🟢" if realized_pnl >= 0 else "🔴"
+        st.metric("💰 Realized P&L", f"{pnl_prefix} ₹{realized_pnl:,.2f}")
     
     st.divider()
-
+    
     # In-app alert: toast when a new trade is logged
     try:
         if 'last_trade_count' not in st.session_state:
@@ -898,6 +997,7 @@ if tab == "Dashboard":
         st.session_state.last_trade_count = current_count
     except Exception:
         pass
+
     # Auto-refresh toggle with tooltip
     auto = st.checkbox(
         "🔄 Auto-refresh every 10 seconds", 
@@ -908,127 +1008,229 @@ if tab == "Dashboard":
         st.caption("✅ Auto-refresh enabled - Market data will refresh in background (no UI flicker)")
         # Background refresh will be handled at the end of the page render
     
-    # Strategy Configuration (Live Trading)
-    st.divider()
-    st.subheader("⚙️ Strategy Configuration (Live Trading)")
-    
-    # Get current values from live_runner if available
-    current_sl_points = 30
-    current_order_lots = 2
-    current_lot_size = 75
-    current_trail_points = 10
-    
-    if st.session_state.live_runner is not None:
-        current_sl_points = getattr(st.session_state.live_runner, 'sl_points', 30)
-        current_order_lots = getattr(st.session_state.live_runner, 'order_lots', 2)
-        current_lot_size = getattr(st.session_state.live_runner, 'lot_size', 75)
-        # Get trail_points from position_management config
-        pm_cfg = st.session_state.live_runner.config.get('position_management', {})
-        current_trail_points = pm_cfg.get('trail_points', 10)
-    
-    # Create columns for configuration inputs
-    config_col1, config_col2, config_col3 = st.columns(3)
-    
-    with config_col1:
-        sl_points_input = st.number_input(
-            "Stop Loss (Points)",
-            min_value=10,
-            max_value=100,
-            value=int(current_sl_points),
-            step=5,
-            help="Stop loss in points (e.g., 30 points means SL at entry - 30 points)"
-        )
-    
-    with config_col2:
-        trail_points_input = st.number_input(
-            "Trailing SL Step (Points)",
-            min_value=5,
-            max_value=50,
-            value=int(current_trail_points),
-            step=5,
-            help="Trailing step in points. When price moves up by this amount, SL moves up (e.g., 10 points)"
-        )
-    
-    with config_col3:
-        order_lots_input = st.number_input(
-            "Order Quantity (Lots)",
-            min_value=1,
-            max_value=10,
-            value=int(current_order_lots),
-            step=1,
-            help=f"Number of lots per trade (1 lot = {current_lot_size} units). Example: 2 lots = {current_lot_size * 2} units"
-        )
-    
-    # Display calculated values
-    total_units = order_lots_input * current_lot_size
-    st.info(f"📊 **Trade Summary:** {order_lots_input} lot(s) = **{total_units} units** (1 lot = {current_lot_size} units)")
-    
-    # Update button
-    if st.button("💾 Update Strategy Config", disabled=st.session_state.algo_running, use_container_width=True):
+    if st.session_state.show_strategy_settings:
+        st.divider()
+        st.caption("Adjust live trading parameters. Changes apply to the next signal.")
+        
+        config_source = config if isinstance(config, dict) else {}
         if st.session_state.live_runner is not None:
-            try:
-                # Update configuration
-                st.session_state.live_runner.update_strategy_config(
-                    sl_points=int(sl_points_input),
-                    order_lots=int(order_lots_input),
-                    trail_points=int(trail_points_input)
+            config_source = st.session_state.live_runner.config
+        
+        strategy_cfg = config_source.get('strategy', {})
+        pm_cfg = config_source.get('position_management', {})
+        risk_cfg = config_source.get('risk_management', {})
+        
+        current_sl_points = strategy_cfg.get('sl', 30)
+        current_order_lots = config_source.get('broker', {}).get('default_lots', 2)
+        current_lot_size = config_source.get('lot_size', 75)
+        current_trail_points = pm_cfg.get('trail_points', 10)
+        current_atm_offset = strategy_cfg.get('atm_offset', 0)
+        current_daily_loss_limit_pct = risk_cfg.get('daily_loss_limit_pct', 5.0)
+        
+        if st.session_state.live_runner is not None:
+            current_sl_points = getattr(st.session_state.live_runner, 'sl_points', current_sl_points)
+            current_order_lots = getattr(st.session_state.live_runner, 'order_lots', current_order_lots)
+            current_lot_size = getattr(st.session_state.live_runner, 'lot_size', current_lot_size)
+            live_runner_pm_cfg = st.session_state.live_runner.config.get('position_management', {})
+            current_trail_points = live_runner_pm_cfg.get('trail_points', current_trail_points)
+            current_atm_offset = st.session_state.live_runner.config.get('strategy', {}).get('atm_offset', current_atm_offset)
+            current_daily_loss_limit_pct = getattr(
+                st.session_state.live_runner,
+                'daily_loss_limit_pct',
+                current_daily_loss_limit_pct
+            )
+        
+        with st.form("strategy_settings_form", clear_on_submit=False):
+            settings_cols = st.columns(2)
+            with settings_cols[0]:
+                sl_points_input = st.number_input(
+                    "Stop Loss (points)",
+                    min_value=10,
+                    max_value=100,
+                    value=int(current_sl_points),
+                    step=5,
+                    help="Applies to option premium. Example: 30 points → SL at entry - 30."
                 )
-                st.success(f"✅ Strategy config updated: SL={sl_points_input} points, Trail={trail_points_input} points, Quantity={order_lots_input} lot(s)")
-            except Exception as e:
-                st.error(f"❌ Error updating config: {e}")
-                logger.exception(e)
-        else:
-            st.warning("⚠️ Live runner not initialized. Config will be applied when algo starts.")
-    
-    st.caption("💡 **Note:** Changes apply immediately to new trades. Current positions use previous config.")
-    
-    st.divider()
-    
-    # Control buttons with confirmation
-    st.subheader("🎮 Algo Control")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        if st.button("▶️ Start Algo", disabled=st.session_state.algo_running, use_container_width=True, type="primary"):
-            # Confirmation prompt
-            if st.session_state.live_runner is None:
-                st.error("❌ Live runner not initialized. Check broker configuration.")
-            else:
-                # Show confirmation
-                confirm_start = st.checkbox("✅ I confirm I want to start the algorithm", key="confirm_start")
-                if confirm_start:
-                    try:
-                        success = st.session_state.live_runner.start()
-                        if success:
-                            st.session_state.algo_running = True
-                            st.success("✅ Algorithm started - Monitoring live market data...")
-                            st.balloons()
-                        else:
-                            st.error("❌ Failed to start algorithm. Check logs for details.")
-                    except Exception as e:
-                        st.error(f"❌ Error starting algorithm: {e}")
-                        logger.exception(e)
-                    st.rerun()
-    
-    with col2:
-        if st.button("⏹️ Stop Algo", disabled=not st.session_state.algo_running, use_container_width=True, type="secondary"):
-            # Confirmation prompt
-            confirm_stop = st.checkbox("⚠️ I confirm I want to stop the algorithm", key="confirm_stop")
-            if confirm_stop:
+                trail_points_input = st.number_input(
+                    "Trailing SL step (points)",
+                    min_value=5,
+                    max_value=50,
+                    value=int(current_trail_points),
+                    step=5,
+                    help="Trailing increment applied once price moves favourably by the chosen step."
+                )
+            with settings_cols[1]:
+                order_lots_input = st.number_input(
+                    "Order quantity (lots)",
+                    min_value=1,
+                    max_value=10,
+                    value=int(current_order_lots),
+                    step=1,
+                    help=f"Total quantity = lots × lot size ({int(current_lot_size)} units per lot)."
+                )
+                daily_loss_limit_input = st.number_input(
+                    "Daily loss limit (%)",
+                    min_value=1.0,
+                    max_value=20.0,
+                    value=float(current_daily_loss_limit_pct),
+                    step=0.5,
+                    help="Circuit breaker: trading halts if daily P&L drops below this percentage of capital."
+                )
+            
+            strike_cols = st.columns([2, 1])
+            with strike_cols[0]:
+                strike_offset_input = st.number_input(
+                    "Strike offset (points)",
+                    min_value=-500,
+                    max_value=500,
+                    value=int(current_atm_offset),
+                    step=50,
+                    help="Positive → OTM calls, negative → ITM puts. Offset is applied to the ATM strike."
+                )
+            with strike_cols[1]:
+                total_units = int(order_lots_input) * int(current_lot_size)
+                st.metric("Lot size", f"{int(current_lot_size)} units/lot")
+                st.metric("Position size", f"{total_units} units")
+            
+            st.caption("💡 Strike offset drives both strategy execution and Greeks focus.")
+            
+            if st.form_submit_button("💾 Save Strategy Settings", type="primary", use_container_width=True):
                 if st.session_state.live_runner is not None:
                     try:
-                        success = st.session_state.live_runner.stop()
-                        if success:
-                            st.session_state.algo_running = False
-                            st.warning("⏸️ Algorithm stopped")
-                        else:
-                            st.error("❌ Failed to stop algorithm")
+                        st.session_state.live_runner.update_strategy_config(
+                            sl_points=int(sl_points_input),
+                            order_lots=int(order_lots_input),
+                            trail_points=int(trail_points_input),
+                            atm_offset=int(strike_offset_input),
+                            daily_loss_limit_pct=float(daily_loss_limit_input),
+                        )
+                        if st.session_state.signal_handler is not None:
+                            handler_strategy_cfg = st.session_state.signal_handler.config.setdefault('strategy', {})
+                            handler_strategy_cfg['sl'] = int(sl_points_input)
+                            handler_strategy_cfg['atm_offset'] = int(strike_offset_input)
+                        st.session_state.strategy_settings_feedback = (
+                            "success",
+                            "✅ Strategy settings saved."
+                        )
                     except Exception as e:
-                        st.error(f"❌ Error stopping algorithm: {e}")
+                        st.session_state.strategy_settings_feedback = (
+                            "error",
+                            f"❌ Error updating config: {e}"
+                        )
                         logger.exception(e)
                 else:
-                    st.session_state.algo_running = False
-                st.rerun()
+                    st.session_state.strategy_settings_feedback = (
+                        "warning",
+                        "⚠️ Live runner not initialized. Settings saved for next run."
+                    )
+                st.experimental_rerun()
+    
+    st.divider()
+    st.subheader("🧩 Inside Bar Snapshot")
+    
+    inside_bar_time_label = "—"
+    mother_time_label = "—"
+    range_label = "—"
+    breakout_label = "Waiting"
+    compression_label = ""
+    inside_bar_available = False
+    
+    ist = pytz.timezone("Asia/Kolkata")
+    
+    def _format_ist(ts_value):
+        try:
+            ts = pd.to_datetime(ts_value)
+            if ts.tzinfo is None:
+                ts = ist.localize(ts)
+            else:
+                ts = ts.astimezone(ist)
+            return ts.strftime("%d-%b %I:%M %p")
+        except Exception:
+            return str(ts_value)
+    
+    one_hour_data = pd.DataFrame()
+    try:
+        if st.session_state.get('market_data_provider') is not None:
+            window_hours = 48
+            if st.session_state.get('live_runner') is not None:
+                window_hours = st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_1h', 48)
+            one_hour_data = st.session_state.market_data_provider.get_1h_data(
+                window_hours=window_hours,
+                use_direct_interval=True,
+                include_latest=True
+            )
+    except Exception as e:
+        logger.warning(f"Inside bar snapshot fetch failed: {e}")
+        one_hour_data = pd.DataFrame()
+    
+    if isinstance(one_hour_data, pd.DataFrame) and not one_hour_data.empty:
+        df_ib = one_hour_data.copy()
+        if 'Date' in df_ib.columns:
+            try:
+                df_ib['Date'] = pd.to_datetime(df_ib['Date'])
+            except Exception:
+                pass
+        df_ib = df_ib.sort_values('Date').reset_index(drop=True)
+        
+        try:
+            inside_indices = detect_inside_bar(df_ib)
+        except Exception as e:
+            logger.warning(f"Inside bar detection failed in snapshot: {e}")
+            inside_indices = []
+        
+        if inside_indices:
+            latest_inside_idx = inside_indices[-1]
+            mother_idx = find_mother_index(df_ib, latest_inside_idx)
+            if mother_idx is not None:
+                inside_row = df_ib.iloc[latest_inside_idx]
+                mother_row = df_ib.iloc[mother_idx]
+                
+                inside_bar_time_label = _format_ist(inside_row['Date'])
+                mother_time_label = _format_ist(mother_row['Date'])
+                range_high = float(mother_row['High'])
+                range_low = float(mother_row['Low'])
+                range_label = f"{range_low:.2f} → {range_high:.2f}"
+                
+                compression_length = len([idx for idx in inside_indices if idx >= mother_idx])
+                compression_label = f"{compression_length} bar(s) inside range"
+                
+                try:
+                    breakout_direction = confirm_breakout(
+                        df_ib,
+                        range_high,
+                        range_low,
+                        latest_inside_idx,
+                        mother_idx=mother_idx,
+                        volume_threshold_multiplier=1.0,
+                        symbol="NIFTY"
+                    )
+                except Exception as e:
+                    logger.warning(f"Inside bar snapshot breakout check failed: {e}")
+                    breakout_direction = None
+                
+                if breakout_direction == "CE":
+                    breakout_label = "Breakout ↑ CE"
+                elif breakout_direction == "PE":
+                    breakout_label = "Breakout ↓ PE"
+                else:
+                    breakout_label = "Inside range"
+                
+                inside_bar_available = True
+    
+    inside_cols = st.columns(4)
+    with inside_cols[0]:
+        st.metric("Inside bar time", inside_bar_time_label)
+    with inside_cols[1]:
+        st.metric("Mother candle time", mother_time_label)
+    with inside_cols[2]:
+        st.metric("Mother range (L → H)", range_label)
+    with inside_cols[3]:
+        st.metric("Breakout status", breakout_label)
+    
+    if inside_bar_available and compression_label:
+        st.caption(f"Compression depth: {compression_label}")
+    elif not inside_bar_available:
+        st.info("No active inside bar identified in the latest 1-hour data window.")
     
     # Live data status
     if st.session_state.algo_running and st.session_state.live_runner is not None:
@@ -1198,165 +1400,51 @@ if tab == "Dashboard":
                 logger.exception(e)
     
     st.divider()
-    
-    # Live NIFTY Chart and Option Data
-    st.subheader("📈 NIFTY & BANKNIFTY – Live Charts")
-    
-    # TradingView Widget for NIFTY and BANKNIFTY
-    tradingview_widget_html = """
-    <div class="tv-wrapper">
-      <div class="tv-chart" id="tv-nifty"></div>
-      <div class="tv-chart" id="tv-banknifty"></div>
-      <div class="tv-footer">
-        Charts courtesy of <a href="https://www.tradingview.com/" target="_blank" rel="noopener nofollow">TradingView</a>
-      </div>
-    </div>
-    <script type="text/javascript">
-      (function() {
-        const SCRIPT_ID = "tradingview-widget-loader";
+    with st.expander("📐 Option Greeks (NIFTY – next Tuesday expiry)", expanded=False):
+        current_offset = 0
+        if st.session_state.get('live_runner') is not None:
+            current_offset = st.session_state.live_runner.config.get('strategy', {}).get('atm_offset', 0)
+        bias_text = "ATM"
+        if current_offset > 0:
+            bias_text = f"OTM +{current_offset}"
+        elif current_offset < 0:
+            bias_text = f"ITM {abs(current_offset)}"
+        st.markdown(f"**Configured strike bias:** {bias_text} points from ATM.")
+        try:
+            if st.session_state.broker is not None:
+                greeks = st.session_state.broker.get_option_greeks("NIFTY")
+                if greeks:
+                    greeks_df = pd.DataFrame(greeks)
+                    keep_cols = [c for c in [
+                        'name','expiry','strikePrice','optionType','delta','gamma','theta','vega','impliedVolatility','tradeVolume'
+                    ] if c in greeks_df.columns]
 
-        function initWidgets() {
-          if (!window.TradingView || !window.TradingView.widget) {
-            setTimeout(initWidgets, 200);
-            return;
-          }
-
-          const widgetConfigs = [
-            {
-              container_id: "tv-nifty",
-              symbol: "NSE:NIFTY",
-              interval: "60",
-              timezone: "Asia/Kolkata",
-              theme: "light",
-              style: "1",
-              locale: "en",
-              toolbar_bg: "#f1f3f6",
-              hide_top_toolbar: false,
-              hide_legend: false,
-              withdateranges: true,
-              allow_symbol_change: false,
-              hide_side_toolbar: false,
-              autosize: true,
-              studies: []
-            },
-            {
-              container_id: "tv-banknifty",
-              symbol: "NSE:BANKNIFTY",
-              interval: "60",
-              timezone: "Asia/Kolkata",
-              theme: "light",
-              style: "1",
-              locale: "en",
-              toolbar_bg: "#f1f3f6",
-              hide_top_toolbar: false,
-              hide_legend: false,
-              withdateranges: true,
-              allow_symbol_change: false,
-              hide_side_toolbar: false,
-              autosize: true,
-              studies: []
-            }
-          ];
-
-          widgetConfigs.forEach((config) => {
-            window.TradingView.widget({
-              ...config,
-              container_id: config.container_id,
-              support_host: "https://www.tradingview.com"
-            });
-          });
-        }
-
-        function loadScript() {
-          if (document.getElementById(SCRIPT_ID)) {
-            initWidgets();
-            return;
-          }
-
-          const script = document.createElement("script");
-          script.id = SCRIPT_ID;
-          script.type = "text/javascript";
-          script.src = "https://s3.tradingview.com/tv.js";
-          script.onload = initWidgets;
-          document.head.appendChild(script);
-        }
-
-        loadScript();
-      })();
-    </script>
-    <style>
-      .tv-wrapper {
-        display: flex;
-        flex-direction: column;
-        gap: 24px;
-        width: 100%;
-        height: 100%;
-      }
-      .tv-chart {
-        position: relative;
-        width: 100%;
-        min-height: 380px;
-        height: 380px;
-      }
-      .tv-footer {
-        text-align: right;
-        font-size: 12px;
-        color: #6a6d78;
-      }
-      .tv-footer a {
-        color: inherit;
-      }
-    </style>
-    """
-    
-    # Display TradingView widget using Streamlit components
-    try:
-        import streamlit.components.v1 as components
-        components.html(tradingview_widget_html, height=820, scrolling=False)
-    except Exception as e:
-        # Fallback to markdown if components.html fails
-        st.markdown(tradingview_widget_html, unsafe_allow_html=True)
-        logger.warning(f"TradingView widget display warning: {e}")
-
-    st.divider()
-    st.subheader("📐 Option Greeks (NIFTY – next Tuesday expiry)")
-    try:
-        if st.session_state.broker is not None:
-            greeks = st.session_state.broker.get_option_greeks("NIFTY")
-            if greeks:
-                greeks_df = pd.DataFrame(greeks)
-                # Keep key columns visible
-                keep_cols = [c for c in [
-                    'name','expiry','strikePrice','optionType','delta','gamma','theta','vega','impliedVolatility','tradeVolume'
-                ] if c in greeks_df.columns]
-
-                # Filter to nearest strikes around ATM (±10 strikes window)
-                atm_val = None
-                try:
-                    if st.session_state.market_data_provider is not None:
-                        o = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
-                        lv = o.get('ltp') if isinstance(o, dict) else None
-                        if lv is None and isinstance(o, dict):
-                            lv = o.get('close')
-                        if lv is not None:
-                            atm_val = float(lv)
-                except Exception:
-                    pass
-
-                if atm_val is not None and 'strikePrice' in greeks_df.columns:
+                    atm_val = None
                     try:
-                        greeks_df['__dist__'] = (greeks_df['strikePrice'].astype(float) - atm_val).abs()
-                        greeks_df = greeks_df.sort_values('__dist__')
-                        greeks_df = greeks_df.head(20)  # approx 10 each side
+                        if st.session_state.market_data_provider is not None:
+                            o = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                            lv = o.get('ltp') if isinstance(o, dict) else None
+                            if lv is None and isinstance(o, dict):
+                                lv = o.get('close')
+                            if lv is not None:
+                                atm_val = float(lv)
                     except Exception:
                         pass
-                st.dataframe(greeks_df[keep_cols] if keep_cols else greeks_df, width='stretch', height=300)
+
+                    if atm_val is not None and 'strikePrice' in greeks_df.columns:
+                        try:
+                            greeks_df['__dist__'] = (greeks_df['strikePrice'].astype(float) - atm_val).abs()
+                            greeks_df = greeks_df.sort_values('__dist__')
+                            greeks_df = greeks_df.head(20)
+                        except Exception:
+                            pass
+                    st.dataframe(greeks_df[keep_cols] if keep_cols else greeks_df, width='stretch', height=300)
+                else:
+                    st.info("No Greeks data returned.")
             else:
-                st.info("No Greeks data returned.")
-        else:
-            st.info("Broker not initialized.")
-    except Exception as e:
-        st.warning(f"Greeks error: {e}")
+                st.info("Broker not initialized.")
+        except Exception as e:
+            st.warning(f"Greeks error: {e}")
 
     st.divider()
 

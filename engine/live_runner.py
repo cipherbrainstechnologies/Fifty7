@@ -390,7 +390,14 @@ class LiveStrategyRunner:
         self.daily_pnl += pnl
         logger.info(f"Daily P&L updated: ₹{self.daily_pnl:,.2f}")
     
-    def update_strategy_config(self, sl_points: Optional[int] = None, order_lots: Optional[int] = None, trail_points: Optional[int] = None):
+    def update_strategy_config(
+        self,
+        sl_points: Optional[int] = None,
+        order_lots: Optional[int] = None,
+        trail_points: Optional[int] = None,
+        atm_offset: Optional[int] = None,
+        daily_loss_limit_pct: Optional[float] = None,
+    ):
         """
         Update strategy configuration at runtime (from front-end).
         
@@ -398,10 +405,15 @@ class LiveStrategyRunner:
             sl_points: New stop loss in points (optional)
             order_lots: New order quantity in LOTS (optional)
             trail_points: New trailing SL step in points (optional)
+            atm_offset: Offset from ATM strike in points (optional)
+            daily_loss_limit_pct: Daily loss circuit breaker percentage (optional)
         """
         if sl_points is not None:
             if sl_points > 0:
                 self.sl_points = sl_points
+                self.config.setdefault('strategy', {})['sl'] = sl_points
+                if self.signal_handler is not None:
+                    self.signal_handler.config.setdefault('strategy', {})['sl'] = sl_points
                 logger.info(f"Stop Loss updated to {sl_points} points")
             else:
                 logger.warning(f"Invalid stop loss: {sl_points} (must be > 0)")
@@ -423,6 +435,20 @@ class LiveStrategyRunner:
                 logger.info(f"Trailing SL step updated to {trail_points} points")
             else:
                 logger.warning(f"Invalid trail points: {trail_points} (must be > 0)")
+        
+        if atm_offset is not None:
+            self.config.setdefault('strategy', {})['atm_offset'] = int(atm_offset)
+            if hasattr(self, 'signal_handler') and self.signal_handler is not None:
+                self.signal_handler.config.setdefault('strategy', {})['atm_offset'] = int(atm_offset)
+            logger.info(f"Strike offset updated to {int(atm_offset)} points")
+        
+        if daily_loss_limit_pct is not None:
+            if daily_loss_limit_pct > 0:
+                self.daily_loss_limit_pct = float(daily_loss_limit_pct)
+                self.config.setdefault('risk_management', {})['daily_loss_limit_pct'] = float(daily_loss_limit_pct)
+                logger.info(f"Daily loss limit updated to {float(daily_loss_limit_pct)}%")
+            else:
+                logger.warning(f"Invalid daily loss limit: {daily_loss_limit_pct} (must be > 0)")
     
     def _display_strategy_summary(self, signal: Dict, entry_price: float, strike: int, direction: str):
         """

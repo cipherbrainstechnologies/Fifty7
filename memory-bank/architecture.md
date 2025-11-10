@@ -28,7 +28,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 ## System Flow
 
 1. **Strategy Detection**: 1-hour timeframe scanned for Inside Bar patterns
-2. **Breakout Confirmation**: 15-minute timeframe monitored for volume-confirmed breakouts
+2. **Breakout Confirmation**: 1-hour timeframe monitors every closed candle for mother-range breakouts
 3. **Signal Generation**: Valid signals trigger trade execution logic
 4. **Order Execution**: Broker API integration places orders with SL/TP
 5. **Trade Logging**: All trades logged with entry/exit, PnL, and reasoning
@@ -109,4 +109,5 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - 2025-11-07: Streamlit dashboard adds an `🧭 Debug Snapshot` panel that captures environment origin (local vs hosted), data source path, candle counts, range diagnostics, and recent timestamps to troubleshoot mismatched datasets.
 - 2025-11-07: Dashboard normalizes visible 1H/15m candle tables to Asia/Kolkata by localizing raw timestamps to UTC and converting to IST before presentation.
 - 2025-11-07: Streamlit cache TTL for broker portfolio/order fetches set to 0 seconds to avoid serving stale remote data during comparative debugging.
+- 2025-11-10: Dashboard removes embedded TradingView charts, adds a live inside-bar snapshot deck, and wraps Option Greeks plus strategy settings in lightweight controls for faster runtime refresh.
 
