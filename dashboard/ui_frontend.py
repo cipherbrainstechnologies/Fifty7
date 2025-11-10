@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 import threading
 import time
 import pytz
+from typing import Dict, Optional
 
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
@@ -2500,480 +2501,742 @@ elif tab == "Trade Journal":
 elif tab == "Backtest":
     st.header("🧪 Backtest Strategy")
     
-    # --- Source selector ---
-    if DESIQUANT_AVAILABLE:
-        mode = st.radio(
-            "Select data source",
-            ["Upload CSV (existing)", "DesiQuant S3 (no upload)"],
-            index=0,
-            help="Use cloud mode to stream spot + options + expiries directly from DesiQuant"
+    # Session state bootstrapping
+    st.session_state.setdefault("backtest_results", None)
+    st.session_state.setdefault("backtest_results_source", None)
+    st.session_state.setdefault("backtest_equity_curve", None)
+    st.session_state.setdefault("backtest_trades", None)
+    
+    def store_backtest_results(results: Dict, source_label: str) -> None:
+        st.session_state.backtest_results = results
+        st.session_state.backtest_results_source = source_label
+        st.session_state.backtest_equity_curve = results.get("equity_curve")
+        st.session_state.backtest_trades = results.get("trades")
+    
+    def render_backtest_results(results: Optional[Dict]) -> None:
+        if not results:
+            st.info("🔎 Run a backtest from the **Data & Run** tab to see analytics here.")
+            return
+        
+        st.subheader("📊 Backtest Summary")
+        summary_cols = st.columns(4, gap="small")
+        summary_cols[0].metric("Total Trades", results.get("total_trades", 0))
+        summary_cols[1].metric("Win Rate", f"{results.get('win_rate', 0.0):.2f}%")
+        summary_cols[2].metric("Net P&L", f"₹{results.get('total_pnl', 0.0):,.2f}")
+        summary_cols[3].metric("Return %", f"{results.get('return_pct', 0.0):.2f}%")
+        
+        if results.get("total_trades", 0) == 0:
+            st.warning("⚠️ No trades were executed during this backtest window.")
+            st.caption(
+                "Tip: Broaden the data window, loosen filters, or ensure inside-bar breakouts were present."
+            )
+        
+        result_tabs = st.tabs(
+            [
+                "Overview",
+                "Capital & Risk",
+                "Trailing SL",
+                "Equity Curve",
+                "Trade Log",
+            ]
+        )
+        
+        with result_tabs[0]:
+            st.markdown("### 🧾 Performance Overview")
+            overview_cols = st.columns(3, gap="small")
+            overview_cols[0].metric(
+                "Initial Capital", f"₹{results.get('initial_capital', 0.0):,.2f}"
+            )
+            overview_cols[1].metric(
+                "Final Capital", f"₹{results.get('final_capital', 0.0):,.2f}"
+            )
+            overview_cols[2].metric(
+                "Winning / Losing Trades",
+                f"{results.get('winning_trades', 0)} / {results.get('losing_trades', 0)}",
+            )
+            st.write(
+                f"- **Average Win:** ₹{results.get('avg_win', 0.0):,.2f}\n"
+                f"- **Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}\n"
+                f"- **Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%\n"
+                f"- **Max Winning Streak:** {results.get('max_winning_streak', 0)} trades\n"
+                f"- **Max Losing Streak:** {results.get('max_losing_streak', 0)} trades"
+            )
+        
+        with result_tabs[1]:
+            st.markdown("### 💰 Capital & Risk Analysis")
+            avg_cap_req = results.get("avg_capital_required", 0.0)
+            st.metric("Avg Capital Required / Trade", f"₹{avg_cap_req:,.2f}")
+            
+            if results.get("capital_exhausted", False):
+                trade_num = results.get("capital_exhausted_at_trade", "Unknown")
+                st.error(f"⚠️ Capital exhausted after trade #{trade_num}.")
+                st.caption(
+                    "- Increase initial capital\n"
+                    "- Reduce position size\n"
+                    "- Tighten stop-loss or filters\n"
+                    "- Review volatile periods"
+                )
+            else:
+                st.success("✅ Capital stayed positive for the entire run.")
+        
+        with result_tabs[2]:
+            st.markdown("### 🎯 Trailing Stop Insights")
+            trail_exit_count = results.get("winning_trades_trail_exit", 0)
+            trail_exit_pct = results.get("trail_exit_pct_of_winners", 0.0)
+            trail_cols = st.columns(2, gap="small")
+            trail_cols[0].metric("Trail SL Exits (Wins)", trail_exit_count)
+            trail_cols[1].metric("Share of Winning Trades", f"{trail_exit_pct:.1f}%")
+            if trail_exit_count > 0:
+                st.info(
+                    "Trailing SL closed profitable trades before TP. "
+                    "Consider adjusting trail parameters to match market volatility."
+                )
+            else:
+                st.caption("No winning trades were closed by the trailing stop.")
+        
+        with result_tabs[3]:
+            st.markdown("### 📈 Equity Curve")
+            equity_curve = results.get("equity_curve")
+            if equity_curve:
+                equity_df = pd.DataFrame(
+                    {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                )
+                fig = go.Figure(
+                    data=[
+                        go.Scatter(
+                            x=equity_df["Trade #"],
+                            y=equity_df["Capital"],
+                            mode="lines",
+                            line=dict(color="#1f77b4", width=2),
+                            fill="tozeroy",
+                        )
+                    ]
+                )
+                fig.update_layout(
+                    height=420,
+                    hovermode="x unified",
+                    margin=dict(l=10, r=10, t=50, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                st.download_button(
+                    "⬇️ Download Equity Curve CSV",
+                    equity_df.to_csv(index=False).encode("utf-8"),
+                    file_name="backtest_equity_curve.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("No equity curve data returned from this run.")
+        
+        with result_tabs[4]:
+            st.markdown("### 📋 Trade Log")
+            trades = results.get("trades")
+            if trades:
+                trades_df = pd.DataFrame(trades)
+                st.dataframe(trades_df, use_container_width=True)
+                st.download_button(
+                    "⬇️ Download Trades CSV",
+                    trades_df.to_csv(index=False).encode("utf-8"),
+                    file_name="backtest_trades.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.info("No individual trade records were returned.")
+    
+    # Quick glance cards (latest results)
+    last_results = st.session_state.backtest_results
+    summary_cols = st.columns(3, gap="small")
+    if last_results:
+        summary_cols[0].metric("Last P&L", f"₹{last_results.get('total_pnl', 0.0):,.2f}")
+        summary_cols[1].metric("Last Win Rate", f"{last_results.get('win_rate', 0.0):.2f}%")
+        summary_cols[2].metric(
+            "Last Run Source",
+            st.session_state.backtest_results_source or "—",
         )
     else:
-        mode = "Upload CSV (existing)"
-        st.info("ℹ️ Cloud data source not available. Install dependencies: `pip install s3fs>=2024.3.1 pyarrow>=15.0.0`")
+        for col, label in zip(summary_cols, ["Last P&L", "Last Win Rate", "Last Run Source"]):
+            col.metric(label, "—")
     
     st.divider()
     
-    # Load config for defaults
-    import yaml as yaml_lib
-    with open('config/config.yaml', 'r') as f:
-        strategy_config = yaml_lib.safe_load(f)
-    pm_config = strategy_config.get('position_management', {})
+    config_tab, data_run_tab, results_tab = st.tabs(
+        ["🛠 Configure Strategy", "📂 Data & Run", "📊 Results & Analysis"]
+    )
     
-    # ========== ESSENTIAL PARAMETERS (always visible at top) ==========
-    st.subheader("⚙️ Essential Parameters")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        initial_capital = st.number_input(
-            "Initial Capital (₹)",
-            min_value=10000,
-            value=100000,
-            step=10000
-        )
-    
-    with col2:
-        # Get lot size value first
-        lot_size_default = strategy_config.get('lot_size', 75)
-        lot_size = st.number_input(
-            "Lot Size",
-            min_value=1,
-            value=lot_size_default,
-            step=lot_size_default,  # Step by lot_size itself (e.g., 75) - clicking + adds 75, clicking - subtracts 75
-            help=f"NIFTY lot size (1 lot = {lot_size_default} units). Clicking +/- changes by {lot_size_default} units"
-        )
-    
-    with col3:
-        sl_pct = st.number_input(
-            "Premium SL %",
-            min_value=10,
-            value=35,
-            max_value=60,
-            step=5,
-            help="Stop loss percentage on option premium (legacy mode only)"
-        )
-    
-    # Capital requirement warning
-    # Rough estimate: lot_size * estimated_strike_price (using 24000 as typical NIFTY level)
-    estimated_strike_price = 24000
-    estimated_capital_required = lot_size * estimated_strike_price
-    if initial_capital < estimated_capital_required:
-        st.warning(f"⚠️ Available capital (₹{initial_capital:,.0f}) is less than estimated capital required (₹{estimated_capital_required:,.0f}). You may not have sufficient capital to execute trades.")
-    
-    st.divider()
-    
-    # ========== ADVANCED PARAMETERS (collapsible to reduce scrolling) ==========
-    with st.expander("📊 Advanced Strategy Parameters (click to expand)", expanded=False):
-        # Strike Selection Row
-        st.write("**Strike Selection:**")
+    # --- CONFIGURATION TAB -------------------------------------------------
+    with config_tab:
+        # data source info
+        if DESIQUANT_AVAILABLE:
+            st.caption("Tip: Configure once, then iterate quickly via the Data & Run tab.")
+        else:
+            st.warning(
+                "Cloud datasource dependencies missing. Install `s3fs>=2024.3.1` and `pyarrow>=15.0.0` to enable."
+            )
+        
+        import yaml as yaml_lib
+        with open('config/config.yaml', 'r') as f:
+            strategy_config = yaml_lib.safe_load(f)
+        pm_config = strategy_config.get('position_management', {})
+        
+        st.subheader("⚙️ Essential Parameters")
+        col1, col2, col3 = st.columns(3, gap="small")
+        with col1:
+            initial_capital = st.number_input(
+                "Initial Capital (₹)",
+                min_value=10000,
+                value=100000,
+                step=10000,
+            )
+        with col2:
+            lot_size_default = strategy_config.get('lot_size', 75)
+            lot_size = st.number_input(
+                "Lot Size",
+                min_value=1,
+                value=lot_size_default,
+                step=lot_size_default,
+                help=f"NIFTY lot size (1 lot = {lot_size_default} units). +/- adjusts by a full lot.",
+            )
+        with col3:
+            sl_pct = st.number_input(
+                "Premium SL %",
+                min_value=10,
+                value=35,
+                max_value=60,
+                step=5,
+                help="Legacy premium stop-loss percentage (used when enhanced features are disabled).",
+            )
+        
+        estimated_strike_price = 24000
+        estimated_capital_required = lot_size * estimated_strike_price
+        if initial_capital < estimated_capital_required:
+            st.warning(
+                f"⚠️ Available capital (₹{initial_capital:,.0f}) is below an estimated requirement "
+                f"of ₹{estimated_capital_required:,.0f}."
+            )
+        
+        st.divider()
+        
+        st.markdown("### 🧱 Strategy & Risk Controls")
         strike_selection = st.selectbox(
-            "Strike Price",
+            "Strike selection preset",
             options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
             index=0,
-            help="Select strike price relative to ATM:\n"
-                 "- ATM 0: At The Money (nearest 50 to spot)\n"
-                 "- ITM 1/2/3: In The Money (closer to spot)\n"
-                 "- OTM 1/2/3: Out The Money (away from spot)\n"
-                 "For CE: ITM = lower strike, OTM = higher strike\n"
-                 "For PE: ITM = higher strike, OTM = lower strike"
         )
         
-        # Second row: Position Management Parameters
-        st.write("**Position Management:**")
-        col_pm1, col_pm2, col_pm3, col_pm4 = st.columns(4)
-    
-    with col_pm1:
-        sl_points_main = st.number_input(
-            "SL Points",
-            min_value=10,
-            max_value=100,
-            value=int(pm_config.get('sl_points', 30)),
-            step=5,
-            help="Initial stop loss in points (option price)"
-        )
-    
-    with col_pm2:
-        trail_points_main = st.number_input(
-            "Trail Points",
-            min_value=5,
-            max_value=50,
-            value=int(pm_config.get('trail_points', 10)),
-            step=5,
-            help="Trailing step in points. When price advances by this amount, SL moves up"
-        )
-    
-    with col_pm3:
-        book1_points_main = st.number_input(
-            "Book 1 Points",
-            min_value=10,
-            max_value=100,
-            value=int(pm_config.get('book1_points', 40)),
-            step=5,
-            help="Book partial profit at entry + this many points"
-        )
-    
-    with col_pm4:
-        book2_points_main = st.number_input(
-            "Book 2 Points",
-            min_value=20,
-            max_value=150,
-            value=int(pm_config.get('book2_points', 54)),
-            step=5,
-            help="Book remaining at entry + this many points"
-        )
-    
-    # ========== Enhanced Feature Flags (Backtest Only) ==========
-    # Initialize defaults (for when expander is collapsed)
-    use_atr_filter = False
-    use_regime_filter = False
-    use_distance_guard = False
-    use_tiered_exits = False
-    use_expiry_protocol = False
-    use_directional_sizing = False
-    
-    atr_floor_pct = 0.5
-    ema_slope_len = 20
-    distance_guard_atr = 0.6
-    
-    vol_band_low = 0.40
-    vol_band_high = 0.75
-    sl_pct_low = 22
-    sl_pct_norm = 28
-    sl_pct_high = 35
-    
-    be_at_r = 0.6
-    t1_r = 1.2
-    t1_book_pct = 0.50
-    t2_r = 2.0
-    t2_book_pct = 0.25
-    
-    trail_lookback = 6
-    trail_mult = 2.0
-    
-    no_new_after = "14:30"
-    force_partial_by = "13:00"
-    tighten_days = 1.5
-    
-    risk_per_trade_pct = 0.6
-    pe_size_cap_vs_ce = 0.7
-    max_concurrent = 2
-    
-    # Position Management override variables (initialized to main section values)
-    sl_points_config = sl_points_main
-    trail_points_config = trail_points_main
-    book1_points_config = book1_points_main
-    book2_points_config = book2_points_main
-    book1_ratio_config = float(pm_config.get('book1_ratio', 0.5))
-    
-    with st.expander("🔧 Enhanced Features (Backtest Only)", expanded=False):
-        st.markdown("**Feature Toggles:**")
-        col_flags1, col_flags2 = st.columns(2)
-        
-        with col_flags1:
-            use_atr_filter = st.checkbox("ATR Filter", value=use_atr_filter, help="Require minimum ATR% before entry")
-            use_regime_filter = st.checkbox("Regime Filter", value=use_regime_filter, help="Filter trades based on EMA slope regime")
-            use_distance_guard = st.checkbox("Distance Guard", value=use_distance_guard, help="Reduce size if breakout is too stretched")
-        
-        with col_flags2:
-            use_tiered_exits = st.checkbox("Tiered Exits", value=use_tiered_exits, help="Enable partial exits at T1/T2 targets")
-            use_expiry_protocol = st.checkbox("Expiry Protocol", value=use_expiry_protocol, help="Force exits and partial banks on expiry day")
-            use_directional_sizing = st.checkbox("Directional Sizing", value=use_directional_sizing, help="Adjust PE size based on regime")
-        
-        st.divider()
-        
-        # Filters Configuration
-        st.markdown("**Filters:**")
-        col_filt1, col_filt2, col_filt3 = st.columns(3)
-        
-        with col_filt1:
-            atr_floor_pct = st.number_input(
-                "ATR Floor % (1h)",
-                min_value=0.0,
-                value=atr_floor_pct,
-                step=0.1,
-                format="%.1f",
-                help="Minimum ATR%/Close required before entry"
-            )
-        
-        with col_filt2:
-            ema_slope_len = st.number_input(
-                "EMA Slope Lookback",
-                min_value=5,
-                value=ema_slope_len,
-                step=5,
-                help="Bars to calculate EMA slope for regime detection"
-            )
-        
-        with col_filt3:
-            distance_guard_atr = st.number_input(
-                "Distance Guard (ATR mult)",
-                min_value=0.1,
-                value=distance_guard_atr,
-                step=0.1,
-                format="%.1f",
-                help="Multiplier: reject/halve if breakout > this * ATR from signal edge"
-            )
-        
-        st.divider()
-        
-        # Vol-Band SL Configuration
-        st.markdown("**Volatility-Based Stop Loss:**")
-        col_vol1, col_vol2, col_vol3, col_vol4 = st.columns(4)
-        
-        with col_vol1:
-            vol_band_low = st.number_input(
-                "Vol Band Low %",
-                min_value=0.0,
-                value=vol_band_low,
-                step=0.05,
-                format="%.2f",
-                help="ATR% threshold for low volatility"
-            )
-        
-        with col_vol2:
-            vol_band_high = st.number_input(
-                "Vol Band High %",
-                min_value=0.0,
-                value=vol_band_high,
-                step=0.05,
-                format="%.2f",
-                help="ATR% threshold for high volatility"
-            )
-        
-        with col_vol3:
-            sl_pct_low = st.number_input(
-                "SL % (Low Vol)",
-                min_value=10,
-                value=sl_pct_low,
-                step=1,
-                help="Stop loss % when ATR% < low threshold"
-            )
-        
-        with col_vol4:
-            sl_pct_high = st.number_input(
-                "SL % (High Vol)",
-                min_value=20,
-                value=sl_pct_high,
-                step=1,
-                help="Stop loss % when ATR% >= high threshold"
-            )
-        
-        sl_pct_norm = st.number_input(
-            "SL % (Normal Vol)",
-            min_value=15,
-            value=sl_pct_norm,
-            step=1,
-            help="Stop loss % when low <= ATR% < high"
-        )
-        
-        st.divider()
-        
-        # Tiered Exits Configuration
-        st.markdown("**Tiered Exit Parameters:**")
-        col_tier1, col_tier2, col_tier3, col_tier4 = st.columns(4)
-        
-        with col_tier1:
-            be_at_r = st.number_input(
-                "Breakeven @ R",
-                min_value=0.0,
-                value=be_at_r,
-                step=0.1,
-                format="%.1f",
-                help="Move to BE when profit reaches this many R"
-            )
-        
-        with col_tier2:
-            t1_r = st.number_input(
-                "T1 Target (R)",
-                min_value=0.0,
-                value=t1_r,
-                step=0.1,
-                format="%.1f",
-                help="Book partial at this many R"
-            )
-        
-        t1_book_pct = st.number_input(
-            "T1 Book %",
-            min_value=0.0,
-            max_value=1.0,
-            value=t1_book_pct,
-            step=0.05,
-            format="%.2f",
-            help="Percentage to book at T1 (0.5 = 50%)"
-        )
-        
-        with col_tier3:
-            t2_r = st.number_input(
-                "T2 Target (R)",
-                min_value=0.0,
-                value=t2_r,
-                step=0.1,
-                format="%.1f",
-                help="Book second partial at this many R"
-            )
-        
-        t2_book_pct = st.number_input(
-            "T2 Book %",
-            min_value=0.0,
-            max_value=1.0,
-            value=t2_book_pct,
-            step=0.05,
-            format="%.2f",
-            help="Percentage to book at T2 (0.25 = 25%)"
-        )
-        
-        st.divider()
-        
-        # Position Management Configuration Override (Point-based SL/TP)
-        # Note: Basic PM params are in main section, here we can override if needed
-        st.markdown("**Position Management Override (Optional):**")
-        st.caption("💡 Basic position management (SL, Trail, Book points) is configured in 'Backtest Parameters' section above. Use this section only if you want to override those values when Enhanced Features are enabled.")
-        
-        col_pm1, col_pm2, col_pm3 = st.columns(3)
-        
-        with col_pm1:
-            sl_points_config = st.number_input(
-                "SL Points (Override)",
+        col_pm = st.columns(4, gap="small")
+        with col_pm[0]:
+            sl_points_main = st.number_input(
+                "SL Points",
                 min_value=10,
                 max_value=100,
-                value=sl_points_main,  # Default to main section value
+                value=int(pm_config.get('sl_points', 30)),
                 step=5,
-                help="Override SL points from main section"
             )
-        
-        with col_pm2:
-            trail_points_config = st.number_input(
-                "Trail Points (Override)",
+        with col_pm[1]:
+            trail_points_main = st.number_input(
+                "Trail Points",
                 min_value=5,
                 max_value=50,
-                value=trail_points_main,  # Default to main section value
+                value=int(pm_config.get('trail_points', 10)),
                 step=5,
-                help="Override trail points from main section"
             )
-        
-        with col_pm3:
-            book1_points_config = st.number_input(
-                "Book 1 Points (Override)",
+        with col_pm[2]:
+            book1_points_main = st.number_input(
+                "Book 1 Points",
                 min_value=10,
                 max_value=100,
-                value=book1_points_main,  # Default to main section value
+                value=int(pm_config.get('book1_points', 40)),
                 step=5,
-                help="Override Book 1 points from main section"
             )
-        
-        col_pm4, col_pm5 = st.columns(2)
-        
-        with col_pm4:
-            book2_points_config = st.number_input(
-                "Book 2 Points (Override)",
+        with col_pm[3]:
+            book2_points_main = st.number_input(
+                "Book 2 Points",
                 min_value=20,
                 max_value=150,
-                value=book2_points_main,  # Default to main section value
+                value=int(pm_config.get('book2_points', 54)),
                 step=5,
-                help="Override Book 2 points from main section"
             )
         
-        with col_pm5:
-            book1_ratio_config = st.number_input(
-                "Book 1 Ratio",
-                min_value=0.1,
+        st.divider()
+        
+        st.markdown("### 🧩 Advanced Parameters")
+        with st.expander("📊 Strategy Filters & Controls", expanded=False):
+            use_atr_filter = False
+            use_regime_filter = False
+            use_distance_guard = False
+            use_tiered_exits = False
+            use_expiry_protocol = False
+            use_directional_sizing = False
+            atr_floor_pct = 0.5
+            ema_slope_len = 20
+            distance_guard_atr = 0.6
+            vol_band_low = 0.40
+            vol_band_high = 0.75
+            sl_pct_low = 22
+            sl_pct_norm = 28
+            sl_pct_high = 35
+            be_at_r = 0.6
+            t1_r = 1.2
+            t1_book_pct = 0.50
+            t2_r = 2.0
+            t2_book_pct = 0.25
+            trail_lookback = 6
+            trail_mult = 2.0
+            no_new_after = "14:30"
+            force_partial_by = "13:00"
+            tighten_days = 1.5
+            risk_per_trade_pct = 0.6
+            pe_size_cap_vs_ce = 0.7
+            max_concurrent = 2
+            sl_points_config = sl_points_main
+            trail_points_config = trail_points_main
+            book1_points_config = book1_points_main
+            book2_points_config = book2_points_main
+            book1_ratio_config = float(pm_config.get('book1_ratio', 0.5))
+            
+            flag_cols = st.columns(2)
+            with flag_cols[0]:
+                use_atr_filter = st.checkbox("ATR Filter", value=use_atr_filter)
+                use_regime_filter = st.checkbox("Regime Filter", value=use_regime_filter)
+                use_distance_guard = st.checkbox("Distance Guard", value=use_distance_guard)
+            with flag_cols[1]:
+                use_tiered_exits = st.checkbox("Tiered Exits", value=use_tiered_exits)
+                use_expiry_protocol = st.checkbox("Expiry Protocol", value=use_expiry_protocol)
+                use_directional_sizing = st.checkbox("Directional Sizing", value=use_directional_sizing)
+            
+            st.markdown("##### Filters")
+            filters_row = st.columns(3)
+            with filters_row[0]:
+                atr_floor_pct = st.number_input(
+                    "ATR Floor % (1h)",
+                    min_value=0.0,
+                    value=atr_floor_pct,
+                    step=0.1,
+                    format="%.1f",
+                )
+            with filters_row[1]:
+                ema_slope_len = st.number_input(
+                    "EMA Slope Lookback",
+                    min_value=5,
+                    value=ema_slope_len,
+                    step=5,
+                )
+            with filters_row[2]:
+                distance_guard_atr = st.number_input(
+                    "Distance Guard (ATR)",
+                    min_value=0.1,
+                    value=distance_guard_atr,
+                    step=0.1,
+                    format="%.1f",
+                )
+            
+            st.markdown("##### Volatility-based SL")
+            vol_cols = st.columns(4)
+            with vol_cols[0]:
+                vol_band_low = st.number_input(
+                    "Vol Band Low %",
+                    min_value=0.0,
+                    value=vol_band_low,
+                    step=0.05,
+                    format="%.2f",
+                )
+            with vol_cols[1]:
+                vol_band_high = st.number_input(
+                    "Vol Band High %",
+                    min_value=0.0,
+                    value=vol_band_high,
+                    step=0.05,
+                    format="%.2f",
+                )
+            with vol_cols[2]:
+                sl_pct_low = st.number_input(
+                    "SL % (Low Vol)",
+                    min_value=10,
+                    value=sl_pct_low,
+                    step=1,
+                )
+            with vol_cols[3]:
+                sl_pct_high = st.number_input(
+                    "SL % (High Vol)",
+                    min_value=20,
+                    value=sl_pct_high,
+                    step=1,
+                )
+            sl_pct_norm = st.number_input(
+                "SL % (Normal Vol)",
+                min_value=15,
+                value=sl_pct_norm,
+                step=1,
+            )
+            
+            st.markdown("##### Tiered Exits")
+            tier_cols = st.columns(4)
+            with tier_cols[0]:
+                be_at_r = st.number_input(
+                    "Breakeven @ R",
+                    min_value=0.0,
+                    value=be_at_r,
+                    step=0.1,
+                    format="%.1f",
+                )
+            with tier_cols[1]:
+                t1_r = st.number_input(
+                    "T1 Target (R)",
+                    min_value=0.0,
+                    value=t1_r,
+                    step=0.1,
+                    format="%.1f",
+                )
+            t1_book_pct = st.number_input(
+                "T1 Book %",
+                min_value=0.0,
                 max_value=1.0,
-                value=float(pm_config.get('book1_ratio', 0.5)),
-                step=0.1,
+                value=t1_book_pct,
+                step=0.05,
                 format="%.2f",
-                help="Percentage to book at first target (0.5 = 50%)"
             )
-        
-        st.divider()
-        
-        # Trailing Stop Configuration (Chandelier - for backtest only)
-        st.markdown("**Trailing Stop (Chandelier - Backtest Only):**")
-        col_trail1, col_trail2 = st.columns(2)
-        
-        with col_trail1:
-            trail_lookback = st.number_input(
-                "Trail Lookback (bars)",
-                min_value=3,
-                value=trail_lookback,
-                step=1,
-                help="Number of bars for chandelier trail calculation (backtest only)"
-            )
-        
-        with col_trail2:
-            trail_mult = st.number_input(
-                "Trail Multiplier",
-                min_value=0.5,
-                value=trail_mult,
-                step=0.1,
-                format="%.1f",
-                help="Multiplier for ATR in chandelier trail (backtest only)"
-            )
-        
-        st.divider()
-        
-        # Expiry Protocol Configuration
-        st.markdown("**Expiry Protocol:**")
-        col_exp1, col_exp2, col_exp3 = st.columns(3)
-        
-        with col_exp1:
-            no_new_after = st.text_input(
-                "No New After (HH:MM)",
-                value=no_new_after,
-                help="Block new entries after this time on expiry day (IST)"
-            )
-        
-        with col_exp2:
-            force_partial_by = st.text_input(
-                "Force Partial By (HH:MM)",
-                value=force_partial_by,
-                help="Force partial bank by this time if not at BE (IST)"
-            )
-        
-        with col_exp3:
-            tighten_days = st.number_input(
-                "Tighten Trail (days to expiry)",
-                min_value=0.5,
-                value=tighten_days,
-                step=0.5,
-                format="%.1f",
-                help="Days before expiry to tighten trailing stop"
-            )
-        
-        st.divider()
-        
-        # Sizing Configuration
-        st.markdown("**Position Sizing:**")
-        col_size1, col_size2, col_size3 = st.columns(3)
-        
-        with col_size1:
-            risk_per_trade_pct = st.number_input(
-                "Risk Per Trade %",
-                min_value=0.0,
-                value=risk_per_trade_pct,
-                step=0.1,
-                format="%.1f",
-                help="Percentage of equity to risk per trade"
-            )
-        
-        with col_size2:
-            pe_size_cap_vs_ce = st.number_input(
-                "PE Size Cap vs CE",
+            with tier_cols[2]:
+                t2_r = st.number_input(
+                    "T2 Target (R)",
+                    min_value=0.0,
+                    value=t2_r,
+                    step=0.1,
+                    format="%.1f",
+                )
+            t2_book_pct = st.number_input(
+                "T2 Book %",
                 min_value=0.0,
                 max_value=1.0,
-                value=pe_size_cap_vs_ce,
-                step=0.1,
-                format="%.1f",
-                help="PE position size multiplier vs CE (0.7 = 70%)"
+                value=t2_book_pct,
+                step=0.05,
+                format="%.2f",
             )
+            
+            st.markdown("##### Position Overrides")
+            override_cols = st.columns(3)
+            with override_cols[0]:
+                sl_points_config = st.number_input(
+                    "SL Points (Override)",
+                    min_value=10,
+                    max_value=100,
+                    value=sl_points_main,
+                    step=5,
+                )
+            with override_cols[1]:
+                trail_points_config = st.number_input(
+                    "Trail Points (Override)",
+                    min_value=5,
+                    max_value=50,
+                    value=trail_points_main,
+                    step=5,
+                )
+            with override_cols[2]:
+                book1_points_config = st.number_input(
+                    "Book 1 Points (Override)",
+                    min_value=10,
+                    max_value=100,
+                    value=book1_points_main,
+                    step=5,
+                )
+            extra_override_cols = st.columns(2)
+            with extra_override_cols[0]:
+                book2_points_config = st.number_input(
+                    "Book 2 Points (Override)",
+                    min_value=20,
+                    max_value=150,
+                    value=book2_points_main,
+                    step=5,
+                )
+            with extra_override_cols[1]:
+                book1_ratio_config = st.number_input(
+                    "Book 1 Ratio",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=book1_ratio_config,
+                    step=0.1,
+                    format="%.2f",
+                )
+            
+            st.markdown("##### Trailing & Expiry Controls")
+            trail_cols = st.columns(2)
+            with trail_cols[0]:
+                trail_lookback = st.number_input(
+                    "Trail Lookback (bars)",
+                    min_value=3,
+                    value=trail_lookback,
+                    step=1,
+                )
+            with trail_cols[1]:
+                trail_mult = st.number_input(
+                    "Trail Multiplier",
+                    min_value=0.5,
+                    value=trail_mult,
+                    step=0.1,
+                    format="%.1f",
+                )
+            expiry_cols = st.columns(3)
+            with expiry_cols[0]:
+                no_new_after = st.text_input(
+                    "No New After (HH:MM)", value=no_new_after
+                )
+            with expiry_cols[1]:
+                force_partial_by = st.text_input(
+                    "Force Partial By (HH:MM)", value=force_partial_by
+                )
+            with expiry_cols[2]:
+                tighten_days = st.number_input(
+                    "Tighten Trail (days)", min_value=0.5, value=tighten_days, step=0.5, format="%.1f"
+                )
+            
+            st.markdown("##### Position Sizing")
+            sizing_cols = st.columns(3)
+            with sizing_cols[0]:
+                risk_per_trade_pct = st.number_input(
+                    "Risk Per Trade %",
+                    min_value=0.0,
+                    value=risk_per_trade_pct,
+                    step=0.1,
+                    format="%.1f",
+                )
+            with sizing_cols[1]:
+                pe_size_cap_vs_ce = st.number_input(
+                    "PE Size Cap vs CE",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=pe_size_cap_vs_ce,
+                    step=0.1,
+                    format="%.1f",
+                )
+            with sizing_cols[2]:
+                max_concurrent = st.number_input(
+                    "Max Concurrent Positions",
+                    min_value=1,
+                    value=max_concurrent,
+                    step=1,
+                )
         
-        with col_size3:
-            max_concurrent = st.number_input(
-                "Max Concurrent Positions",
-                min_value=1,
-                value=max_concurrent,
-                step=1,
-                help="Maximum number of simultaneous positions"
+        # strike interpretation
+        strike_offset_map = {
+            "ATM 0": 0,
+            "ITM 1": 50,
+            "ITM 2": 100,
+            "ITM 3": 150,
+            "OTM 1": 50,
+            "OTM 2": 100,
+            "OTM 3": 150,
+        }
+        strike_offset_base = strike_offset_map.get(strike_selection, 0)
+        is_itm = strike_selection.startswith("ITM")
+        is_otm = strike_selection.startswith("OTM")
+        
+        backtest_config_dict = {
+            "strategy": {
+                "type": "inside_bar_breakout",
+                "sl": int(sl_points_main),
+                "rr": 1.8,
+                "premium_sl_pct": float(sl_pct),
+                "lock1_gain_pct": 60.0,
+                "lock2_gain_pct": 80.0,
+                "lock3_gain_pct": 100.0,
+                "use_atr_filter": bool(use_atr_filter),
+                "use_regime_filter": bool(use_regime_filter),
+                "use_distance_guard": bool(use_distance_guard),
+                "use_tiered_exits": bool(use_tiered_exits),
+                "use_expiry_protocol": bool(use_expiry_protocol),
+                "use_directional_sizing": bool(use_directional_sizing),
+                "atr_floor_pct_1h": float(atr_floor_pct),
+                "ema_slope_len": int(ema_slope_len),
+                "distance_guard_atr": float(distance_guard_atr),
+                "adx_min": 0.0,
+                "vol_bands": {"low": float(vol_band_low), "high": float(vol_band_high)},
+                "premium_sl_pct_low": float(sl_pct_low),
+                "premium_sl_pct_norm": float(sl_pct_norm),
+                "premium_sl_pct_high": float(sl_pct_high),
+                "be_at_r": float(be_at_r),
+                "trail_lookback": int(trail_lookback),
+                "trail_mult": float(trail_mult),
+                "swing_lock": True,
+                "t1_r": float(t1_r),
+                "t1_book": float(t1_book_pct),
+                "t2_r": float(t2_r),
+                "t2_book": float(t2_book_pct),
+                "no_new_after": str(no_new_after),
+                "force_partial_by": str(force_partial_by),
+                "tighten_trail_days_to_expiry": float(tighten_days),
+                "tighten_mult_factor": 1.3,
+            },
+            "position_management": {
+                "sl_points": int(sl_points_config),
+                "trail_points": int(trail_points_config),
+                "book1_points": int(book1_points_config),
+                "book2_points": int(book2_points_config),
+                "book1_ratio": float(book1_ratio_config),
+            },
+            "sizing": {
+                "risk_per_trade_pct": float(risk_per_trade_pct),
+                "pe_size_cap_vs_ce": float(pe_size_cap_vs_ce),
+                "portfolio_risk_cap_pct": 4.0,
+                "max_concurrent_positions": int(max_concurrent),
+            },
+            "initial_capital": float(initial_capital),
+            "lot_size": int(lot_size),
+            "strike_selection": strike_selection,
+            "strike_offset_base": strike_offset_base,
+            "strike_is_itm": is_itm,
+            "strike_is_otm": is_otm,
+        }
+        
+    engine = BacktestEngine(backtest_config_dict)
+    st.session_state.backtest_config_dict = backtest_config_dict
+    
+    # --- DATA & RUN TAB ----------------------------------------------------
+    with data_run_tab:
+        st.subheader("📂 Choose data source")
+        source_tabs = st.tabs(["📤 CSV Upload", "☁️ DesiQuant Cloud"])
+        
+        # CSV Upload Workflow
+        with source_tabs[0]:
+            st.markdown("#### CSV Upload")
+            sample_cols = st.columns([3, 1])
+            with sample_cols[0]:
+                st.caption("Use a sample file to align your historical OHLC data quickly.")
+            with sample_cols[1]:
+                sample_csv_data = {
+                    'Date': pd.date_range('2024-01-01', periods=10, freq='1H').strftime('%Y-%m-%d %H:%M:%S'),
+                    'Open': [24000.0, 24050.0, 24030.0, 24060.0, 24080.0, 24100.0, 24090.0, 24120.0, 24140.0, 24160.0],
+                    'High': [24080.0, 24090.0, 24070.0, 24090.0, 24110.0, 24130.0, 24120.0, 24150.0, 24170.0, 24190.0],
+                    'Low': [23980.0, 24020.0, 24000.0, 24030.0, 24050.0, 24070.0, 24060.0, 24090.0, 24110.0, 24130.0],
+                    'Close': [24050.0, 24040.0, 24050.0, 24070.0, 24090.0, 24110.0, 24100.0, 24130.0, 24150.0, 24170.0],
+                    'Volume': [1000000, 1100000, 950000, 1200000, 1050000, 1300000, 1150000, 1250000, 1400000, 1350000]
+                }
+                sample_df = pd.DataFrame(sample_csv_data)
+                st.download_button(
+                    label="📥 Sample CSV",
+                    data=sample_df.to_csv(index=False).encode('utf-8'),
+                    file_name="sample_historical_data.csv",
+                    mime="text/csv",
+                )
+            
+            uploaded_file = st.file_uploader(
+                "Drop a CSV with 1H OHLC data",
+                type=["csv"],
+                help="Columns required: Date, Open, High, Low, Close (Volume optional).",
             )
+            
+            data_1h = None
+            if uploaded_file is not None:
+                try:
+                    data_1h = pd.read_csv(uploaded_file)
+                    column_mapping = {}
+                    expected_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+                    for col in data_1h.columns:
+                        col_lower = col.lower().strip()
+                        for expected in expected_columns:
+                            if col_lower == expected.lower():
+                                column_mapping[col] = expected
+                                break
+                    if column_mapping:
+                        data_1h = data_1h.rename(columns=column_mapping)
+                    required_cols = ['Open', 'High', 'Low', 'Close']
+                    missing_cols = [col for col in required_cols if col not in data_1h.columns]
+                    if missing_cols:
+                        st.error(f"❌ Missing columns: {missing_cols}")
+                        data_1h = None
+                    else:
+                        if 'Date' in data_1h.columns:
+                            data_1h['Date'] = pd.to_datetime(data_1h['Date'])
+                            data_1h.set_index('Date', inplace=True)
+                        elif not isinstance(data_1h.index, pd.DatetimeIndex):
+                            st.warning("⚠️ Date column not found; ensure your CSV includes timestamp information.")
+                        with st.expander("Preview data (first 15 rows)", expanded=False):
+                            st.dataframe(data_1h.head(15), use_container_width=True)
+                except Exception as e:
+                    st.error(f"❌ Failed to parse CSV: {e}")
+                    data_1h = None
+            
+            csv_run_disabled = data_1h is None
+            if st.button(
+                "▶️ Run Backtest (CSV)",
+                use_container_width=True,
+                type="primary",
+                disabled=csv_run_disabled,
+            ):
+                with st.spinner("Running backtest..."):
+                    try:
+                        results = engine.run_backtest(
+                            data_1h=data_1h,
+                            options_df=None,
+                            expiries_df=None,
+                            initial_capital=initial_capital,
+                        )
+                        if not isinstance(results, dict):
+                            st.error("Unexpected result format from backtest engine.")
+                        else:
+                            store_backtest_results(results, "CSV Upload")
+                            st.success("Backtest completed. Review analytics in the Results tab.")
+                    except Exception as e:
+                        st.error(f"❌ Backtest failed: {e}")
+                        st.exception(e)
+        
+        # Cloud Workflow
+        with source_tabs[1]:
+            if DESIQUANT_AVAILABLE:
+                st.markdown("#### DesiQuant S3 Data Source")
+                cloud_cols = st.columns(3, gap="small")
+                with cloud_cols[0]:
+                    start_date = st.date_input(
+                        "Start date", value=pd.to_datetime("2021-01-01").date()
+                    )
+                with cloud_cols[1]:
+                    end_date = st.date_input(
+                        "End date", value=pd.to_datetime("2021-03-31").date()
+                    )
+                with cloud_cols[2]:
+                    symbol = st.selectbox("Symbol", ["NIFTY"], index=0)
+                
+                if end_date < start_date:
+                    st.error("❌ End date cannot precede start date.")
+                else:
+                    if st.button(
+                        "▶️ Run Backtest (Cloud)",
+                        use_container_width=True,
+                        type="primary",
+                    ):
+                        with st.spinner("Fetching data from DesiQuant and running backtest..."):
+                            try:
+                                data = stream_data(
+                                    symbol=symbol,
+                                    start=str(start_date),
+                                    end=str(end_date),
+                                )
+                                spot_df = data.get("spot")
+                                options_df = data.get("options")
+                                expiries_df = data.get("expiries")
+                                if spot_df is None or spot_df.empty:
+                                    st.warning("No spot data returned from datasource.")
+                                else:
+                                    with st.expander("Preview cloud data", expanded=False):
+                                        st.dataframe(spot_df.head(10), use_container_width=True)
+                                    results = engine.run_backtest(
+                                        data_1h=spot_df,
+                                        data_15m=None,
+                                        options_df=options_df if options_df is not None and not options_df.empty else None,
+                                        expiries_df=expiries_df if expiries_df is not None and not expiries_df.empty else None,
+                                        initial_capital=initial_capital,
+                                    )
+                                    if not isinstance(results, dict):
+                                        st.error("Unexpected result format from backtest engine.")
+                                    else:
+                                        store_backtest_results(results, "DesiQuant Cloud")
+                                        st.success("Backtest completed. Review analytics in the Results tab.")
+                            except Exception as e:
+                                st.error(f"❌ Cloud backtest failed: {e}")
+                                st.exception(e)
+            else:
+                st.info("Cloud datasource unavailable. Install required packages to enable this tab.")
+    
+    # --- RESULTS TAB -------------------------------------------------------
+    with results_tab:
+        render_backtest_results(st.session_state.backtest_results)
     
     st.divider()
     
@@ -3070,542 +3333,7 @@ elif tab == "Backtest":
         }
         }  # Close advanced parameters expander
     
-    # Build backtest config OUTSIDE the expander (using values captured above)
-    backtest_config_dict = {
-        'strategy': {
-            'type': 'inside_bar_breakout',
-            'sl': int(sl_points_main),
-            'rr': 1.8,
-            'premium_sl_pct': float(sl_pct),
-            'lock1_gain_pct': 60.0,
-            'lock2_gain_pct': 80.0,
-            'lock3_gain_pct': 100.0,
-            'use_atr_filter': bool(use_atr_filter),
-            'use_regime_filter': bool(use_regime_filter),
-            'use_distance_guard': bool(use_distance_guard),
-            'use_tiered_exits': bool(use_tiered_exits),
-            'use_expiry_protocol': bool(use_expiry_protocol),
-            'use_directional_sizing': bool(use_directional_sizing),
-            'atr_floor_pct_1h': float(atr_floor_pct),
-            'ema_slope_len': int(ema_slope_len),
-            'distance_guard_atr': float(distance_guard_atr),
-            'adx_min': 0.0,
-            'vol_bands': {
-                'low': float(vol_band_low),
-                'high': float(vol_band_high)
-            },
-            'premium_sl_pct_low': float(sl_pct_low),
-            'premium_sl_pct_norm': float(sl_pct_norm),
-            'premium_sl_pct_high': float(sl_pct_high),
-            'be_at_r': float(be_at_r),
-            'trail_lookback': int(trail_lookback),
-            'trail_mult': float(trail_mult),
-            'swing_lock': True,
-            't1_r': float(t1_r),
-            't1_book': float(t1_book_pct),
-            't2_r': float(t2_r),
-            't2_book': float(t2_book_pct),
-            'no_new_after': str(no_new_after),
-            'force_partial_by': str(force_partial_by),
-            'tighten_trail_days_to_expiry': float(tighten_days),
-            'tighten_mult_factor': 1.3
-        },
-        'position_management': {
-            'sl_points': int(sl_points_config),
-            'trail_points': int(trail_points_config),
-            'book1_points': int(book1_points_config),
-            'book2_points': int(book2_points_config),
-            'book1_ratio': float(book1_ratio_config)
-        },
-        'sizing': {
-            'risk_per_trade_pct': float(risk_per_trade_pct),
-            'pe_size_cap_vs_ce': float(pe_size_cap_vs_ce),
-            'portfolio_risk_cap_pct': 4.0,
-            'max_concurrent_positions': int(max_concurrent)
-        },
-        'initial_capital': initial_capital,
-        'lot_size': lot_size,
-        'strike_selection': strike_selection,
-        'strike_offset_base': strike_offset_base,
-        'strike_is_itm': is_itm,
-        'strike_is_otm': is_otm
-    }
-    
-    # Initialize engine (used by both modes)
-    engine = BacktestEngine(backtest_config_dict)
-    
-    st.divider()
-    
-    # ========== DATA INPUT & RUN SECTION (at top, visible immediately) ==========
-    # --- MODE 1: CSV Upload (existing flow) ---
-    if mode == "Upload CSV (existing)":
-        st.subheader("📤 Upload Historical Data")
-        
-        # Sample CSV download section
-        st.markdown("**📥 Sample CSV Format**")
-        col_sample1, col_sample2 = st.columns([2, 1])
-        
-        with col_sample1:
-            st.info("💡 Download a sample CSV file to see the required format with example data")
-        
-        with col_sample2:
-            # Create sample CSV
-            sample_csv_data = {
-                'Date': pd.date_range('2024-01-01', periods=10, freq='1H').strftime('%Y-%m-%d %H:%M:%S'),
-                'Open': [24000.0, 24050.0, 24030.0, 24060.0, 24080.0, 24100.0, 24090.0, 24120.0, 24140.0, 24160.0],
-                'High': [24080.0, 24090.0, 24070.0, 24090.0, 24110.0, 24130.0, 24120.0, 24150.0, 24170.0, 24190.0],
-                'Low': [23980.0, 24020.0, 24000.0, 24030.0, 24050.0, 24070.0, 24060.0, 24090.0, 24110.0, 24130.0],
-                'Close': [24050.0, 24040.0, 24050.0, 24070.0, 24090.0, 24110.0, 24100.0, 24130.0, 24150.0, 24170.0],
-                'Volume': [1000000, 1100000, 950000, 1200000, 1050000, 1300000, 1150000, 1250000, 1400000, 1350000]
-            }
-            sample_df = pd.DataFrame(sample_csv_data)
-            
-            st.download_button(
-                label="📥 Download Sample CSV",
-                data=sample_df.to_csv(index=False).encode('utf-8'),
-                file_name="sample_historical_data.csv",
-                mime="text/csv",
-                help="Download a sample CSV file with the required format"
-            )
-        
-        st.divider()
-        
-        # Upload section with drag-and-drop styling
-        uploaded_file = st.file_uploader(
-            "📤 Drag & Drop or Choose CSV file with historical OHLC data",
-            type=['csv'],
-            help="CSV should have columns: Date, Open, High, Low, Close, Volume"
-        )
-        
-        if uploaded_file is not None:
-            # Show upload progress
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            status_text.text("📤 Uploading file...")
-            progress_bar.progress(20)
-            
-            try:
-                # Load data
-                status_text.text("📊 Reading CSV file...")
-                progress_bar.progress(40)
-                
-                data = pd.read_csv(uploaded_file)
-                
-                status_text.text("✅ File uploaded successfully!")
-                progress_bar.progress(60)
-                
-                # Normalize column names (handle case-insensitive matching)
-                # Map common variations to expected column names
-                column_mapping = {}
-                expected_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-                
-                for col in data.columns:
-                    col_lower = col.lower().strip()
-                    for expected in expected_columns:
-                        if col_lower == expected.lower():
-                            column_mapping[col] = expected
-                            break
-                
-                # Rename columns if mapping found
-                if column_mapping:
-                    data = data.rename(columns=column_mapping)
-                
-                # Ensure required columns exist
-                required_cols = ['High', 'Low', 'Open', 'Close']
-                missing_cols = [col for col in required_cols if col not in data.columns]
-                if missing_cols:
-                    st.error(f"❌ Missing required columns: {missing_cols}")
-                    st.info(f"Available columns: {list(data.columns)}")
-                    st.stop()
-                
-                # Ensure date column is datetime
-                if 'Date' in data.columns:
-                    data['Date'] = pd.to_datetime(data['Date'])
-                    data.set_index('Date', inplace=True)
-                elif data.index.name is None or data.index.name.lower() != 'date':
-                    # If Date is already the index name or index is datetime, ensure it's properly named
-                    if isinstance(data.index, pd.DatetimeIndex):
-                        data.index.name = 'Date'
-                    else:
-                        st.warning("⚠️ Date column not found. Please ensure your CSV has a 'Date' column.")
-                
-                # Display data preview
-                status_text.text("📋 Preparing data preview...")
-                progress_bar.progress(80)
-                
-                st.divider()
-                with st.expander("📊 Data Preview", expanded=False):
-                    st.dataframe(data.head(10), use_container_width=True)
-                    # Show data info
-                    st.info(f"📈 Total rows: {len(data)} | Columns: {', '.join(data.columns.tolist())}")
-                
-                progress_bar.progress(100)
-                status_text.text("✅ Ready to run backtest!")
-                progress_bar.empty()
-                status_text.empty()
-                
-                st.divider()
-                
-                # Run backtest
-                if st.button("▶️ Run Backtest", use_container_width=True, type="primary"):
-                    with st.spinner("🔄 Running backtest... This may take a few moments."):
-                        try:
-                            # Show progress
-                            progress_container = st.container()
-                            with progress_container:
-                                st.progress(0)
-                                st.caption("Initializing backtest engine...")
-                            
-                            # Run backtest with new API (1h close breakout, no 15m logic)
-                            # options_df and expiries_df are optional - will use synthetic premiums if not provided
-                            results = engine.run_backtest(
-                                data_1h=data,
-                                options_df=None,  # Optional: can upload options data separately
-                                expiries_df=None,  # Optional: can upload expiry calendar separately
-                                initial_capital=initial_capital
-                            )
-                            
-                            # Validate results
-                            if results is None:
-                                st.error("❌ Backtest returned None. Please check the backtest engine.")
-                                st.stop()
-                            
-                            if not isinstance(results, dict):
-                                st.error(f"❌ Backtest returned unexpected type: {type(results)}. Expected dict.")
-                                st.stop()
-                            
-                            # Display results
-                            st.divider()
-                            st.subheader("📊 Backtest Results")
-                            
-                            # Check if we have required keys
-                            required_keys = ['total_trades', 'win_rate', 'total_pnl', 'return_pct', 
-                                            'initial_capital', 'final_capital', 'winning_trades', 'losing_trades']
-                            missing_keys = [key for key in required_keys if key not in results]
-                            if missing_keys:
-                                st.error(f"❌ Results missing required keys: {missing_keys}")
-                                st.json(results)  # Show what we got
-                                st.stop()
-                            
-                            # Show message if no trades
-                            if results.get('total_trades', 0) == 0:
-                                st.warning("⚠️ No trades were executed during this backtest period.")
-                                st.info("💡 This could mean:\n"
-                                       "- No inside bar patterns were detected\n"
-                                       "- No breakouts occurred after inside bars\n"
-                                       "- Filters prevented trade execution\n"
-                                       "- Data range may be too short")
-                            
-                            # Results summary cards
-                            col1, col2, col3, col4 = st.columns(4)
-                            
-                            with col1:
-                                st.metric("Total Trades", results['total_trades'])
-                            
-                            with col2:
-                                st.metric("Win Rate", f"{results['win_rate']:.2f}%")
-                            
-                            with col3:
-                                st.metric("Total P&L", f"₹{results['total_pnl']:,.2f}")
-                            
-                            with col4:
-                                st.metric("Return %", f"{results['return_pct']:.2f}%")
-                            
-                            # Detailed results
-                            st.write(f"**Initial Capital:** ₹{results['initial_capital']:,.2f}")
-                            st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
-                            st.write(f"**Winning Trades:** {results['winning_trades']}")
-                            st.write(f"**Losing Trades:** {results['losing_trades']}")
-                            st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
-                            st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
-                            st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
-                            st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
-                            st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
-                            
-                            # ========== CAPITAL ANALYSIS (backtest-only) ==========
-                            st.divider()
-                            st.subheader("💰 Capital Analysis")
-                            
-                            # Average capital required per trade
-                            avg_cap_req = results.get('avg_capital_required', 0.0)
-                            st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
-                            
-                            # Capital exhaustion warning
-                            if results.get('capital_exhausted', False):
-                                trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
-                                st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
-                                st.warning(
-                                    f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
-                                    f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
-                                    f"Consider:\n"
-                                    f"- Increasing initial capital\n"
-                                    f"- Reducing position size\n"
-                                    f"- Tightening stop losses\n"
-                                    f"- Reviewing strategy parameters"
-                                )
-                            else:
-                                st.success("✅ Capital remained positive throughout the backtest period")
-                            
-                            # ========== TRAILING STOP LOSS ANALYSIS (backtest-only) ==========
-                            st.divider()
-                            st.subheader("🎯 Trailing Stop Loss Analysis")
-                            
-                            trail_exit_count = results.get('winning_trades_trail_exit', 0)
-                            trail_exit_pct = results.get('trail_exit_pct_of_winners', 0.0)
-                            winning_trades = results.get('winning_trades', 0)
-                            
-                            col_trail1, col_trail2 = st.columns(2)
-                            with col_trail1:
-                                st.metric("Winning Trades Cut by Trail SL", trail_exit_count)
-                            with col_trail2:
-                                st.metric("% of Winning Trades", f"{trail_exit_pct:.1f}%")
-                            
-                            if trail_exit_count > 0:
-                                st.info(
-                                    f"📊 **{trail_exit_count} out of {winning_trades} winning trades** "
-                                    f"({trail_exit_pct:.1f}%) were exited due to trailing stop loss. "
-                                    f"This means the trailing SL locked in profits before hitting take profit or time exit. "
-                                    f"Consider:\n"
-                                    f"- Loosening trailing SL if too many profits are being cut short\n"
-                                    f"- Tightening trailing SL if you want to protect more gains\n"
-                                    f"- Analyzing if the trail settings match market volatility"
-                                )
-                            else:
-                                st.write("ℹ️ No winning trades were cut by trailing stop loss.")
-                            
-                            # Equity curve
-                            if results.get('equity_curve'):
-                                st.divider()
-                                st.subheader("📈 Equity Curve")
-                                try:
-                                    # Create Plotly chart for equity curve
-                                    equity_df = pd.DataFrame({
-                                        'Capital': results['equity_curve'],
-                                        'Trade': range(len(results['equity_curve']))
-                                    })
-                                    
-                                    fig = go.Figure()
-                                    fig.add_trace(go.Scatter(
-                                        x=equity_df['Trade'],
-                                        y=equity_df['Capital'],
-                                        mode='lines',
-                                        name='Equity Curve',
-                                        line=dict(color='#1f77b4', width=2),
-                                        fill='tozeroy'
-                                    ))
-                                    fig.update_layout(
-                                        title="Equity Curve Over Time",
-                                        xaxis_title="Trade Number",
-                                        yaxis_title="Capital (₹)",
-                                        height=500,
-                                        hovermode='x unified'
-                                    )
-                                    st.plotly_chart(fig, use_container_width=True)
-                                except Exception as e:
-                                    # Fallback to line chart
-                                    equity_df = pd.DataFrame({
-                                        'Capital': results['equity_curve']
-                                    })
-                                    st.line_chart(equity_df)
-                            
-                            # Trades table
-                            if results.get('trades'):
-                                st.subheader("Trade Details")
-                                trades_df = pd.DataFrame(results['trades'])
-                                st.dataframe(trades_df, use_container_width=True)
-                        
-                        except Exception as e:
-                            st.error(f"❌ Backtest failed: {e}")
-                            st.exception(e)
-            
-            except Exception as e:
-                st.error(f"❌ Error loading CSV file: {e}")
-                st.exception(e)
-        else:
-            st.info("ℹ️ Please upload a CSV file with historical OHLC data to run backtest")
-    
-    # --- MODE 2: DesiQuant Cloud (new, no upload) ---
-    else:
-        st.subheader("DesiQuant S3 Data Source")
-        st.info("Cloud mode: streams NIFTY spot + ATM options + expiries from DesiQuant S3.")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            start_date = st.date_input("Start date", value=pd.to_datetime("2021-01-01").date())
-        
-        with col2:
-            end_date = st.date_input("End date", value=pd.to_datetime("2021-03-31").date())
-        
-        with col3:
-            symbol = st.selectbox("Symbol", ["NIFTY"], index=0)
-        
-        # Date validation
-        if end_date < start_date:
-            st.error("❌ End date cannot be less than Start date. Please select valid date range.")
-            st.stop()
-        
-        if st.button("▶️ Run Backtest (Cloud)", use_container_width=True):
-            with st.spinner("Fetching from DesiQuant S3 and running backtest..."):
-                try:
-                    # Stream data from DesiQuant S3
-                    data = stream_data(
-                        symbol=symbol,
-                        start=str(start_date),
-                        end=str(end_date)
-                    )
-                    
-                    # Extract spot, options, and expiries
-                    spot_df = data['spot']
-                    options_df = data['options']
-                    expiries_df = data['expiries']
-                    
-                    # Check if we got any data
-                    if spot_df.empty:
-                        st.warning("⚠️ No data returned from DesiQuant S3. The datasource module may need implementation.")
-                        st.info("💡 For now, please use CSV upload mode or implement the S3 connection in `backtesting/datasource_desiquant.py`")
-                        st.stop()
-                    
-                    # Display data preview
-                    with st.expander("📊 Data Preview", expanded=False):
-                        st.dataframe(spot_df.head(10), use_container_width=True)
-                    
-                    # Run backtest with cloud data
-                    results = engine.run_backtest(
-                        data_1h=spot_df,
-                        data_15m=None,  # not used in 1h breakout
-                        options_df=options_df if not options_df.empty else None,
-                        expiries_df=expiries_df if not expiries_df.empty else None,
-                        initial_capital=initial_capital
-                    )
-                    
-                    # Validate results
-                    if results is None:
-                        st.error("❌ Backtest returned None. Please check the backtest engine.")
-                        st.stop()
-                    
-                    if not isinstance(results, dict):
-                        st.error(f"❌ Backtest returned unexpected type: {type(results)}. Expected dict.")
-                        st.stop()
-                    
-                    # Display results (same format as CSV mode)
-                    st.subheader("📊 Backtest Results")
-                    
-                    # Check if we have required keys
-                    required_keys = ['total_trades', 'win_rate', 'total_pnl', 'return_pct', 
-                                    'initial_capital', 'final_capital', 'winning_trades', 'losing_trades']
-                    missing_keys = [key for key in required_keys if key not in results]
-                    if missing_keys:
-                        st.error(f"❌ Results missing required keys: {missing_keys}")
-                        st.json(results)  # Show what we got
-                        st.stop()
-                    
-                    # Show message if no trades
-                    if results.get('total_trades', 0) == 0:
-                        st.warning("⚠️ No trades were executed during this backtest period.")
-                        st.info("💡 This could mean:\n"
-                               "- No inside bar patterns were detected\n"
-                               "- No breakouts occurred after inside bars\n"
-                               "- Filters prevented trade execution\n"
-                               "- Data range may be too short")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("Total Trades", results['total_trades'])
-                    
-                    with col2:
-                        st.metric("Win Rate", f"{results['win_rate']:.2f}%")
-                    
-                    with col3:
-                        st.metric("Total P&L", f"₹{results['total_pnl']:,.2f}")
-                    
-                    with col4:
-                        st.metric("Return %", f"{results['return_pct']:.2f}%")
-                    
-                    # Detailed results
-                    st.write(f"**Initial Capital:** ₹{results['initial_capital']:,.2f}")
-                    st.write(f"**Final Capital:** ₹{results['final_capital']:,.2f}")
-                    st.write(f"**Winning Trades:** {results['winning_trades']}")
-                    st.write(f"**Losing Trades:** {results['losing_trades']}")
-                    st.write(f"**Average Win:** ₹{results.get('avg_win', 0.0):,.2f}")
-                    st.write(f"**Average Loss:** ₹{results.get('avg_loss', 0.0):,.2f}")
-                    st.write(f"**Max Drawdown:** {results.get('max_drawdown', 0.0):.2f}%")
-                    st.write(f"**Max Winning Streak:** {results.get('max_winning_streak', 0)} trades")
-                    st.write(f"**Max Losing Streak:** {results.get('max_losing_streak', 0)} trades")
-                    
-                    # ========== CAPITAL ANALYSIS (backtest-only) ==========
-                    st.divider()
-                    st.subheader("💰 Capital Analysis")
-                    
-                    # Average capital required per trade
-                    avg_cap_req = results.get('avg_capital_required', 0.0)
-                    st.write(f"**Average Capital Required per Trade:** ₹{avg_cap_req:,.2f}")
-                    
-                    # Capital exhaustion warning
-                    if results.get('capital_exhausted', False):
-                        trade_num = results.get('capital_exhausted_at_trade', 'Unknown')
-                        st.error(f"⚠️ **CAPITAL EXHAUSTED** after trade #{trade_num}")
-                        st.warning(
-                            f"⚠️ Your capital became zero or negative after trade #{trade_num}. "
-                            f"This means losses depleted your entire initial capital of ₹{results['initial_capital']:,.2f}. "
-                            f"Consider:\n"
-                            f"- Increasing initial capital\n"
-                            f"- Reducing position size\n"
-                            f"- Tightening stop losses\n"
-                            f"- Reviewing strategy parameters"
-                        )
-                    else:
-                        st.success("✅ Capital remained positive throughout the backtest period")
-                    
-                    # ========== TRAILING STOP LOSS ANALYSIS (backtest-only) ==========
-                    st.divider()
-                    st.subheader("🎯 Trailing Stop Loss Analysis")
-                    
-                    trail_exit_count = results.get('winning_trades_trail_exit', 0)
-                    trail_exit_pct = results.get('trail_exit_pct_of_winners', 0.0)
-                    winning_trades = results.get('winning_trades', 0)
-                    
-                    col_trail1, col_trail2 = st.columns(2)
-                    with col_trail1:
-                        st.metric("Winning Trades Cut by Trail SL", trail_exit_count)
-                    with col_trail2:
-                        st.metric("% of Winning Trades", f"{trail_exit_pct:.1f}%")
-                    
-                    if trail_exit_count > 0:
-                        st.info(
-                            f"📊 **{trail_exit_count} out of {winning_trades} winning trades** "
-                            f"({trail_exit_pct:.1f}%) were exited due to trailing stop loss. "
-                            f"This means the trailing SL locked in profits before hitting take profit or time exit. "
-                            f"Consider:\n"
-                            f"- Loosening trailing SL if too many profits are being cut short\n"
-                            f"- Tightening trailing SL if you want to protect more gains\n"
-                            f"- Analyzing if the trail settings match market volatility"
-                        )
-                    else:
-                        st.write("ℹ️ No winning trades were cut by trailing stop loss.")
-                    
-                    # Equity curve
-                    if results.get('equity_curve'):
-                        st.divider()
-                        st.subheader("📈 Equity Curve")
-                        equity_df = pd.DataFrame({
-                            'Capital': results['equity_curve']
-                        })
-                        st.line_chart(equity_df)
-                    
-                    # Trades table
-                    if results.get('trades'):
-                        st.subheader("Trade Details")
-                        trades_df = pd.DataFrame(results['trades'])
-                        st.dataframe(trades_df, use_container_width=True)
-                
-                except Exception as e:
-                    st.error(f"❌ Backtest failed: {e}")
-                    st.exception(e)
-
-# ============ SETTINGS TAB ============
+    # ============ SETTINGS TAB ============
 elif tab == "Settings":
     st.header("⚙️ Settings & Configuration")
     
