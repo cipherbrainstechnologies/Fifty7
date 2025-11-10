@@ -862,11 +862,28 @@ class MarketDataProvider:
         current_time = datetime.now(tz=IST)
         trading_close_1h = self._get_trading_day_close(60)
         if current_time < trading_close_1h:
-            to_time_dt = trading_close_1h
+            last_closed_1h = self.get_last_closed_hour_end()
+            to_time_dt = last_closed_1h
         else:
+            to_time_dt = trading_close_1h
+
+        if isinstance(to_time_dt, pd.Timestamp):
+            if to_time_dt.tzinfo is None:
+                to_time_dt = IST.localize(to_time_dt.to_pydatetime())
+            else:
+                to_time_dt = to_time_dt.tz_convert(IST).to_pydatetime()
+        elif isinstance(to_time_dt, datetime) and to_time_dt.tzinfo is None:
+            to_time_dt = IST.localize(to_time_dt)
+
+        # Ensure we never request candles beyond "now"
+        if to_time_dt > current_time:
             to_time_dt = current_time
 
         to_time_dt = to_time_dt.replace(second=0, microsecond=0)
+        if to_time_dt.minute % 60 != 15:
+            minutes_back = (to_time_dt.minute - 15) % 60
+            if minutes_back != 0:
+                to_time_dt -= timedelta(minutes=minutes_back)
         from_time_dt = to_time_dt - timedelta(hours=window_hours + 12)  # Add buffer for complete candles
         
         # Try direct ONE_HOUR interval first (more efficient)
@@ -1046,11 +1063,19 @@ class MarketDataProvider:
         current_time = datetime.now(tz=IST)
         trading_close_15m = self._get_trading_day_close(15)
         if current_time < trading_close_15m:
-            to_time_dt = trading_close_15m
+            to_time_dt = current_time.replace(second=0, microsecond=0)
+            # Align to the most recent completed 15-minute boundary
+            minute_bucket = (to_time_dt.minute // 15) * 15
+            to_time_dt = to_time_dt.replace(minute=minute_bucket)
         else:
-            to_time_dt = current_time
+            to_time_dt = trading_close_15m
 
-        to_time_dt = to_time_dt.replace(second=0, microsecond=0)
+        if to_time_dt > current_time:
+            to_time_dt = current_time.replace(second=0, microsecond=0)
+
+        # Align again in case of future adjustment
+        minute_bucket = (to_time_dt.minute // 15) * 15
+        to_time_dt = to_time_dt.replace(minute=minute_bucket)
         from_time_dt = to_time_dt - timedelta(hours=window_hours + 2)  # Add buffer for complete candles
         
         # Try direct FIFTEEN_MINUTE interval first (more efficient)
