@@ -698,6 +698,8 @@ if 'show_strategy_settings' not in st.session_state:
     st.session_state.show_strategy_settings = False
 if 'strategy_settings_feedback' not in st.session_state:
     st.session_state.strategy_settings_feedback = None
+if 'market_refresh_feedback' not in st.session_state:
+    st.session_state.market_refresh_feedback = None
 if 'broker' not in st.session_state:
     try:
         # Get broker config safely (from config dict or st.secrets)
@@ -792,6 +794,34 @@ if 'last_breakout_alert_key' not in st.session_state:
 if 'last_breakout_alert_timestamp' not in st.session_state:
     st.session_state.last_breakout_alert_timestamp = None
 
+def _trigger_market_data_refresh(reason: str) -> bool:
+    """
+    Refresh market data and capture telemetry.
+    
+    Args:
+        reason: Label for refresh trigger (auto/manual/background).
+    
+    Returns:
+        bool: True when refresh succeeds, else False.
+    """
+    provider = st.session_state.get('market_data_provider')
+    if provider is None:
+        logger.warning(f"Market data refresh skipped ({reason}) — provider unavailable")
+        st.session_state.last_refresh_error = "Market data provider unavailable"
+        return False
+    try:
+        provider.refresh_data()
+        now_dt = datetime.now()
+        st.session_state.last_refresh_time = now_dt
+        st.session_state.last_refresh_reason = reason
+        st.session_state.last_refresh_error = None
+        logger.info(f"Market data refresh completed ({reason}) at {now_dt.isoformat()}")
+        return True
+    except Exception as err:
+        logger.exception(f"Market data refresh failed ({reason}): {err}")
+        st.session_state.last_refresh_error = str(err)
+        return False
+
 # Auto-refresh dashboard when algo is running
 auto_refresh_active = (
     st.session_state.auto_refresh_enabled
@@ -802,6 +832,12 @@ auto_refresh_active = (
 if auto_refresh_active:
     now_ts = time.time()
     if now_ts >= st.session_state.next_auto_refresh_ts:
+        refresh_success = _trigger_market_data_refresh("auto")
+        if not refresh_success:
+            st.session_state.market_refresh_feedback = (
+                "warning",
+                "⚠️ Auto refresh failed — check broker connectivity."
+            )
         st.session_state.next_auto_refresh_ts = now_ts + st.session_state.auto_refresh_interval_sec
         st.session_state.auto_refresh_counter = st.session_state.get('auto_refresh_counter', 0) + 1
         st.rerun()
@@ -822,6 +858,10 @@ if 'last_refresh_time' not in st.session_state:
     st.session_state.last_refresh_time = None
 if 'refresh_in_progress' not in st.session_state:
     st.session_state.refresh_in_progress = False
+if 'last_refresh_reason' not in st.session_state:
+    st.session_state.last_refresh_reason = None
+if 'last_refresh_error' not in st.session_state:
+    st.session_state.last_refresh_error = None
 
 def background_api_refresh(market_data_provider, broker):
     """
@@ -899,6 +939,8 @@ def start_background_refresh_if_needed(interval_seconds=10):
             st.session_state.background_refresh_thread = refresh_thread
             # Update last refresh time (thread-safe - only writing, not reading from thread)
             st.session_state.last_refresh_time = datetime.now()
+            st.session_state.last_refresh_reason = "background"
+            st.session_state.last_refresh_error = None
             st.session_state.refresh_in_progress = True
             logger.debug("Background API refresh thread started")
         except Exception as e:
@@ -1196,9 +1238,9 @@ if tab == "Dashboard":
 
     # Auto-refresh toggle with tooltip
     auto = st.checkbox(
-        "🔄 Auto-refresh every 10 seconds", 
+        f"🔄 Auto-refresh every {st.session_state.auto_refresh_interval_sec} seconds",
         value=st.session_state.auto_refresh_enabled,
-        help="Automatically refreshes the dashboard every 10 seconds to show latest market data and trade updates"
+        help="Automatically refreshes the dashboard to show latest market data and trade updates"
     )
     st.session_state.auto_refresh_enabled = auto
     if auto:
@@ -1628,17 +1670,42 @@ if tab == "Dashboard":
             st.warning(f"⚠️ Could not load risk management status: {e}")
             logger.exception(e)
         
+        # Market data refresh feedback
+        refresh_feedback = st.session_state.market_refresh_feedback
+        if refresh_feedback:
+            level, message = refresh_feedback
+            if level == "success":
+                st.success(message)
+            elif level == "warning":
+                st.warning(message)
+            else:
+                st.error(message)
+            st.session_state.market_refresh_feedback = None
+        
+        last_refresh_display = st.session_state.get('last_refresh_time')
+        if last_refresh_display:
+            reason_label = st.session_state.get('last_refresh_reason') or "auto"
+            stamp = last_refresh_display.strftime("%d-%b %I:%M:%S %p")
+            st.caption(f"🕒 Last refresh: {stamp} ({reason_label})")
+        elif st.session_state.get('last_refresh_error'):
+            st.warning(f"⚠️ Last refresh error: {st.session_state.last_refresh_error}")
+        
         # Manual refresh button
         if st.button("🔄 Refresh Market Data Now"):
-            try:
-                if st.session_state.market_data_provider:
-                    st.session_state.market_data_provider.refresh_data()
-                    st.success("✅ Market data refreshed")
-                else:
-                    st.error("❌ Market data provider not available")
-            except Exception as e:
-                st.error(f"❌ Error refreshing data: {e}")
-                logger.exception(e)
+            success = _trigger_market_data_refresh("manual")
+            if success:
+                timestamp = st.session_state.last_refresh_time.strftime("%d-%b %I:%M:%S %p")
+                st.session_state.market_refresh_feedback = (
+                    "success",
+                    f"✅ Market data refreshed at {timestamp}."
+                )
+            else:
+                error_msg = st.session_state.last_refresh_error or "Unknown error"
+                st.session_state.market_refresh_feedback = (
+                    "error",
+                    f"❌ Failed to refresh market data: {error_msg}"
+                )
+            st.rerun()
     
     st.divider()
     with st.expander("📐 Option Greeks (NIFTY – next Tuesday expiry)", expanded=False):
@@ -1954,7 +2021,7 @@ if tab == "Dashboard":
     # Date: 2025-01-27
     # Purpose: Refresh API data in background without causing UI flicker from full page rerun
     if auto:
-        start_background_refresh_if_needed(interval_seconds=10)
+        start_background_refresh_if_needed(interval_seconds=st.session_state.auto_refresh_interval_sec)
         # Use time.sleep with rerun only if needed (fallback for very old data)
         # But prefer background refresh to avoid UI flicker
         if st.session_state.last_refresh_time is not None:
