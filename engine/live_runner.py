@@ -83,6 +83,9 @@ class LiveStrategyRunner:
         self.error_count = 0
         self.active_monitors = []
         
+        # Execution safety flag - must be explicitly armed for real trades
+        self.execution_armed = False
+        
         # FIX for Issue #4: Duplicate signal prevention
         self.recent_signals = {}  # signal_id -> timestamp
         self.signal_cooldown_seconds = config.get('strategy', {}).get('signal_cooldown_seconds', 3600)  # 1 hour default
@@ -678,7 +681,21 @@ class LiveStrategyRunner:
             signal: Signal dictionary from signal_handler
         """
         try:
-            logger.info(f"Executing trade for signal: {signal}")
+            # Check if execution is armed (from UI or programmatically)
+            # This is a CRITICAL safety check
+            execution_armed = getattr(self, 'execution_armed', False)
+            if not execution_armed:
+                logger.error(
+                    f"\n{'🛑'*40}\n"
+                    f"🚫 TRADE BLOCKED: EXECUTION NOT ARMED\n"
+                    f"   Signal: {signal.get('direction')} {signal.get('strike')}\n"
+                    f"   ➡️ To enable: Click 'Arm Execution' button in dashboard\n"
+                    f"   This is a SAFETY mechanism to prevent accidental live trades\n"
+                    f"{'🛑'*40}"
+                )
+                return
+            
+            logger.info(f"✅ Execution is ARMED - proceeding with trade for signal: {signal}")
             
             # Extract signal parameters
             direction = signal.get('direction')
