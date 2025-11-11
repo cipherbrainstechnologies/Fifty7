@@ -11,6 +11,9 @@ import pandas as pd
 from datetime import datetime, date
 import os
 import sys
+import io
+import wave
+import math
 from logzero import logger
 import plotly.graph_objects as go
 import plotly.express as px
@@ -88,6 +91,30 @@ def _parse_expiry_to_datetime(value: Any) -> Optional[datetime]:
         except Exception:
             continue
     return None
+
+def _generate_breakout_alert_audio(
+    frequency_hz: int = 880,
+    duration_seconds: float = 0.7,
+    volume: float = 0.55,
+    sample_rate: int = 44100
+) -> bytes:
+    """Generate a simple sine wave tone for breakout alerts."""
+    frame_count = int(sample_rate * duration_seconds)
+    frames = bytearray()
+    for index in range(frame_count):
+        sample = int(
+            volume * 32767.0 * math.sin(2.0 * math.pi * frequency_hz * (index / sample_rate))
+        )
+        frames.extend(sample.to_bytes(2, byteorder="little", signed=True))
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(bytes(frames))
+
+    return buffer.getvalue()
 
 from engine import strategy_engine as strategy_engine_module
 
@@ -749,6 +776,33 @@ if 'live_runner' not in st.session_state:
     else:
         st.session_state.live_runner = None
 
+# Ensure auto-refresh session state defaults before usage
+if 'auto_refresh_enabled' not in st.session_state:
+    st.session_state.auto_refresh_enabled = True
+if 'auto_refresh_interval_sec' not in st.session_state:
+    st.session_state.auto_refresh_interval_sec = 30
+if 'next_auto_refresh_ts' not in st.session_state:
+    st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
+if 'auto_refresh_counter' not in st.session_state:
+    st.session_state.auto_refresh_counter = 0
+
+# Auto-refresh dashboard when algo is running
+auto_refresh_active = (
+    st.session_state.auto_refresh_enabled
+    and st.session_state.get('algo_running', False)
+    and st.session_state.get('live_runner') is not None
+)
+
+if auto_refresh_active:
+    now_ts = time.time()
+    if now_ts >= st.session_state.next_auto_refresh_ts:
+        st.session_state.next_auto_refresh_ts = now_ts + st.session_state.auto_refresh_interval_sec
+        st.session_state.auto_refresh_counter = st.session_state.get('auto_refresh_counter', 0) + 1
+        st.rerun()
+else:
+    # Reset the next refresh timestamp so the timer starts fresh when re-enabled
+    st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
+
 # ===================================================================
 # BACKGROUND API REFRESH - Non-blocking refresh to prevent UI flicker
 # Date: 2025-01-27
@@ -1078,7 +1132,7 @@ if tab == "Dashboard":
         st.metric("💰 Realized P&L", f"{pnl_prefix} ₹{realized_pnl:,.2f}")
     
     st.divider()
-    
+
     # In-app alert: toast when a new trade is logged
     try:
         if 'last_trade_count' not in st.session_state:
@@ -1095,11 +1149,14 @@ if tab == "Dashboard":
     # Auto-refresh toggle with tooltip
     auto = st.checkbox(
         "🔄 Auto-refresh every 10 seconds", 
-        value=True,
+        value=st.session_state.auto_refresh_enabled,
         help="Automatically refreshes the dashboard every 10 seconds to show latest market data and trade updates"
     )
+    st.session_state.auto_refresh_enabled = auto
     if auto:
         st.caption("✅ Auto-refresh enabled - Market data will refresh in background (no UI flicker)")
+    else:
+        st.caption("⏸️ Auto-refresh paused - use manual refresh or restart the algo to resume.")
         # Background refresh will be handled at the end of the page render
     
     if st.session_state.show_strategy_settings:
@@ -1154,71 +1211,64 @@ if tab == "Dashboard":
                     help="Trailing increment applied once price moves favourably by the chosen step."
                 )
             with settings_cols[1]:
-                order_lots_input = st.number_input(
+                atm_offset_input = st.number_input(
+                    "Strike bias (points)",
+                    min_value=-300,
+                    max_value=300,
+                    value=int(current_atm_offset),
+                    step=50,
+                    help="Shifts strike selection away from ATM. Positive = OTM (calls), negative = ITM."
+                )
+                sl_lots_input = st.number_input(
                     "Order quantity (lots)",
                     min_value=1,
                     max_value=10,
                     value=int(current_order_lots),
                     step=1,
-                    help=f"Total quantity = lots × lot size ({int(current_lot_size)} units per lot)."
+                    help="Number of lots to trade per signal."
                 )
-                daily_loss_limit_input = st.number_input(
+            
+            st.divider()
+            st.caption("Risk management overrides")
+            
+            risk_cols = st.columns(2)
+            with risk_cols[0]:
+                daily_loss_limit_pct_input = st.number_input(
                     "Daily loss limit (%)",
                     min_value=1.0,
-                    max_value=20.0,
+                    max_value=15.0,
                     value=float(current_daily_loss_limit_pct),
                     step=0.5,
-                    help="Circuit breaker: trading halts if daily P&L drops below this percentage of capital."
+                    format="%.1f",
+                    help="Trading halts if daily P&L drops below -X% of initial capital."
+                )
+            with risk_cols[1]:
+                lot_size_input = st.number_input(
+                    "Lot size (contracts)",
+                    min_value=25,
+                    max_value=100,
+                    value=int(current_lot_size),
+                    step=25,
+                    help="Lot size for position sizing calculations."
                 )
             
-            strike_cols = st.columns([2, 1])
-            with strike_cols[0]:
-                strike_offset_input = st.number_input(
-                    "Strike offset (points)",
-                    min_value=-500,
-                    max_value=500,
-                    value=int(current_atm_offset),
-                    step=50,
-                    help="Positive → OTM calls, negative → ITM puts. Offset is applied to the ATM strike."
-                )
-            with strike_cols[1]:
-                total_units = int(order_lots_input) * int(current_lot_size)
-                st.metric("Lot size", f"{int(current_lot_size)} units/lot")
-                st.metric("Position size", f"{total_units} units")
-            
-            st.caption("💡 Strike offset drives both strategy execution and Greeks focus.")
-            
-            if st.form_submit_button("💾 Save Strategy Settings", type="primary", use_container_width=True):
-                if st.session_state.live_runner is not None:
-                    try:
+            submitted = st.form_submit_button("💾 Save strategy configuration", use_container_width=True)
+            if submitted:
+                try:
+                    st.session_state.show_strategy_settings = False
+                    if st.session_state.live_runner is not None:
                         st.session_state.live_runner.update_strategy_config(
                             sl_points=int(sl_points_input),
-                            order_lots=int(order_lots_input),
+                            atm_offset=int(atm_offset_input),
+                            order_lots=int(sl_lots_input),
                             trail_points=int(trail_points_input),
-                            atm_offset=int(strike_offset_input),
-                            daily_loss_limit_pct=float(daily_loss_limit_input),
+                            daily_loss_limit_pct=float(daily_loss_limit_pct_input),
+                            lot_size=int(lot_size_input)
                         )
-                        if st.session_state.signal_handler is not None:
-                            handler_strategy_cfg = st.session_state.signal_handler.config.setdefault('strategy', {})
-                            handler_strategy_cfg['sl'] = int(sl_points_input)
-                            handler_strategy_cfg['atm_offset'] = int(strike_offset_input)
-                        st.session_state.strategy_settings_feedback = (
-                            "success",
-                            "✅ Strategy settings saved."
-                        )
-                    except Exception as e:
-                        st.session_state.strategy_settings_feedback = (
-                            "error",
-                            f"❌ Error updating config: {e}"
-                        )
-                        logger.exception(e)
-                else:
-                    st.session_state.strategy_settings_feedback = (
-                        "warning",
-                        "⚠️ Live runner not initialized. Settings saved for next run."
-                    )
-                st.rerun()
-    
+                    st.success("✅ Strategy settings saved.")
+                except Exception as e:
+                    st.error(f"❌ Error updating config: {e}")
+
     st.divider()
     st.subheader("🧩 Inside Bar Snapshot")
     
@@ -1309,6 +1359,16 @@ if tab == "Dashboard":
                 else:
                     breakout_label = "Inside range"
                 
+                if breakout_direction in ("CE", "PE"):
+                    alert_key = f"{mother_idx}-{latest_inside_idx}-{breakout_direction}"
+                    if st.session_state.get("last_breakout_alert_key") != alert_key:
+                        st.session_state.last_breakout_alert_key = alert_key
+                        st.session_state.last_breakout_alert_timestamp = datetime.now().isoformat()
+                        st.audio(st.session_state.breakout_alert_audio, format="audio/wav")
+                        st.success(
+                            "🔔 Breakout confirmed — audio alert triggered for the active inside bar."
+                        )
+                
                 inside_bar_available = True
     
     inside_cols = st.columns(4)
@@ -1330,6 +1390,9 @@ if tab == "Dashboard":
     if st.session_state.algo_running and st.session_state.live_runner is not None:
         st.divider()
         st.subheader("📡 Live Data Status")
+        st.caption(
+            f"🔁 Auto-refreshes every {st.session_state.auto_refresh_interval_sec}s while the algo is running."
+        )
         
         status = st.session_state.live_runner.get_status()
         
@@ -1488,9 +1551,9 @@ if tab == "Dashboard":
                         if days == 0 and minutes > 0:
                             countdown_parts.append(f"{minutes} min")
                         countdown = ", ".join(countdown_parts) if countdown_parts else "< 1 min"
-                        if expiry_safe:
+                    if expiry_safe:
                             st.success(f"✅ Expiry OK: {countdown} remaining · {expiry_label}")
-                        else:
+                    else:
                             st.error(f"🚨 Expiry too close: {countdown} · {expiry_label}")
                 else:
                     st.warning("⚠️ Expiry data not available")
@@ -1727,10 +1790,10 @@ if tab == "Dashboard":
                         range_low = data_1h['Low'].iloc[mother_idx]
                         inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
                         ref_time = data_1h['Date'].iloc[mother_idx] if 'Date' in data_1h.columns else f"Index_{mother_idx}"
-                    
+                        
                         inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
                         ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
-                    
+                        
                         st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
 
                         st.write("**Most Recent Inside Bar Details:**")
@@ -1747,27 +1810,28 @@ if tab == "Dashboard":
                         # Check for breakout (using 1H data only)
                         st.write("**Breakout Status:**")
                         direction = confirm_breakout(
-                            data_1h, 
-                            range_high, 
-                            range_low, 
-                            latest_idx,  # inside_bar_idx parameter
+                            data_1h,
+                            range_high,
+                            range_low,
+                            latest_idx,
                             mother_idx=mother_idx,
-                            volume_threshold_multiplier=1.0
+                            volume_threshold_multiplier=1.0,
+                            symbol="NIFTY"
                         )
+                        price_at_last_candle = data_1h['Close'].iloc[-1]
+                        within_range = range_low <= price_at_last_candle <= range_high
                         
-                        if direction:
-                            st.success(f"✅ Breakout Confirmed: {direction} (Call Option)" if direction == "CE" else f"✅ Breakout Confirmed: {direction} (Put Option)")
-                            st.write(f"**Current 1H Close:** {data_1h['Close'].iloc[-1]:.2f}")
-                            st.write(f"**Range High:** {range_high:.2f} | **Range Low:** {range_low:.2f}")
+                        if direction == "CE":
+                            st.success("✅ Breakout Confirmed: CE (Call Option)")
+                        elif direction == "PE":
+                            st.success("✅ Breakout Confirmed: PE (Put Option)")
                         else:
                             st.info("⏳ Waiting for breakout confirmation...")
-                            current_close = data_1h['Close'].iloc[-1]
-                            if current_close > range_high:
-                                st.write(f"🔺 Above range: {current_close:.2f} > {range_high:.2f} (need volume confirmation)")
-                            elif current_close < range_low:
-                                st.write(f"🔻 Below range: {current_close:.2f} < {range_low:.2f} (need volume confirmation)")
-                            else:
-                                st.write(f"📊 Within range: {range_low:.2f} ≤ {current_close:.2f} ≤ {range_high:.2f}")
+                        
+                        st.write(f"📊 Within range: {range_low:.2f} ≤ {price_at_last_candle:.2f} ≤ {range_high:.2f}")
+
+                        if not within_range:
+                            st.warning("⚠️ Price has moved out of the mother candle range, monitor for breakout confirmation.")
                 else:
                     st.info("🔍 No Inside Bar patterns detected in current 1H data")
                     st.caption("💡 Inside Bar requires: candle high < previous high AND candle low > previous low")
@@ -2768,220 +2832,220 @@ elif tab == "Backtest":
                 "Cloud datasource dependencies missing. Install `s3fs>=2024.3.1` and `pyarrow>=15.0.0` to enable."
             )
         
-        import yaml as yaml_lib
-        with open('config/config.yaml', 'r') as f:
-            strategy_config = yaml_lib.safe_load(f)
-        pm_config = strategy_config.get('position_management', {})
-        
-        st.subheader("⚙️ Essential Parameters")
-        col1, col2, col3 = st.columns(3, gap="small")
-        with col1:
-            initial_capital = st.number_input(
-                "Initial Capital (₹)",
-                min_value=10000,
-                value=100000,
-                step=10000,
-            )
-        with col2:
-            lot_size_default = strategy_config.get('lot_size', 75)
-            lot_size = st.number_input(
-                "Lot Size",
-                min_value=1,
-                value=lot_size_default,
-                step=lot_size_default,
-                help=f"NIFTY lot size (1 lot = {lot_size_default} units). +/- adjusts by a full lot.",
-            )
-        with col3:
-            sl_pct = st.number_input(
-                "Premium SL %",
-                min_value=10,
-                value=35,
-                max_value=60,
-                step=5,
-                help="Legacy premium stop-loss percentage (used when enhanced features are disabled).",
-            )
-        
-        estimated_strike_price = 24000
-        estimated_capital_required = lot_size * estimated_strike_price
-        if initial_capital < estimated_capital_required:
-            st.warning(
-                f"⚠️ Available capital (₹{initial_capital:,.0f}) is below an estimated requirement "
-                f"of ₹{estimated_capital_required:,.0f}."
-            )
-        
-        st.divider()
-        
-        st.markdown("### 🧱 Strategy & Risk Controls")
-        strike_selection = st.selectbox(
-            "Strike selection preset",
-            options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
-            index=0,
+    import yaml as yaml_lib
+    with open('config/config.yaml', 'r') as f:
+        strategy_config = yaml_lib.safe_load(f)
+    pm_config = strategy_config.get('position_management', {})
+    
+    st.subheader("⚙️ Essential Parameters")
+    col1, col2, col3 = st.columns(3, gap="small")
+    with col1:
+        initial_capital = st.number_input(
+            "Initial Capital (₹)",
+            min_value=10000,
+            value=100000,
+            step=10000,
         )
-        
-        col_pm = st.columns(4, gap="small")
-        with col_pm[0]:
-            sl_points_main = st.number_input(
-                "SL Points",
-                min_value=10,
-                max_value=100,
-                value=int(pm_config.get('sl_points', 30)),
-                step=5,
+    with col2:
+        lot_size_default = strategy_config.get('lot_size', 75)
+        lot_size = st.number_input(
+            "Lot Size",
+            min_value=1,
+            value=lot_size_default,
+            step=lot_size_default,
+            help=f"NIFTY lot size (1 lot = {lot_size_default} units). +/- adjusts by a full lot.",
+        )
+    with col3:
+        sl_pct = st.number_input(
+            "Premium SL %",
+            min_value=10,
+            value=35,
+            max_value=60,
+            step=5,
+            help="Legacy premium stop-loss percentage (used when enhanced features are disabled).",
+        )
+    
+    estimated_strike_price = 24000
+    estimated_capital_required = lot_size * estimated_strike_price
+    if initial_capital < estimated_capital_required:
+        st.warning(
+            f"⚠️ Available capital (₹{initial_capital:,.0f}) is below an estimated requirement "
+            f"of ₹{estimated_capital_required:,.0f}."
+        )
+    
+    st.divider()
+    
+    st.markdown("### 🧱 Strategy & Risk Controls")
+    strike_selection = st.selectbox(
+        "Strike selection preset",
+        options=["ATM 0", "ITM 1", "ITM 2", "ITM 3", "OTM 1", "OTM 2", "OTM 3"],
+        index=0,
+    )
+    
+    col_pm = st.columns(4, gap="small")
+    with col_pm[0]:
+        sl_points_main = st.number_input(
+            "SL Points",
+            min_value=10,
+            max_value=100,
+            value=int(pm_config.get('sl_points', 30)),
+            step=5,
+        )
+    with col_pm[1]:
+        trail_points_main = st.number_input(
+            "Trail Points",
+            min_value=5,
+            max_value=50,
+            value=int(pm_config.get('trail_points', 10)),
+            step=5,
+        )
+    with col_pm[2]:
+        book1_points_main = st.number_input(
+            "Book 1 Points",
+            min_value=10,
+            max_value=100,
+            value=int(pm_config.get('book1_points', 40)),
+            step=5,
+        )
+    with col_pm[3]:
+        book2_points_main = st.number_input(
+            "Book 2 Points",
+            min_value=20,
+            max_value=150,
+            value=int(pm_config.get('book2_points', 54)),
+            step=5,
+        )
+    
+    st.divider()
+    
+    st.markdown("### 🧩 Advanced Parameters")
+    with st.expander("📊 Strategy Filters & Controls", expanded=False):
+        use_atr_filter = False
+        use_regime_filter = False
+        use_distance_guard = False
+        use_tiered_exits = False
+        use_expiry_protocol = False
+        use_directional_sizing = False
+        atr_floor_pct = 0.5
+        ema_slope_len = 20
+        distance_guard_atr = 0.6
+        vol_band_low = 0.40
+        vol_band_high = 0.75
+        sl_pct_low = 22
+        sl_pct_norm = 28
+        sl_pct_high = 35
+        be_at_r = 0.6
+        t1_r = 1.2
+        t1_book_pct = 0.50
+        t2_r = 2.0
+        t2_book_pct = 0.25
+        trail_lookback = 6
+        trail_mult = 2.0
+        no_new_after = "14:30"
+        force_partial_by = "13:00"
+        tighten_days = 1.5
+        risk_per_trade_pct = 0.6
+        pe_size_cap_vs_ce = 0.7
+        max_concurrent = 2
+        sl_points_config = sl_points_main
+        trail_points_config = trail_points_main
+        book1_points_config = book1_points_main
+        book2_points_config = book2_points_main
+        book1_ratio_config = float(pm_config.get('book1_ratio', 0.5))
+    
+        flag_cols = st.columns(2)
+        with flag_cols[0]:
+            use_atr_filter = st.checkbox("ATR Filter", value=use_atr_filter)
+            use_regime_filter = st.checkbox("Regime Filter", value=use_regime_filter)
+            use_distance_guard = st.checkbox("Distance Guard", value=use_distance_guard)
+        with flag_cols[1]:
+            use_tiered_exits = st.checkbox("Tiered Exits", value=use_tiered_exits)
+            use_expiry_protocol = st.checkbox("Expiry Protocol", value=use_expiry_protocol)
+            use_directional_sizing = st.checkbox("Directional Sizing", value=use_directional_sizing)
+    
+        st.markdown("##### Filters")
+        filters_row = st.columns(3)
+        with filters_row[0]:
+            atr_floor_pct = st.number_input(
+                "ATR Floor % (1h)",
+                min_value=0.0,
+                value=atr_floor_pct,
+                step=0.1,
+                format="%.1f",
             )
-        with col_pm[1]:
-            trail_points_main = st.number_input(
-                "Trail Points",
+        with filters_row[1]:
+            ema_slope_len = st.number_input(
+                "EMA Slope Lookback",
                 min_value=5,
-                max_value=50,
-                value=int(pm_config.get('trail_points', 10)),
+                value=ema_slope_len,
                 step=5,
             )
-        with col_pm[2]:
-            book1_points_main = st.number_input(
-                "Book 1 Points",
+        with filters_row[2]:
+            distance_guard_atr = st.number_input(
+                "Distance Guard (ATR)",
+                min_value=0.1,
+                value=distance_guard_atr,
+                step=0.1,
+                format="%.1f",
+            )
+        
+        st.markdown("##### Volatility-based SL")
+        vol_cols = st.columns(4)
+        with vol_cols[0]:
+            vol_band_low = st.number_input(
+                "Vol Band Low %",
+                min_value=0.0,
+                value=vol_band_low,
+                step=0.05,
+                format="%.2f",
+            )
+        with vol_cols[1]:
+            vol_band_high = st.number_input(
+                "Vol Band High %",
+                min_value=0.0,
+                value=vol_band_high,
+                step=0.05,
+                format="%.2f",
+            )
+        with vol_cols[2]:
+            sl_pct_low = st.number_input(
+                "SL % (Low Vol)",
                 min_value=10,
-                max_value=100,
-                value=int(pm_config.get('book1_points', 40)),
-                step=5,
-            )
-        with col_pm[3]:
-            book2_points_main = st.number_input(
-                "Book 2 Points",
-                min_value=20,
-                max_value=150,
-                value=int(pm_config.get('book2_points', 54)),
-                step=5,
-            )
-        
-        st.divider()
-        
-        st.markdown("### 🧩 Advanced Parameters")
-        with st.expander("📊 Strategy Filters & Controls", expanded=False):
-            use_atr_filter = False
-            use_regime_filter = False
-            use_distance_guard = False
-            use_tiered_exits = False
-            use_expiry_protocol = False
-            use_directional_sizing = False
-            atr_floor_pct = 0.5
-            ema_slope_len = 20
-            distance_guard_atr = 0.6
-            vol_band_low = 0.40
-            vol_band_high = 0.75
-            sl_pct_low = 22
-            sl_pct_norm = 28
-            sl_pct_high = 35
-            be_at_r = 0.6
-            t1_r = 1.2
-            t1_book_pct = 0.50
-            t2_r = 2.0
-            t2_book_pct = 0.25
-            trail_lookback = 6
-            trail_mult = 2.0
-            no_new_after = "14:30"
-            force_partial_by = "13:00"
-            tighten_days = 1.5
-            risk_per_trade_pct = 0.6
-            pe_size_cap_vs_ce = 0.7
-            max_concurrent = 2
-            sl_points_config = sl_points_main
-            trail_points_config = trail_points_main
-            book1_points_config = book1_points_main
-            book2_points_config = book2_points_main
-            book1_ratio_config = float(pm_config.get('book1_ratio', 0.5))
-            
-            flag_cols = st.columns(2)
-            with flag_cols[0]:
-                use_atr_filter = st.checkbox("ATR Filter", value=use_atr_filter)
-                use_regime_filter = st.checkbox("Regime Filter", value=use_regime_filter)
-                use_distance_guard = st.checkbox("Distance Guard", value=use_distance_guard)
-            with flag_cols[1]:
-                use_tiered_exits = st.checkbox("Tiered Exits", value=use_tiered_exits)
-                use_expiry_protocol = st.checkbox("Expiry Protocol", value=use_expiry_protocol)
-                use_directional_sizing = st.checkbox("Directional Sizing", value=use_directional_sizing)
-            
-            st.markdown("##### Filters")
-            filters_row = st.columns(3)
-            with filters_row[0]:
-                atr_floor_pct = st.number_input(
-                    "ATR Floor % (1h)",
-                    min_value=0.0,
-                    value=atr_floor_pct,
-                    step=0.1,
-                    format="%.1f",
-                )
-            with filters_row[1]:
-                ema_slope_len = st.number_input(
-                    "EMA Slope Lookback",
-                    min_value=5,
-                    value=ema_slope_len,
-                    step=5,
-                )
-            with filters_row[2]:
-                distance_guard_atr = st.number_input(
-                    "Distance Guard (ATR)",
-                    min_value=0.1,
-                    value=distance_guard_atr,
-                    step=0.1,
-                    format="%.1f",
-                )
-            
-            st.markdown("##### Volatility-based SL")
-            vol_cols = st.columns(4)
-            with vol_cols[0]:
-                vol_band_low = st.number_input(
-                    "Vol Band Low %",
-                    min_value=0.0,
-                    value=vol_band_low,
-                    step=0.05,
-                    format="%.2f",
-                )
-            with vol_cols[1]:
-                vol_band_high = st.number_input(
-                    "Vol Band High %",
-                    min_value=0.0,
-                    value=vol_band_high,
-                    step=0.05,
-                    format="%.2f",
-                )
-            with vol_cols[2]:
-                sl_pct_low = st.number_input(
-                    "SL % (Low Vol)",
-                    min_value=10,
-                    value=sl_pct_low,
-                    step=1,
-                )
-            with vol_cols[3]:
-                sl_pct_high = st.number_input(
-                    "SL % (High Vol)",
-                    min_value=20,
-                    value=sl_pct_high,
-                    step=1,
-                )
-            sl_pct_norm = st.number_input(
-                "SL % (Normal Vol)",
-                min_value=15,
-                value=sl_pct_norm,
+                value=sl_pct_low,
                 step=1,
             )
-            
-            st.markdown("##### Tiered Exits")
-            tier_cols = st.columns(4)
-            with tier_cols[0]:
-                be_at_r = st.number_input(
-                    "Breakeven @ R",
-                    min_value=0.0,
-                    value=be_at_r,
-                    step=0.1,
-                    format="%.1f",
-                )
-            with tier_cols[1]:
-                t1_r = st.number_input(
-                    "T1 Target (R)",
-                    min_value=0.0,
-                    value=t1_r,
-                    step=0.1,
-                    format="%.1f",
-                )
+        with vol_cols[3]:
+            sl_pct_high = st.number_input(
+                "SL % (High Vol)",
+                min_value=20,
+                value=sl_pct_high,
+                step=1,
+            )
+        sl_pct_norm = st.number_input(
+            "SL % (Normal Vol)",
+            min_value=15,
+            value=sl_pct_norm,
+            step=1,
+        )
+        
+        st.markdown("##### Tiered Exits")
+        tier_cols = st.columns(4)
+        with tier_cols[0]:
+            be_at_r = st.number_input(
+                "Breakeven @ R",
+                min_value=0.0,
+                value=be_at_r,
+                step=0.1,
+                format="%.1f",
+            )
+        with tier_cols[1]:
+            t1_r = st.number_input(
+                "T1 Target (R)",
+                min_value=0.0,
+                value=t1_r,
+                step=0.1,
+                format="%.1f",
+            )
             t1_book_pct = st.number_input(
                 "T1 Book %",
                 min_value=0.0,
@@ -2990,14 +3054,14 @@ elif tab == "Backtest":
                 step=0.05,
                 format="%.2f",
             )
-            with tier_cols[2]:
-                t2_r = st.number_input(
-                    "T2 Target (R)",
-                    min_value=0.0,
-                    value=t2_r,
-                    step=0.1,
-                    format="%.1f",
-                )
+        with tier_cols[2]:
+            t2_r = st.number_input(
+                "T2 Target (R)",
+                min_value=0.0,
+                value=t2_r,
+                step=0.1,
+                format="%.1f",
+            )
             t2_book_pct = st.number_input(
                 "T2 Book %",
                 min_value=0.0,
@@ -3006,181 +3070,127 @@ elif tab == "Backtest":
                 step=0.05,
                 format="%.2f",
             )
-            
-            st.markdown("##### Position Overrides")
-            override_cols = st.columns(3)
-            with override_cols[0]:
-                sl_points_config = st.number_input(
-                    "SL Points (Override)",
-                    min_value=10,
-                    max_value=100,
-                    value=sl_points_main,
-                    step=5,
-                )
-            with override_cols[1]:
-                trail_points_config = st.number_input(
-                    "Trail Points (Override)",
-                    min_value=5,
-                    max_value=50,
-                    value=trail_points_main,
-                    step=5,
-                )
-            with override_cols[2]:
-                book1_points_config = st.number_input(
-                    "Book 1 Points (Override)",
-                    min_value=10,
-                    max_value=100,
-                    value=book1_points_main,
-                    step=5,
-                )
-            extra_override_cols = st.columns(2)
-            with extra_override_cols[0]:
-                book2_points_config = st.number_input(
-                    "Book 2 Points (Override)",
-                    min_value=20,
-                    max_value=150,
-                    value=book2_points_main,
-                    step=5,
-                )
-            with extra_override_cols[1]:
-                book1_ratio_config = st.number_input(
-                    "Book 1 Ratio",
-                    min_value=0.1,
-                    max_value=1.0,
-                    value=book1_ratio_config,
-                    step=0.1,
-                    format="%.2f",
-                )
-            
-            st.markdown("##### Trailing & Expiry Controls")
-            trail_cols = st.columns(2)
-            with trail_cols[0]:
-                trail_lookback = st.number_input(
-                    "Trail Lookback (bars)",
-                    min_value=3,
-                    value=trail_lookback,
-                    step=1,
-                )
-            with trail_cols[1]:
-                trail_mult = st.number_input(
-                    "Trail Multiplier",
-                    min_value=0.5,
-                    value=trail_mult,
-                    step=0.1,
-                    format="%.1f",
-                )
-            expiry_cols = st.columns(3)
-            with expiry_cols[0]:
-                no_new_after = st.text_input(
-                    "No New After (HH:MM)", value=no_new_after
-                )
-            with expiry_cols[1]:
-                force_partial_by = st.text_input(
-                    "Force Partial By (HH:MM)", value=force_partial_by
-                )
-            with expiry_cols[2]:
-                tighten_days = st.number_input(
-                    "Tighten Trail (days)", min_value=0.5, value=tighten_days, step=0.5, format="%.1f"
-                )
-            
-            st.markdown("##### Position Sizing")
-            sizing_cols = st.columns(3)
-            with sizing_cols[0]:
-                risk_per_trade_pct = st.number_input(
-                    "Risk Per Trade %",
-                    min_value=0.0,
-                    value=risk_per_trade_pct,
-                    step=0.1,
-                    format="%.1f",
-                )
-            with sizing_cols[1]:
-                pe_size_cap_vs_ce = st.number_input(
-                    "PE Size Cap vs CE",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=pe_size_cap_vs_ce,
-                    step=0.1,
-                    format="%.1f",
-                )
-            with sizing_cols[2]:
-                max_concurrent = st.number_input(
-                    "Max Concurrent Positions",
-                    min_value=1,
-                    value=max_concurrent,
-                    step=1,
-                )
+        with tier_cols[3]:
+            trail_lookback = st.number_input(
+                "Trail Lookback",
+                min_value=1,
+                value=trail_lookback,
+                step=1,
+            )
+            trail_mult = st.number_input(
+                "Trail Multiplier",
+                min_value=0.5,
+                value=trail_mult,
+                step=0.1,
+            )
         
-        # strike interpretation
-        strike_offset_map = {
-            "ATM 0": 0,
-            "ITM 1": 50,
-            "ITM 2": 100,
-            "ITM 3": 150,
-            "OTM 1": 50,
-            "OTM 2": 100,
-            "OTM 3": 150,
-        }
-        strike_offset_base = strike_offset_map.get(strike_selection, 0)
-        is_itm = strike_selection.startswith("ITM")
-        is_otm = strike_selection.startswith("OTM")
-        
-        backtest_config_dict = {
-            "strategy": {
-                "type": "inside_bar_breakout",
-                "sl": int(sl_points_main),
-                "rr": 1.8,
-                "premium_sl_pct": float(sl_pct),
-                "lock1_gain_pct": 60.0,
-                "lock2_gain_pct": 80.0,
-                "lock3_gain_pct": 100.0,
-                "use_atr_filter": bool(use_atr_filter),
-                "use_regime_filter": bool(use_regime_filter),
-                "use_distance_guard": bool(use_distance_guard),
-                "use_tiered_exits": bool(use_tiered_exits),
-                "use_expiry_protocol": bool(use_expiry_protocol),
-                "use_directional_sizing": bool(use_directional_sizing),
-                "atr_floor_pct_1h": float(atr_floor_pct),
-                "ema_slope_len": int(ema_slope_len),
-                "distance_guard_atr": float(distance_guard_atr),
-                "adx_min": 0.0,
-                "vol_bands": {"low": float(vol_band_low), "high": float(vol_band_high)},
-                "premium_sl_pct_low": float(sl_pct_low),
-                "premium_sl_pct_norm": float(sl_pct_norm),
-                "premium_sl_pct_high": float(sl_pct_high),
-                "be_at_r": float(be_at_r),
-                "trail_lookback": int(trail_lookback),
-                "trail_mult": float(trail_mult),
-                "swing_lock": True,
-                "t1_r": float(t1_r),
-                "t1_book": float(t1_book_pct),
-                "t2_r": float(t2_r),
-                "t2_book": float(t2_book_pct),
-                "no_new_after": str(no_new_after),
-                "force_partial_by": str(force_partial_by),
-                "tighten_trail_days_to_expiry": float(tighten_days),
-                "tighten_mult_factor": 1.3,
-            },
-            "position_management": {
-                "sl_points": int(sl_points_config),
-                "trail_points": int(trail_points_config),
-                "book1_points": int(book1_points_config),
-                "book2_points": int(book2_points_config),
-                "book1_ratio": float(book1_ratio_config),
-            },
-            "sizing": {
-                "risk_per_trade_pct": float(risk_per_trade_pct),
-                "pe_size_cap_vs_ce": float(pe_size_cap_vs_ce),
-                "portfolio_risk_cap_pct": 4.0,
-                "max_concurrent_positions": int(max_concurrent),
-            },
-            "initial_capital": float(initial_capital),
-            "lot_size": int(lot_size),
-            "strike_selection": strike_selection,
-            "strike_offset_base": strike_offset_base,
-            "strike_is_itm": is_itm,
-            "strike_is_otm": is_otm,
-        }
-        
+        st.markdown("##### Risk Protocols")
+        risk_cols = st.columns(3)
+        with risk_cols[0]:
+            no_new_after = st.time_input("No new entries after", value=pd.to_datetime(no_new_after).time())
+            tighten_days = st.number_input(
+                "Tighten after (days)",
+                min_value=0.0,
+                value=tighten_days,
+                step=0.5,
+            )
+        with risk_cols[1]:
+            force_partial_by = st.time_input("Force partial booking by", value=pd.to_datetime(force_partial_by).time())
+            risk_per_trade_pct = st.number_input(
+                "Risk per trade %",
+                min_value=0.1,
+                value=risk_per_trade_pct,
+                step=0.1,
+                format="%.1f",
+            )
+        with risk_cols[2]:
+            pe_size_cap_vs_ce = st.number_input(
+                "PE position size cap vs CE",
+                min_value=0.1,
+                max_value=1.0,
+                value=pe_size_cap_vs_ce,
+                step=0.05,
+                format="%.2f",
+            )
+            max_concurrent = st.number_input(
+                "Max concurrent positions",
+                min_value=1,
+                max_value=5,
+                value=max_concurrent,
+                step=1,
+            )
+    
+    # strike interpretation
+    strike_offset_map = {
+        "ATM 0": 0,
+        "ITM 1": 50,
+        "ITM 2": 100,
+        "ITM 3": 150,
+        "OTM 1": 50,
+        "OTM 2": 100,
+        "OTM 3": 150,
+    }
+    strike_offset_base = strike_offset_map.get(strike_selection, 0)
+    is_itm = strike_selection.startswith("ITM")
+    is_otm = strike_selection.startswith("OTM")
+    
+    backtest_config_dict = {
+        "strategy": {
+            "type": "inside_bar_breakout",
+            "sl": int(sl_points_main),
+            "rr": 1.8,
+            "premium_sl_pct": float(sl_pct),
+            "lock1_gain_pct": 60.0,
+            "lock2_gain_pct": 80.0,
+            "lock3_gain_pct": 100.0,
+            "use_atr_filter": bool(use_atr_filter),
+            "use_regime_filter": bool(use_regime_filter),
+            "use_distance_guard": bool(use_distance_guard),
+            "use_tiered_exits": bool(use_tiered_exits),
+            "use_expiry_protocol": bool(use_expiry_protocol),
+            "use_directional_sizing": bool(use_directional_sizing),
+            "atr_floor_pct_1h": float(atr_floor_pct),
+            "ema_slope_len": int(ema_slope_len),
+            "distance_guard_atr": float(distance_guard_atr),
+            "adx_min": 0.0,
+            "vol_bands": {"low": float(vol_band_low), "high": float(vol_band_high)},
+            "premium_sl_pct_low": float(sl_pct_low),
+            "premium_sl_pct_norm": float(sl_pct_norm),
+            "premium_sl_pct_high": float(sl_pct_high),
+            "be_at_r": float(be_at_r),
+            "trail_lookback": int(trail_lookback),
+            "trail_mult": float(trail_mult),
+            "swing_lock": True,
+            "t1_r": float(t1_r),
+            "t1_book": float(t1_book_pct),
+            "t2_r": float(t2_r),
+            "t2_book": float(t2_book_pct),
+            "no_new_after": str(no_new_after),
+            "force_partial_by": str(force_partial_by),
+            "tighten_trail_days_to_expiry": float(tighten_days),
+            "tighten_mult_factor": 1.3,
+        },
+        "position_management": {
+            "sl_points": int(sl_points_config),
+            "trail_points": int(trail_points_config),
+            "book1_points": int(book1_points_config),
+            "book2_points": int(book2_points_config),
+            "book1_ratio": float(book1_ratio_config),
+        },
+        "sizing": {
+            "risk_per_trade_pct": float(risk_per_trade_pct),
+            "pe_size_cap_vs_ce": float(pe_size_cap_vs_ce),
+            "portfolio_risk_cap_pct": 4.0,
+            "max_concurrent_positions": int(max_concurrent),
+        },
+        "initial_capital": float(initial_capital),
+        "lot_size": int(lot_size),
+        "strike_selection": strike_selection,
+        "strike_offset_base": strike_offset_base,
+        "strike_is_itm": is_itm,
+        "strike_is_otm": is_otm,
+    }
+    
     engine = BacktestEngine(backtest_config_dict)
     st.session_state.backtest_config_dict = backtest_config_dict
     
@@ -3428,8 +3438,8 @@ elif tab == "Backtest":
             'max_concurrent_positions': int(max_concurrent)
         }
         }  # Close advanced parameters expander
-    
-    # ============ SETTINGS TAB ============
+
+# ============ SETTINGS TAB ============
 elif tab == "Settings":
     st.header("⚙️ Settings & Configuration")
     
@@ -3610,4 +3620,11 @@ elif tab == "Settings":
             except:
                 st.text("Memory Info: Not available")
                 st.caption("💡 Install psutil for memory info")
+
+if 'breakout_alert_audio' not in st.session_state:
+    st.session_state.breakout_alert_audio = _generate_breakout_alert_audio()
+if 'last_breakout_alert_key' not in st.session_state:
+    st.session_state.last_breakout_alert_key = None
+if 'last_breakout_alert_timestamp' not in st.session_state:
+    st.session_state.last_breakout_alert_timestamp = None
 
