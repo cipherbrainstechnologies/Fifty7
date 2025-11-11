@@ -27,7 +27,7 @@ from .market_data import MarketDataProvider
 
 
 # Configuration
-LIVE_MODE = False  # Default to safe dry-run mode for development
+LIVE_MODE = True  # CHANGED: Enable live trading mode (was False)
 MARKET_OPEN_HOUR = 9
 MARKET_OPEN_MINUTE = 15
 MARKET_CLOSE_HOUR = 15
@@ -658,7 +658,7 @@ def check_margin(
     return False, available_margin, required_margin
 
 
-def place_order(
+    def place_order(
     broker: Optional[BrokerInterface],
     symbol: str,
     strike: int,
@@ -673,13 +673,31 @@ def place_order(
     """
     attempt_timestamp = format_ist_datetime(ist_now())
     logger.info(
-        f"[Order Attempt {attempt_timestamp}] {direction} {symbol} {strike} | "
-        f"Quantity: {quantity_lots} lot(s) | live_mode={live_mode}, armed={execution_armed}"
+        f"\n{'='*80}\n"
+        f"🚨 ORDER PLACEMENT ATTEMPT\n"
+        f"{'='*80}\n"
+        f"   Timestamp: {attempt_timestamp}\n"
+        f"   Direction: {direction}\n"
+        f"   Symbol: {symbol}\n"
+        f"   Strike: {strike}\n"
+        f"   Quantity: {quantity_lots} lot(s)\n"
+        f"   LIVE_MODE Global Flag: {LIVE_MODE}\n"
+        f"   live_mode (instance): {live_mode}\n"
+        f"   execution_armed: {execution_armed}\n"
+        f"   Broker Available: {broker is not None}\n"
+        f"{'='*80}"
     )
     
     if not live_mode:
         order_id = f"SIM_{ist_now().strftime('%Y%m%d%H%M%S')}"
-        logger.info(f"LIVE_MODE disabled → Dry-run order {order_id}")
+        logger.warning(
+            f"\n{'⚠️'*40}\n"
+            f"🚫 TRADE BLOCKED: LIVE_MODE DISABLED\n"
+            f"   Reason: live_mode={live_mode} (LIVE_MODE global={LIVE_MODE})\n"
+            f"   Generated dry-run order: {order_id}\n"
+            f"   ➡️ To enable: Set LIVE_MODE=True in inside_bar_breakout_strategy.py\n"
+            f"{'⚠️'*40}"
+        )
         return {
             'status': True,
             'order_id': order_id,
@@ -689,11 +707,18 @@ def place_order(
         }
     
     if not execution_armed:
-        logger.warning("Live mode enabled but execution not armed. Skipping real order (dry run).")
+        logger.error(
+            f"\n{'🛑'*40}\n"
+            f"🚫 TRADE BLOCKED: EXECUTION NOT ARMED\n"
+            f"   Reason: execution_armed={execution_armed}\n"
+            f"   ➡️ To enable: Call strategy.arm_live_execution() before trading\n"
+            f"   This is a SAFETY mechanism to prevent accidental live trades\n"
+            f"{'🛑'*40}"
+        )
         return {
             'status': False,
             'order_id': None,
-            'message': 'Execution not armed (dry run)',
+            'message': 'Execution not armed (dry run) - Call arm_live_execution() first',
             'response': None,
             'simulated': True
         }

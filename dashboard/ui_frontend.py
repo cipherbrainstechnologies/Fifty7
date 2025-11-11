@@ -993,12 +993,54 @@ if tab == "Dashboard":
             status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
             status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
             
-            control_cols = st.columns([1, 1, 1], gap="small")
-            settings_col, start_col, stop_col = control_cols
+            # Add execution armed status indicator
+            execution_armed_status = st.session_state.get('execution_armed', False)
+            execution_icon = "🔓" if execution_armed_status else "🔒"
+            execution_text = "ARMED" if execution_armed_status else "DISARMED"
+            execution_color = "🟢" if execution_armed_status else "🟡"
+            status_cols[0].caption(f"{execution_icon} Execution: {execution_color} {execution_text}")
+            
+            control_cols = st.columns([1, 1, 1, 1], gap="small")
+            settings_col, arm_col, start_col, stop_col = control_cols
             
             with settings_col:
                 if st.button("⚙️ Strategy Settings", use_container_width=True, type="secondary"):
                     st.session_state.show_strategy_settings = not st.session_state.show_strategy_settings
+            
+            with arm_col:
+                # Use session state to track execution arming
+                if 'execution_armed' not in st.session_state:
+                    st.session_state.execution_armed = False
+                
+                arm_disabled = st.session_state.live_runner is None or not st.session_state.algo_running
+                if st.session_state.execution_armed:
+                    # Show Disarm button (red/warning)
+                    if st.button("🛑 Disarm Exec", use_container_width=True, type="secondary", disabled=arm_disabled, help="Disable live trade execution (safety lock)"):
+                        st.session_state.execution_armed = False
+                        # Also set on live_runner instance if available
+                        if st.session_state.live_runner is not None:
+                            st.session_state.live_runner.execution_armed = False
+                            logger.info("Live execution DISARMED on live_runner instance")
+                        st.session_state.strategy_settings_feedback = (
+                            "warning",
+                            "🛑 Live execution DISARMED - trades will be simulated only"
+                        )
+                        logger.info("Live execution DISARMED via UI")
+                        st.rerun()
+                else:
+                    # Show Arm button (green/primary)
+                    if st.button("🔓 Arm Exec", use_container_width=True, type="primary", disabled=arm_disabled, help="Enable live trade execution (required for real trades)"):
+                        st.session_state.execution_armed = True
+                        # Also set on live_runner instance if available
+                        if st.session_state.live_runner is not None:
+                            st.session_state.live_runner.execution_armed = True
+                            logger.info("Live execution ARMED on live_runner instance")
+                        st.session_state.strategy_settings_feedback = (
+                            "success",
+                            "🔓 Live execution ARMED - real trades will be placed on next signal!"
+                        )
+                        logger.info("Live execution ARMED via UI")
+                        st.rerun()
             
             with start_col:
                 start_disabled = st.session_state.algo_running or st.session_state.live_runner is None
