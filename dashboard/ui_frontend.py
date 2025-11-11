@@ -785,6 +785,12 @@ if 'next_auto_refresh_ts' not in st.session_state:
     st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
 if 'auto_refresh_counter' not in st.session_state:
     st.session_state.auto_refresh_counter = 0
+if 'breakout_alert_audio' not in st.session_state:
+    st.session_state.breakout_alert_audio = _generate_breakout_alert_audio()
+if 'last_breakout_alert_key' not in st.session_state:
+    st.session_state.last_breakout_alert_key = None
+if 'last_breakout_alert_timestamp' not in st.session_state:
+    st.session_state.last_breakout_alert_timestamp = None
 
 # Auto-refresh dashboard when algo is running
 auto_refresh_active = (
@@ -3663,10 +3669,4 @@ elif tab == "Settings":
                 st.text("Memory Info: Not available")
                 st.caption("💡 Install psutil for memory info")
 
-if 'breakout_alert_audio' not in st.session_state:
-    st.session_state.breakout_alert_audio = _generate_breakout_alert_audio()
-if 'last_breakout_alert_key' not in st.session_state:
-    st.session_state.last_breakout_alert_key = None
-if 'last_breakout_alert_timestamp' not in st.session_state:
-    st.session_state.last_breakout_alert_timestamp = None
 
