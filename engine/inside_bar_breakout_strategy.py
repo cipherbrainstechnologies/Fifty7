@@ -658,7 +658,7 @@ def check_margin(
     return False, available_margin, required_margin
 
 
-    def place_order(
+def place_order(
     broker: Optional[BrokerInterface],
     symbol: str,
     strike: int,
