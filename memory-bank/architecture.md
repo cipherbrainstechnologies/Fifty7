@@ -25,6 +25,19 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - **data/historical/**: Historical market data for backtesting
 - **logs/**: Application logs and trade journal CSV files
 
+### 5. Documentation (`docs/`)
+- **setup/**: Quick start guides, local run instructions, credential setup, and automation helpers
+  - **marketdata/**: Market data onboarding, API setup, and implementation notes
+- **auth/**: Authentication fixes, password handling procedures, and login diagnostics
+- **strategy/**: Strategy primers, comparative analyses, and enhancement notes
+- **operations/**: Live trading readiness, execution fixes, and operational playbooks
+- **deployment/**: Render and Streamlit deployment workflows
+- **api/**: External API capability and integration references
+- **postmortems/**: Incident reviews and fix summaries
+  - **capital/**, **strategy/**, **strike/**, **infrastructure/**, **operations/**: Domain-specific retrospectives
+- **troubleshooting/**: Aggregated troubleshooting guide
+- **run/**: Reserved for runbook-style automation (currently empty)
+
 ## System Flow
 
 1. **Strategy Detection**: 1-hour timeframe scanned for Inside Bar patterns
