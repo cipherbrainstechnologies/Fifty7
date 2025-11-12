@@ -399,6 +399,26 @@ def get_active_signal(
         )
         return None
     
+    # Invalidate signals that have already broken out but now closed beyond the opposite range boundary
+    if previous_signal is not None and not candles.empty and previous_signal.get('breakout_direction'):
+        last_close = float(candles['Close'].iloc[-1])
+        prev_direction = previous_signal.get('breakout_direction')
+        range_high = previous_signal.get('range_high')
+        range_low = previous_signal.get('range_low')
+        
+        if prev_direction == "PE" and range_high is not None and last_close > range_high:
+            logger.info(
+                "🚫 Opposite move detected after PE breakout — invalidating previous signal. "
+                f"Last close {last_close:.2f} > mother high {range_high:.2f}"
+            )
+            return None
+        if prev_direction == "CE" and range_low is not None and last_close < range_low:
+            logger.info(
+                "🚫 Opposite move detected after CE breakout — invalidating previous signal. "
+                f"Last close {last_close:.2f} < mother low {range_low:.2f}"
+            )
+            return None
+    
     # Filter candles if we need to exclude old inside bars (after breakout)
     filtered_candles = candles
     if exclude_before_time:
@@ -444,7 +464,8 @@ def get_active_signal(
         'compression_count': candidate.get('compression_count', 1),
         'range_high': candidate['range_high'],
         'range_low': candidate['range_low'],
-        'breakout_attempted': False  # Track if breakout has been attempted
+        'breakout_attempted': False,  # Track if breakout has been attempted
+        'breakout_direction': None
     }
     
     logger.info(
@@ -565,6 +586,7 @@ def confirm_breakout_on_hour_close(
         if breakout_high and first_breakout_candle is None:
             first_breakout_candle = latest_closed.copy()
             breakout_direction = "CE"
+            signal['breakout_direction'] = "CE"
             logger.info(
                 f"\n{'🟢'*40}\n"
                 f"✅ FIRST BREAKOUT DETECTED (CE) at {format_ist_datetime(candle_end)}\n"
@@ -585,6 +607,7 @@ def confirm_breakout_on_hour_close(
         if breakout_low and first_breakout_candle is None:
             first_breakout_candle = latest_closed.copy()
             breakout_direction = "PE"
+            signal['breakout_direction'] = "PE"
             logger.info(
                 f"\n{'🔴'*40}\n"
                 f"✅ FIRST BREAKOUT DETECTED (PE) at {format_ist_datetime(candle_end)}\n"

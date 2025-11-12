@@ -12,6 +12,15 @@ from engine.inside_bar_breakout_strategy import (
     calculate_sl_tp_levels,
     get_active_signal
 )
+from logzero import logger
+
+
+def _set_session_state(key: str, value):
+    try:
+        import streamlit as st  # type: ignore
+    except Exception:
+        return
+    st.session_state[key] = value
 
 
 class SignalHandler:
@@ -114,6 +123,7 @@ class SignalHandler:
         if active_signal is None:
             # No active signal
             self._active_signal_state = None
+            _set_session_state('last_breakout_direction', None)
             return None
         
         # Update internal signal state
@@ -133,16 +143,12 @@ class SignalHandler:
         
         # Handle missed trade - invalidate signal and wait for new one
         if is_missed_trade:
-            from logzero import logger
             logger.warning("Missed trade detected - invalidating signal")
             self._active_signal_state = None
-            st = None
-            try:
-                import streamlit as st  # type: ignore
-            except Exception:
-                st = None
-            if st is not None:
-                st.session_state['last_missed_trade'] = {
+            _set_session_state('last_breakout_direction', None)
+            _set_session_state(
+                'last_missed_trade',
+                {
                     'direction': breakout_direction,
                     'range_high': active_signal['range_high'],
                     'range_low': active_signal['range_low'],
@@ -150,6 +156,7 @@ class SignalHandler:
                     'signal_time': active_signal['signal_time'],
                     'timestamp': datetime.now().isoformat(),
                 }
+            )
             return None
         
         # Breakout confirmed - generate trade signal
@@ -192,6 +199,8 @@ class SignalHandler:
         
         # Invalidate signal after breakout attempt (signal consumed)
         self._active_signal_state = None
+        _set_session_state('last_breakout_direction', breakout_direction)
+        _set_session_state('last_missed_trade', None)
         
         return signal
     

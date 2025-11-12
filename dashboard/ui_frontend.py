@@ -1960,15 +1960,18 @@ if tab == "Dashboard":
                         
                         # Check for breakout (using 1H data only)
                         st.write("**Breakout Status:**")
-                        direction = confirm_breakout(
-                            data_1h,
-                            range_high,
-                            range_low,
-                            latest_idx,
-                            mother_idx=mother_idx,
-                            volume_threshold_multiplier=1.0,
-                            symbol="NIFTY"
-                        )
+                        ui_breakout_direction = st.session_state.get("last_breakout_direction")
+                        direction = ui_breakout_direction
+                        if direction not in ("CE", "PE"):
+                            direction = confirm_breakout(
+                                data_1h,
+                                range_high,
+                                range_low,
+                                latest_idx,
+                                mother_idx=mother_idx,
+                                volume_threshold_multiplier=1.0,
+                                symbol="NIFTY"
+                            )
                         price_at_last_candle = data_1h['Close'].iloc[-1]
                         within_range = range_low <= price_at_last_candle <= range_high
                         
