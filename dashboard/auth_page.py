@@ -2,9 +2,62 @@
 Firebase Authentication Page Component
 """
 
+import json
+import os
+from datetime import datetime
 import streamlit as st
 from engine.firebase_auth import FirebaseAuth
 from logzero import logger
+
+_SESSION_STORE_PATH = os.path.join("logs", ".firebase_session.json")
+
+
+def _ensure_session_store_dir():
+    directory = os.path.dirname(_SESSION_STORE_PATH)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+
+def persist_firebase_session(user_email: str, id_token: str, refresh_token: str) -> None:
+    """Persist Firebase session tokens to disk for browser refresh resilience."""
+    try:
+        if not user_email or not refresh_token:
+            return
+        _ensure_session_store_dir()
+        payload = {
+            "user_email": user_email,
+            "id_token": id_token,
+            "refresh_token": refresh_token,
+            "saved_at": datetime.utcnow().isoformat() + "Z",
+        }
+        with open(_SESSION_STORE_PATH, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp)
+        logger.debug("Firebase session persisted to disk")
+    except Exception as exc:
+        logger.warning(f"Unable to persist Firebase session: {exc}")
+
+
+def load_persisted_firebase_session() -> dict:
+    """Load persisted Firebase session tokens if available."""
+    try:
+        if not os.path.exists(_SESSION_STORE_PATH):
+            return {}
+        with open(_SESSION_STORE_PATH, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as exc:
+        logger.warning(f"Unable to load persisted Firebase session: {exc}")
+        return {}
+
+
+def clear_persisted_firebase_session() -> None:
+    """Remove persisted Firebase session tokens."""
+    try:
+        if os.path.exists(_SESSION_STORE_PATH):
+            os.remove(_SESSION_STORE_PATH)
+            logger.debug("Firebase session persistence cleared")
+    except Exception as exc:
+        logger.warning(f"Unable to clear persisted Firebase session: {exc}")
 
 
 def render_login_page(firebase_auth: FirebaseAuth, allowed_email: str = None):
@@ -69,6 +122,7 @@ def _render_login_form(firebase_auth: FirebaseAuth, allowed_email: str = None):
                             st.session_state.refresh_token = user['refreshToken']
                             st.session_state.user_email = email
                             st.session_state.authenticated = True
+                            persist_firebase_session(email, user['idToken'], user['refreshToken'])
                             st.success(message)
                             st.rerun()
                     else:

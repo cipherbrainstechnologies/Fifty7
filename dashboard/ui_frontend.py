@@ -139,7 +139,12 @@ from engine.backtest_engine import BacktestEngine
 from engine.market_data import MarketDataProvider
 from engine.live_runner import LiveStrategyRunner
 from engine.firebase_auth import FirebaseAuth
-from dashboard.auth_page import render_login_page
+from dashboard.auth_page import (
+    render_login_page,
+    load_persisted_firebase_session,
+    persist_firebase_session,
+    clear_persisted_firebase_session,
+)
 
 # Initialize database on startup
 try:
@@ -491,6 +496,14 @@ except Exception as e:
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
+# Attempt to preload persisted Firebase session tokens before restoration logic
+if firebase_auth and not st.session_state.authenticated:
+    persisted_session = load_persisted_firebase_session()
+    if persisted_session:
+        st.session_state.setdefault('user_email', persisted_session.get('user_email'))
+        st.session_state.setdefault('refresh_token', persisted_session.get('refresh_token'))
+        st.session_state.setdefault('id_token', persisted_session.get('id_token'))
+
 # ===================================================================
 # FIREBASE SESSION PERSISTENCE - Restore session on page load/reload
 # Date: 2025-01-27
@@ -516,12 +529,18 @@ if firebase_auth:
                     st.session_state.refresh_token = refreshed_user.get('refreshToken', stored_refresh_token)
                     st.session_state.user_email = stored_user_email
                     st.session_state.authenticated = True
+                    persist_firebase_session(
+                        st.session_state.user_email,
+                        st.session_state.id_token,
+                        st.session_state.refresh_token,
+                    )
                     logger.info(f"Firebase session restored for user: {stored_user_email}")
                 else:
                     # Refresh failed, clear tokens
                     st.session_state.id_token = None
                     st.session_state.refresh_token = None
                     st.session_state.user_email = None
+                    clear_persisted_firebase_session()
                     logger.warning("Firebase session refresh failed, tokens cleared")
             except Exception as e:
                 # Refresh failed, clear tokens
@@ -529,6 +548,7 @@ if firebase_auth:
                 st.session_state.id_token = None
                 st.session_state.refresh_token = None
                 st.session_state.user_email = None
+                clear_persisted_firebase_session()
         elif stored_id_token:
             # Only id_token exists, try to verify it
             try:
@@ -539,17 +559,24 @@ if firebase_auth:
                     st.session_state.id_token = stored_id_token
                     st.session_state.user_email = stored_user_email or user_info.get('email', '')
                     st.session_state.authenticated = True
+                    persist_firebase_session(
+                        st.session_state.user_email,
+                        st.session_state.id_token,
+                        st.session_state.refresh_token,
+                    )
                     logger.info(f"Firebase session restored using id_token for user: {st.session_state.user_email}")
                 else:
                     # Token invalid, clear it
                     st.session_state.id_token = None
                     st.session_state.refresh_token = None
                     st.session_state.user_email = None
+                    clear_persisted_firebase_session()
             except Exception as e:
                 logger.warning(f"Firebase token verification failed: {e}")
                 st.session_state.id_token = None
                 st.session_state.refresh_token = None
                 st.session_state.user_email = None
+                clear_persisted_firebase_session()
 
 # If Firebase is configured, require authentication
 if firebase_auth:
@@ -563,6 +590,7 @@ if firebase_auth:
         if allowed_email and user_email.lower() != allowed_email:
             st.error(f"❌ Access Denied. Only authorized email ({allowed_email}) can access.")
             firebase_auth.sign_out()
+            clear_persisted_firebase_session()
             st.session_state.authenticated = False
             st.session_state.user = None
             st.session_state.id_token = None
@@ -582,6 +610,7 @@ if firebase_auth:
                 st.caption(f"📧 {allowed_email}")
             if st.button("🚪 Logout", use_container_width=True):
                 firebase_auth.sign_out()
+                clear_persisted_firebase_session()
                 st.session_state.authenticated = False
                 st.session_state.user = None
                 st.session_state.id_token = None
