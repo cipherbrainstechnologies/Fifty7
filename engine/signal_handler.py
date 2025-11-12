@@ -136,6 +136,20 @@ class SignalHandler:
             from logzero import logger
             logger.warning("Missed trade detected - invalidating signal")
             self._active_signal_state = None
+            st = None
+            try:
+                import streamlit as st  # type: ignore
+            except Exception:
+                st = None
+            if st is not None:
+                st.session_state['last_missed_trade'] = {
+                    'direction': breakout_direction,
+                    'range_high': active_signal['range_high'],
+                    'range_low': active_signal['range_low'],
+                    'inside_bar_time': active_signal['inside_bar_time'],
+                    'signal_time': active_signal['signal_time'],
+                    'timestamp': datetime.now().isoformat(),
+                }
             return None
         
         # Breakout confirmed - generate trade signal

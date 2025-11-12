@@ -793,6 +793,8 @@ if 'last_breakout_alert_key' not in st.session_state:
     st.session_state.last_breakout_alert_key = None
 if 'last_breakout_alert_timestamp' not in st.session_state:
     st.session_state.last_breakout_alert_timestamp = None
+if 'last_missed_trade' not in st.session_state:
+    st.session_state.last_missed_trade = None
 
 def _trigger_market_data_refresh(reason: str) -> bool:
     """
@@ -1458,6 +1460,8 @@ if tab == "Dashboard":
                         st.success(
                             "🔔 Breakout confirmed — audio alert triggered for the active inside bar."
                         )
+                        # Clear any previous missed-trade banner once a fresh breakout is detected
+                        st.session_state.last_missed_trade = None
                 
                 inside_bar_available = True
     
@@ -1475,6 +1479,19 @@ if tab == "Dashboard":
         st.caption(f"Compression depth: {compression_label}")
     elif not inside_bar_available:
         st.info("No active inside bar identified in the latest 1-hour data window.")
+    
+    missed_trade_info = st.session_state.get("last_missed_trade")
+    if missed_trade_info:
+        with st.expander("⚠️ Missed Breakout Window", expanded=True):
+            st.warning(
+                f"Trade skipped — breakout candle closed more than 5 minutes ago.\n\n"
+                f"- Direction: **{missed_trade_info.get('direction', '—')}**\n"
+                f"- Inside Bar: {missed_trade_info.get('inside_bar_time', '—')}\n"
+                f"- Mother Candle: {missed_trade_info.get('signal_time', '—')}\n"
+                f"- Range: {missed_trade_info.get('range_low', '—')} → {missed_trade_info.get('range_high', '—')}\n"
+                f"- Logged at: {missed_trade_info.get('timestamp', '—')}"
+            )
+            st.caption("Breakout execution is blocked after 5 minutes to avoid chasing late entries.")
     
     # Live data status
     if st.session_state.algo_running and st.session_state.live_runner is not None:
@@ -1683,10 +1700,29 @@ if tab == "Dashboard":
             st.session_state.market_refresh_feedback = None
         
         last_refresh_display = st.session_state.get('last_refresh_time')
-        if last_refresh_display:
-            reason_label = st.session_state.get('last_refresh_reason') or "auto"
-            stamp = last_refresh_display.strftime("%d-%b %I:%M:%S %p")
-            st.caption(f"🕒 Last refresh: {stamp} ({reason_label})")
+        last_refresh_reason = st.session_state.get('last_refresh_reason')
+        runner_fetch_time = None
+        runner_reason = None
+        live_runner = st.session_state.get('live_runner')
+        if live_runner is not None:
+            runner_fetch_time = getattr(live_runner, 'last_fetch_time', None)
+            if runner_fetch_time is not None:
+                runner_reason = "live-cycle"
+
+        display_time = None
+        display_reason = None
+        if runner_fetch_time and isinstance(runner_fetch_time, datetime):
+            if (not isinstance(last_refresh_display, datetime)) or (runner_fetch_time > last_refresh_display):
+                display_time = runner_fetch_time
+                display_reason = runner_reason
+        if display_time is None and isinstance(last_refresh_display, datetime):
+            display_time = last_refresh_display
+            display_reason = last_refresh_reason or "auto"
+
+        if display_time is not None:
+            stamp = display_time.strftime("%d-%b %I:%M:%S %p")
+            label = display_reason or "auto"
+            st.caption(f"🕒 Last refresh: {stamp} ({label})")
         elif st.session_state.get('last_refresh_error'):
             st.warning(f"⚠️ Last refresh error: {st.session_state.last_refresh_error}")
         
