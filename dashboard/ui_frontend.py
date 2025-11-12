@@ -51,6 +51,27 @@ except ImportError:
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+@st.cache_resource
+def get_trading_runtime_state() -> Dict[str, Any]:
+    return {
+        "live_runner": None,
+        "algo_running": False,
+        "lock": threading.Lock(),
+    }
+
+_runtime_state = get_trading_runtime_state()
+
+
+def _set_live_runner_runtime(runner):
+    _runtime_state["live_runner"] = runner
+    st.session_state.live_runner = runner
+
+
+def _set_algo_running_runtime(flag: bool):
+    _runtime_state["algo_running"] = flag
+    st.session_state.algo_running = flag
+
+
 def _parse_expiry_to_datetime(value: Any) -> Optional[datetime]:
     """Best-effort parser for broker expiry values."""
     if value is None or value == "":
@@ -722,13 +743,15 @@ else:
 
 # Initialize session state
 if 'algo_running' not in st.session_state:
-    st.session_state.algo_running = False
+    st.session_state.algo_running = _runtime_state.get("algo_running", False)
 if 'show_strategy_settings' not in st.session_state:
     st.session_state.show_strategy_settings = False
 if 'strategy_settings_feedback' not in st.session_state:
     st.session_state.strategy_settings_feedback = None
 if 'market_refresh_feedback' not in st.session_state:
     st.session_state.market_refresh_feedback = None
+if 'live_runner' not in st.session_state:
+    st.session_state.live_runner = _runtime_state.get("live_runner")
 if 'broker' not in st.session_state:
     try:
         # Get broker config safely (from config dict or st.secrets)
@@ -783,7 +806,7 @@ if 'market_data_provider' not in st.session_state:
         st.session_state.market_data_provider = None
 
 # Initialize live runner (lazy - only when needed)
-if 'live_runner' not in st.session_state:
+if st.session_state.live_runner is None:
     # Load full config (with market_data section)
     import yaml as yaml_lib
     with open('config/config.yaml', 'r') as f:
@@ -794,18 +817,23 @@ if 'live_runner' not in st.session_state:
         'signal_handler' in st.session_state and
         'trade_logger' in st.session_state):
         try:
-            st.session_state.live_runner = LiveStrategyRunner(
-                market_data_provider=st.session_state.market_data_provider,
-                signal_handler=st.session_state.signal_handler,
-                broker=st.session_state.broker,
-                trade_logger=st.session_state.trade_logger,
-                config=full_config
-            )
+            with _runtime_state["lock"]:
+                if _runtime_state.get("live_runner") is None:
+                    runner = LiveStrategyRunner(
+                        market_data_provider=st.session_state.market_data_provider,
+                        signal_handler=st.session_state.signal_handler,
+                        broker=st.session_state.broker,
+                        trade_logger=st.session_state.trade_logger,
+                        config=full_config
+                    )
+                    _set_live_runner_runtime(runner)
+                else:
+                    st.session_state.live_runner = _runtime_state.get("live_runner")
         except Exception as e:
-            st.session_state.live_runner = None
+            _set_live_runner_runtime(None)
             st.warning(f"Live runner initialization warning: {e}")
     else:
-        st.session_state.live_runner = None
+        _set_live_runner_runtime(None)
 
 # Ensure auto-refresh session state defaults before usage
 if 'auto_refresh_enabled' not in st.session_state:
@@ -1140,7 +1168,7 @@ if tab == "Dashboard":
                         try:
                             success = st.session_state.live_runner.start()
                             if success:
-                                st.session_state.algo_running = True
+                                _set_algo_running_runtime(True)
                                 st.session_state.strategy_settings_feedback = (
                                     "success",
                                     "✅ Algorithm started – monitoring live market data."
@@ -1162,7 +1190,7 @@ if tab == "Dashboard":
                 stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
                 if st.button("⏹️ Stop", use_container_width=True, type="secondary", disabled=stop_disabled):
                     if st.session_state.live_runner is None:
-                        st.session_state.algo_running = False
+                        _set_algo_running_runtime(False)
                         st.session_state.strategy_settings_feedback = (
                             "warning",
                             "⚠️ Algo state reset – live runner unavailable."
@@ -1171,7 +1199,7 @@ if tab == "Dashboard":
                         try:
                             success = st.session_state.live_runner.stop()
                             if success:
-                                st.session_state.algo_running = False
+                                _set_algo_running_runtime(False)
                                 st.session_state.strategy_settings_feedback = (
                                     "warning",
                                     "⏸️ Algorithm stopped."
