@@ -199,7 +199,7 @@ class SignalHandler:
         
         # Invalidate signal after breakout attempt (signal consumed)
         self._active_signal_state = None
-        _set_session_state('last_breakout_direction', breakout_direction)
+            _set_session_state('last_breakout_direction', breakout_direction)
         _set_session_state('last_missed_trade', None)
         
         return signal

@@ -795,6 +795,11 @@ if 'last_breakout_alert_timestamp' not in st.session_state:
     st.session_state.last_breakout_alert_timestamp = None
 if 'last_missed_trade' not in st.session_state:
     st.session_state.last_missed_trade = None
+if 'last_refresh_error' not in st.session_state:
+    st.session_state.last_refresh_error = None
+previous_ui_render_time = st.session_state.get('_last_ui_render_time')
+current_ui_render_time = datetime.now()
+st.session_state['_last_ui_render_time'] = current_ui_render_time
 
 def _trigger_market_data_refresh(reason: str) -> bool:
     """
@@ -1430,19 +1435,21 @@ if tab == "Dashboard":
                 compression_length = len([idx for idx in inside_indices if idx >= mother_idx])
                 compression_label = f"{compression_length} bar(s) inside range"
                 
-                try:
-                    breakout_direction = confirm_breakout(
-                        df_ib,
-                        range_high,
-                        range_low,
-                        latest_inside_idx,
-                        mother_idx=mother_idx,
-                        volume_threshold_multiplier=1.0,
-                        symbol="NIFTY"
-                    )
-                except Exception as e:
-                    logger.warning(f"Inside bar snapshot breakout check failed: {e}")
-                    breakout_direction = None
+                breakout_direction = st.session_state.get("last_breakout_direction")
+                if breakout_direction not in ("CE", "PE"):
+                    try:
+                        breakout_direction = confirm_breakout(
+                            df_ib,
+                            range_high,
+                            range_low,
+                            latest_inside_idx,
+                            mother_idx=mother_idx,
+                            volume_threshold_multiplier=1.0,
+                            symbol="NIFTY"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Inside bar snapshot breakout check failed: {e}")
+                        breakout_direction = None
                 
                 if breakout_direction == "CE":
                     breakout_label = "Breakout ↑ CE"
@@ -1719,12 +1726,52 @@ if tab == "Dashboard":
             display_time = last_refresh_display
             display_reason = last_refresh_reason or "auto"
 
+        missed_trade_info = st.session_state.get("last_missed_trade")
         if display_time is not None:
             stamp = display_time.strftime("%d-%b %I:%M:%S %p")
             label = display_reason or "auto"
             st.caption(f"🕒 Last refresh: {stamp} ({label})")
+        if missed_trade_info:
+            st.error(
+                f"🚨 Missed breakout ({missed_trade_info.get('direction', '—')}) — "
+                f"breakout candle closed beyond the 5-minute window. "
+                f"Range {missed_trade_info.get('range_low', '—')} → {missed_trade_info.get('range_high', '—')}."
+            )
+            if st.button("Dismiss alert", key="dismiss_missed_trade_banner"):
+                st.session_state.last_missed_trade = None
+                st.rerun()
         elif st.session_state.get('last_refresh_error'):
             st.warning(f"⚠️ Last refresh error: {st.session_state.last_refresh_error}")
+        
+        with st.expander("🔄 Backend Sync Details", expanded=False):
+            st.write(f"• UI render time: {current_ui_render_time.strftime('%d-%b %I:%M:%S %p')}")
+            if display_time is not None:
+                normalized_display = display_time
+                if isinstance(display_time, datetime) and display_time.tzinfo is not None:
+                    try:
+                        normalized_display = display_time.astimezone(datetime.now().astimezone().tzinfo).replace(tzinfo=None)
+                    except Exception:
+                        normalized_display = display_time.replace(tzinfo=None)
+                st.write(f"• Backend refresh time: {display_time.strftime('%d-%b %I:%M:%S %p')} ({display_reason or 'auto'})")
+                try:
+                    delta_seconds = abs((current_ui_render_time - normalized_display).total_seconds())
+                    st.write(f"• UI lag vs backend: {delta_seconds:.1f} seconds")
+                except Exception:
+                    pass
+            if runner_fetch_time and isinstance(runner_fetch_time, datetime):
+                st.write(f"• Live runner fetch time: {runner_fetch_time.strftime('%d-%b %I:%M:%S %p')} (live-cycle)")
+            if previous_ui_render_time:
+                st.write(f"• Previous UI render: {previous_ui_render_time.strftime('%d-%b %I:%M:%S %p')}")
+            if st.session_state.auto_refresh_enabled:
+                interval = float(st.session_state.auto_refresh_interval_sec)
+                seconds_until = max(0.0, st.session_state.next_auto_refresh_ts - time.time())
+                completion = 0.0
+                if interval > 0:
+                    completion = min(1.0, max(0.0, (interval - seconds_until) / interval))
+                st.progress(completion)
+                st.caption(f"Next auto refresh in {int(seconds_until)}s (interval {interval:.0f}s).")
+            else:
+                st.caption("Auto refresh disabled — use the manual refresh button.")
         
         # Manual refresh button
         if st.button("🔄 Refresh Market Data Now"):
