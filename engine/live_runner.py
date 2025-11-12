@@ -400,6 +400,7 @@ class LiveStrategyRunner:
         trail_points: Optional[int] = None,
         atm_offset: Optional[int] = None,
         daily_loss_limit_pct: Optional[float] = None,
+        lot_size: Optional[int] = None,
     ):
         """
         Update strategy configuration at runtime (from front-end).
@@ -452,6 +453,14 @@ class LiveStrategyRunner:
                 logger.info(f"Daily loss limit updated to {float(daily_loss_limit_pct)}%")
             else:
                 logger.warning(f"Invalid daily loss limit: {daily_loss_limit_pct} (must be > 0)")
+
+        if lot_size is not None:
+            if lot_size > 0:
+                self.lot_size = lot_size
+                self.config['lot_size'] = lot_size
+                logger.info(f"Lot size updated to {lot_size} contracts")
+            else:
+                logger.warning(f"Invalid lot size: {lot_size} (must be > 0)")
     
     def _display_strategy_summary(self, signal: Dict, entry_price: float, strike: int, direction: str):
         """
