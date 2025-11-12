@@ -832,8 +832,10 @@ def _trigger_market_data_refresh(reason: str) -> bool:
 # Auto-refresh dashboard when algo is running
 auto_refresh_active = (
     st.session_state.auto_refresh_enabled
-    and st.session_state.get('algo_running', False)
-    and st.session_state.get('live_runner') is not None
+    and (
+        st.session_state.get('live_runner') is not None
+        or st.session_state.get('market_data_provider') is not None
+    )
 )
 
 if auto_refresh_active:
