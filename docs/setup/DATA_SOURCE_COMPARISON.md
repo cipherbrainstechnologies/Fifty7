@@ -10,6 +10,7 @@
 | Data Source | Compatibility | Recommendation |
 |-------------|---------------|----------------|
 | **DesiQuant S3** | ✅ **FULLY COMPATIBLE** | ✅ **USE THIS** (Primary) |
+| **NSE Indices (Official)** | ⚠️ **VALIDATION ONLY** | ⚠️ Use for Validation |
 | **Yahoo Finance** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Investing.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Kaggle mlcroissant** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
@@ -21,16 +22,17 @@
 
 ### Critical Requirements Check
 
-| Feature | DesiQuant | Yahoo Finance | Investing.com | Kaggle | MarketData API |
-|---------|-----------|---------------|---------------|--------|----------------|
-| **1h Intraday OHLC** | ✅ Yes | ⚠️ Limited | 🔴 **NO** | 🔴 No (daily) | ⚠️ Yes (synthetic) |
-| **Options Historical Data** | ✅ Yes | 🔴 **NO** | 🔴 **NO** | ⚠️ Yes (daily) | ⚠️ Limited |
-| **Multi-Year History** | ✅ 2021-present | 🔴 2 years max | ⚠️ Daily only | 🔴 2024 only | ⚠️ Varies |
-| **All Strikes Coverage** | ✅ Yes | 🔴 **NO** | 🔴 **NO** | ✅ Yes | ⚠️ Limited |
-| **Expiry Calendar** | ✅ Full history | 🔴 Current only | 🔴 **NO** | ✅ Yes | ⚠️ Synthetic |
-| **Free Access** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | 🔴 Paid tiers |
-| **API Stability** | ✅ High | ⚠️ Unofficial | 🔴 **Poor** | ✅ High | ⚠️ Medium |
-| **Setup Complexity** | ✅ Low | ✅ Low | ⚠️ Medium | ⚠️ Medium | ⚠️ Medium |
+| Feature | DesiQuant | NSE Indices | Yahoo Finance | Investing.com | Kaggle | MarketData API |
+|---------|-----------|-------------|---------------|---------------|--------|----------------|
+| **1h Intraday OHLC** | ✅ Yes | 🔴 **NO** | ⚠️ Limited | 🔴 **NO** | 🔴 No (daily) | ⚠️ Yes (synthetic) |
+| **Options Historical Data** | ✅ Yes | 🔴 **NO** | 🔴 **NO** | 🔴 **NO** | ⚠️ Yes (daily) | ⚠️ Limited |
+| **Multi-Year History** | ✅ 2021-present | ✅ Yes (daily) | 🔴 2 years max | ⚠️ Daily only | 🔴 2024 only | ⚠️ Varies |
+| **All Strikes Coverage** | ✅ Yes | 🔴 **NO** | 🔴 **NO** | 🔴 **NO** | ✅ Yes | ⚠️ Limited |
+| **Expiry Calendar** | ✅ Full history | 🔴 **NO** | 🔴 Current only | 🔴 **NO** | ✅ Yes | ⚠️ Synthetic |
+| **Free Access** | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | 🔴 Paid tiers |
+| **API Stability** | ✅ High | 🔴 No API | ⚠️ Unofficial | 🔴 **Poor** | ✅ High | ⚠️ Medium |
+| **Data Authority** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| **Setup Complexity** | ✅ Low | ⚠️ Manual | ✅ Low | ⚠️ Medium | ⚠️ Medium | ⚠️ Medium |
 
 ---
 
@@ -42,6 +44,14 @@
 - Cannot simulate historical option trades
 - Cannot backtest option strategies
 - **Verdict**: Unusable for options backtesting
+
+### ⚠️ NSE Indices (Official)
+**Critical Issues**: No 1h intraday + No options data + No API
+- Most authoritative source (official NSE data)
+- Only daily index data available
+- No historical options data (indices only)
+- Manual downloads only (no API)
+- **Verdict**: Best for validation, not for backtesting
 
 ### 🔴 Investing.com
 **Critical Issues**: No 1h intraday + No options data
@@ -70,23 +80,26 @@
 
 ### Spot Data (NIFTY Index)
 
-| Metric | DesiQuant | Yahoo Finance | Investing.com | Kaggle |
-|--------|-----------|---------------|---------------|--------|
-| **Granularity** | 1h true intraday | 1h (limited) | Daily only | Daily |
-| **History** | 2021-present | Last 2 years | Multi-year | 2024 only |
-| **Completeness** | 99.9% | ~95% | ~90% | ~98% |
-| **Quality** | Professional | Consumer | Consumer | Unknown |
-| **Gaps** | Rare | Occasional | Occasional | Unknown |
+| Metric | DesiQuant | NSE Indices | Yahoo Finance | Investing.com | Kaggle |
+|--------|-----------|-------------|---------------|---------------|--------|
+| **Granularity** | 1h true intraday | Daily only | 1h (limited) | Daily only | Daily |
+| **History** | 2021-present | Multi-year | Last 2 years | Multi-year | 2024 only |
+| **Completeness** | 99.9% | 100% | ~95% | ~90% | ~98% |
+| **Quality** | Professional | ⭐Official | Consumer | Consumer | Unknown |
+| **Authority** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| **Gaps** | Rare | None | Occasional | Occasional | Unknown |
 
 ### Options Data
 
-| Metric | DesiQuant | Yahoo Finance | Investing.com | Kaggle |
-|--------|-----------|---------------|---------------|--------|
-| **Historical OHLC** | ✅ Yes | 🔴 **None** | 🔴 **None** | ⚠️ Daily only |
-| **Strike Coverage** | All strikes | N/A | N/A | All strikes |
-| **Time Series** | Hourly | **None** | **None** | Daily |
-| **Volume/OI** | Limited | Current only | N/A | Unknown |
-| **Expiries** | All historical | Current only | N/A | 2024 only |
+| Metric | DesiQuant | NSE Indices | Yahoo Finance | Investing.com | Kaggle |
+|--------|-----------|-------------|---------------|---------------|--------|
+| **Historical OHLC** | ✅ Yes | 🔴 **None** | 🔴 **None** | 🔴 **None** | ⚠️ Daily only |
+| **Strike Coverage** | All strikes | N/A | N/A | N/A | All strikes |
+| **Time Series** | Hourly | N/A | **None** | **None** | Daily |
+| **Volume/OI** | Limited | N/A | Current only | N/A | Unknown |
+| **Expiries** | All historical | N/A | Current only | N/A | 2024 only |
+
+**Note**: NSE Indices provides index data only, not derivatives/options data.
 
 ---
 
@@ -120,6 +133,9 @@
 - **DesiQuant S3**: `backtesting/datasource_desiquant.py` ✅
 - **Market Data API**: `backtesting/datasource_marketdata.py` ✅
 
+### ⚠️ Validation Source (Optional)
+- **NSE Indices**: Official source for validation (manual, daily data only)
+
 ### ❌ Not Integrated (Not Recommended)
 - **Yahoo Finance**: Not needed (missing options data)
 - **Investing.com**: Not suitable (missing both 1h and options data)
@@ -132,6 +148,7 @@
 | Source | Setup Cost | Monthly Cost | Data Access |
 |--------|------------|--------------|-------------|
 | **DesiQuant S3** | $0 | $0 | Free (public bucket) |
+| **NSE Indices** | $0 | $0 | Free (manual download) |
 | **Yahoo Finance** | $0 | $0 | Free (with limits) |
 | **Investing.com** | $0 | $0 | Free (limited) |
 | **Kaggle** | $0 | $0 | Free (with account) |
@@ -159,13 +176,14 @@
 
 ## Reliability Scores (1-10)
 
-| Source | Data Availability | API Stability | Data Quality |
-|--------|-------------------|---------------|--------------|
-| **DesiQuant** | 9/10 | 9/10 | 9/10 |
-| **Yahoo Finance** | 6/10 | 6/10 | 7/10 |
-| **Investing.com** | 4/10 | 4/10 | 6/10 |
-| **Kaggle** | 7/10 | 8/10 | ?/10 |
-| **Market Data API** | 7/10 | 7/10 | ?/10 |
+| Source | Data Availability | API Stability | Data Quality | Authority |
+|--------|-------------------|---------------|--------------|-----------|
+| **DesiQuant** | 9/10 | 9/10 | 9/10 | ⭐⭐⭐⭐ |
+| **NSE Indices** | 3/10 | N/A (manual) | 10/10 | ⭐⭐⭐⭐⭐ |
+| **Yahoo Finance** | 6/10 | 6/10 | 7/10 | ⭐⭐⭐ |
+| **Investing.com** | 4/10 | 4/10 | 6/10 | ⭐⭐⭐ |
+| **Kaggle** | 7/10 | 8/10 | ?/10 | ⭐⭐⭐ |
+| **Market Data API** | 7/10 | 7/10 | ?/10 | ⭐⭐⭐ |
 
 ---
 
@@ -182,7 +200,12 @@
    - DesiQuant is reliable enough
    - No comparable alternative exists
 
-3. **Do NOT Integrate**:
+3. **Optional Validation Source**: NSE Indices
+   - ⚠️ Use for occasional validation only
+   - ⚠️ Manual download of daily data
+   - ⚠️ Compare against DesiQuant for quality checks
+
+4. **Do NOT Integrate**:
    - ❌ Yahoo Finance (missing options data)
    - ❌ Investing.com (missing both 1h and options data)
    - ❌ Kaggle mlcroissant (wrong granularity)
@@ -225,6 +248,7 @@ Need 1h intraday options data?
 
 ## Related Documents
 
+- [NSE Indices (Official) Compatibility Analysis](./NIFTYINDICES_COMPATIBILITY_ANALYSIS.md)
 - [Yahoo Finance Compatibility Analysis](./YAHOO_FINANCE_COMPATIBILITY_ANALYSIS.md)
 - [Investing.com Compatibility Analysis](./INVESTING_COM_COMPATIBILITY_ANALYSIS.md)
 - [DesiQuant Implementation](../../backtesting/datasource_desiquant.py)
