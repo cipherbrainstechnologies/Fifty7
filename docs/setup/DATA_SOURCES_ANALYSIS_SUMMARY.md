@@ -8,10 +8,10 @@
 
 ## 🎯 Executive Summary
 
-**Analysis Complete**: 5 alternative data sources evaluated  
-**Recommendation**: **Continue using DesiQuant S3** (no changes needed)  
-**Reason**: Only free source with complete 1h options historical data  
-**Bonus**: NSE Indices available for optional validation (most authoritative)
+**Analysis Complete**: 7 alternative data sources evaluated  
+**Recommendation**: **Continue using DesiQuant S3 + Angel One** (no changes needed)  
+**Reason**: DesiQuant = only free source with complete 1h options historical data  
+**Bonus**: Angel One excellent for live trading, NSE Indices for validation
 
 ---
 
@@ -19,8 +19,10 @@
 
 | Data Source | 1h Data | Options Data | Compatibility | Verdict |
 |-------------|---------|--------------|---------------|---------|
-| **DesiQuant S3** | ✅ | ✅ | ✅ **100%** | ✅ **USE** |
-| **NSE Indices (Official)** | 🔴 | 🔴 | ⚠️ **Validation** | ⚠️ For validation only |
+| **DesiQuant S3** | ✅ | ✅ | ✅ **100%** | ✅ **USE** (Backtesting) |
+| **Angel One (SmartAPI)** | ⚠️ | 🔴 | ⚠️ **Live Only** | ✅ **USE** (Live Trading) |
+| **NSE Indices (Official)** | 🔴 | 🔴 | ⚠️ **Validation** | ⚠️ Validation only |
+| **Groww.com** | 🔴 | 🔴 | 🔴 **0%** | ❌ Reject (No API) |
 | **Yahoo Finance** | ⚠️ | 🔴 | 🔴 **0%** | ❌ Reject |
 | **Investing.com** | 🔴 | 🔴 | 🔴 **0%** | ❌ Reject |
 | **Kaggle mlcroissant** | 🔴 | ⚠️ | 🔴 **0%** | ❌ Reject |
@@ -29,6 +31,22 @@
 ---
 
 ## 🔴 Critical Deal-Breakers
+
+### Groww.com
+**Status**: NOT COMPATIBLE  
+**Missing**: Public API, historical options OHLC, historical spot data  
+**Has**: Web/app UI for current prices only  
+**Problem**: No API = no programmatic access at all  
+**Note**: Retail-focused platform, not designed for algo trading  
+**Detail**: [GROWW_COMPATIBILITY_ANALYSIS.md](./GROWW_COMPATIBILITY_ANALYSIS.md)
+
+### Angel One (SmartAPI)
+**Status**: LIVE TRADING ONLY  
+**Missing**: Historical options OHLC (3-6 months spot only)  
+**Has**: Excellent live trading API, real-time prices, Greeks  
+**Problem**: Cannot backtest without historical options data  
+**Use Case**: Perfect for live trading (already integrated) ✅  
+**Detail**: [ANGELONE_HISTORICAL_DATA_ANALYSIS.md](./ANGELONE_HISTORICAL_DATA_ANALYSIS.md)
 
 ### Yahoo Finance
 **Status**: NOT COMPATIBLE  
@@ -75,6 +93,8 @@
 ### No Competition
 ```
 Alternatives fail on:
+├── Angel One:       No historical options (live trading only)
+├── Groww:           No API, no programmatic access
 ├── NSE Indices:     No 1h, no options, no API (official but limited)
 ├── Yahoo Finance:   No options historical data
 ├── Investing.com:   No 1h data, no options data
@@ -96,48 +116,61 @@ Alternatives fail on:
 
 ### Must-Have Features (for current strategy)
 
-| Feature | Requirement | DesiQuant | NSE Indices | Yahoo | Investing | Kaggle |
-|---------|-------------|-----------|-------------|-------|-----------|--------|
-| **1h Spot OHLC** | ✅ Required | ✅ Yes | 🔴 No | ⚠️ Limited | 🔴 No | 🔴 No |
-| **Options OHLC** | ✅ **CRITICAL** | ✅ Yes | 🔴 **No** | 🔴 **No** | 🔴 **No** | ⚠️ Daily |
-| **Multi-Year History** | ✅ Required | ✅ 4+ years | ✅ Yes (daily) | ⚠️ 2 years | ⚠️ Limited | 🔴 1 year |
-| **All Strikes** | ✅ Required | ✅ Yes | 🔴 No | 🔴 No | 🔴 No | ✅ Yes |
-| **Expiry Calendar** | ✅ Required | ✅ Yes | 🔴 No | 🔴 Current | 🔴 No | ✅ Yes |
-| **Programmatic Access** | ✅ Required | ✅ API | 🔴 Manual | ⚠️ Unofficial | 🔴 No | ✅ API |
+| Feature | Requirement | DesiQuant | Angel One | Groww | NSE | Yahoo | Investing | Kaggle |
+|---------|-------------|-----------|-----------|-------|-----|-------|-----------|--------|
+| **1h Spot OHLC** | ✅ Required | ✅ Yes | ⚠️ 3-6mo | 🔴 No API | 🔴 Daily | ⚠️ Limited | 🔴 Daily | 🔴 Daily |
+| **Options OHLC** | ✅ **CRITICAL** | ✅ Yes | 🔴 **No** | 🔴 **No** | 🔴 **No** | 🔴 **No** | 🔴 **No** | ⚠️ Daily |
+| **Multi-Year History** | ✅ Required | ✅ 4+ years | ⚠️ 3-6mo | 🔴 No | ✅ Yes | ⚠️ 2 years | ⚠️ Limited | 🔴 1 year |
+| **All Strikes** | ✅ Required | ✅ Yes | ⚠️ Current | 🔴 No | 🔴 No | 🔴 No | 🔴 No | ✅ Yes |
+| **Expiry Calendar** | ✅ Required | ✅ Yes | ⚠️ Current | 🔴 No | 🔴 No | 🔴 Current | 🔴 No | ✅ Yes |
+| **Programmatic Access** | ✅ Required | ✅ API | ✅ API | 🔴 **None** | 🔴 Manual | ⚠️ Unofficial | 🔴 No | ✅ API |
 
 ### Nice-to-Have Features
 
-| Feature | DesiQuant | NSE Indices | Yahoo | Investing | Kaggle |
-|---------|-----------|-------------|-------|-----------|--------|
-| **Free Access** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **API Stability** | ✅ High | 🔴 No API | ⚠️ Medium | 🔴 Low | ✅ High |
-| **Easy Setup** | ✅ | ⚠️ Manual | ✅ | ⚠️ | ⚠️ |
-| **Data Authority** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
-| **Volume Data** | ⚠️ Limited | ✅ | ✅ | ⚠️ | ❓ |
+| Feature | DesiQuant | Angel One | Groww | NSE | Yahoo | Investing | Kaggle |
+|---------|-----------|-----------|-------|-----|-------|-----------|--------|
+| **Free Access** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **API Stability** | ✅ High | ✅ High | 🔴 No API | 🔴 No API | ⚠️ Medium | 🔴 Low | ✅ High |
+| **Easy Setup** | ✅ | ✅ | 🔴 No | ⚠️ Manual | ✅ | ⚠️ | ⚠️ |
+| **Data Authority** | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ | ⭐⭐⭐ |
+| **Volume Data** | ⚠️ Limited | ✅ | ⚠️ UI | ✅ | ✅ | ⚠️ | ❓ |
+| **Live Trading** | 🔴 | ✅ **Best** | ⚠️ Manual | 🔴 | 🔴 | 🔴 | 🔴 |
 
 ---
 
 ## 💡 Detailed Analysis Reports
 
-### 1. NSE Indices (Official)
+### 1. Angel One (SmartAPI)
+- **Full Report**: [ANGELONE_HISTORICAL_DATA_ANALYSIS.md](./ANGELONE_HISTORICAL_DATA_ANALYSIS.md)
+- **Summary**: Excellent for live trading, lacks historical options OHLC
+- **Access**: Free public API (SmartConnect)
+- **Verdict**: Perfect for live trading ✅, not for backtesting 🔴
+
+### 2. Groww.com
+- **Full Report**: [GROWW_COMPATIBILITY_ANALYSIS.md](./GROWW_COMPATIBILITY_ANALYSIS.md)
+- **Summary**: No public API, retail-focused platform
+- **Access**: Web/app UI only (no programmatic access)
+- **Verdict**: Not suitable for algo trading or backtesting
+
+### 3. NSE Indices (Official)
 - **Full Report**: [NIFTYINDICES_COMPATIBILITY_ANALYSIS.md](./NIFTYINDICES_COMPATIBILITY_ANALYSIS.md)
 - **Summary**: Official source, but only daily index data, no options, no API
 - **Access**: Manual CSV downloads from website
 - **Verdict**: Best for validation, not for backtesting
 
-### 2. Yahoo Finance
+### 4. Yahoo Finance
 - **Full Report**: [YAHOO_FINANCE_COMPATIBILITY_ANALYSIS.md](./YAHOO_FINANCE_COMPATIBILITY_ANALYSIS.md)
 - **Summary**: Has spot data but completely lacks historical options data
 - **Library**: yfinance (unofficial API)
 - **Verdict**: Cannot backtest options strategies
 
-### 3. Investing.com
+### 5. Investing.com
 - **Full Report**: [INVESTING_COM_COMPATIBILITY_ANALYSIS.md](./INVESTING_COM_COMPATIBILITY_ANALYSIS.md)
 - **Summary**: Only provides daily data, no options data, unreliable library
 - **Library**: investpy (web scraping based)
 - **Verdict**: Fails on both critical requirements
 
-### 4. Kaggle mlcroissant
+### 6. Kaggle mlcroissant
 - **Dataset**: historical-nifty-options-2024-all-expiries
 - **Summary**: Daily data only (not 1h), limited to 2024
 - **Structure**: Nifty-{expiry_day}-{trade_day}.csv files

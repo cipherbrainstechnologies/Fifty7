@@ -12,6 +12,7 @@
 | **DesiQuant S3** | ✅ **FULLY COMPATIBLE** | ✅ **USE THIS** (Primary) |
 | **Angel One (SmartAPI)** | ⚠️ **LIVE ONLY** | ✅ **USE FOR LIVE TRADING** |
 | **NSE Indices (Official)** | ⚠️ **VALIDATION ONLY** | ⚠️ Use for Validation |
+| **Groww.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use (No API) |
 | **Yahoo Finance** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Investing.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Kaggle mlcroissant** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
@@ -250,6 +251,7 @@ Need 1h intraday options data?
 ## Related Documents
 
 - [Angel One (SmartAPI) Historical Data Analysis](./ANGELONE_HISTORICAL_DATA_ANALYSIS.md)
+- [Groww.com Compatibility Analysis](./GROWW_COMPATIBILITY_ANALYSIS.md)
 - [NSE Indices (Official) Compatibility Analysis](./NIFTYINDICES_COMPATIBILITY_ANALYSIS.md)
 - [Yahoo Finance Compatibility Analysis](./YAHOO_FINANCE_COMPATIBILITY_ANALYSIS.md)
 - [Investing.com Compatibility Analysis](./INVESTING_COM_COMPATIBILITY_ANALYSIS.md)
