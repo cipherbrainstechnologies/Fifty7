@@ -9,14 +9,15 @@
 
 | Data Source | Compatibility | Recommendation |
 |-------------|---------------|----------------|
-| **DesiQuant S3** | ✅ **FULLY COMPATIBLE** | ✅ **USE THIS** (Primary) |
+| **DesiQuant S3** | ✅ **FULLY COMPATIBLE** | ✅ **USE THIS** (Best Free) |
+| **TrueData.in** | ✅ **FULLY COMPATIBLE** | ✅ **Best Paid Option** (₹2-3K/mo) |
 | **Angel One (SmartAPI)** | ⚠️ **LIVE ONLY** | ✅ **USE FOR LIVE TRADING** |
 | **NSE Indices (Official)** | ⚠️ **VALIDATION ONLY** | ⚠️ Use for Validation |
 | **Groww.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use (No API) |
 | **Yahoo Finance** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Investing.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Kaggle mlcroissant** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
-| **Market Data API** | ⚠️ **PARTIAL** | ⚠️ Alternative (Paid) |
+| **Market Data API** | ⚠️ **PARTIAL** | ⚠️ Alternative (Paid, Synthetic) |
 
 ---
 
@@ -250,6 +251,7 @@ Need 1h intraday options data?
 
 ## Related Documents
 
+- [TrueData.in Compatibility Analysis](./TRUEDATA_COMPATIBILITY_ANALYSIS.md)
 - [Angel One (SmartAPI) Historical Data Analysis](./ANGELONE_HISTORICAL_DATA_ANALYSIS.md)
 - [Groww.com Compatibility Analysis](./GROWW_COMPATIBILITY_ANALYSIS.md)
 - [NSE Indices (Official) Compatibility Analysis](./NIFTYINDICES_COMPATIBILITY_ANALYSIS.md)
