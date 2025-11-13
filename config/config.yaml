@@ -51,7 +51,7 @@ market_data:
 
 # Backtesting Data Sources Configuration
 backtesting:
-  data_source: "desiquant"  # Options: "csv", "desiquant", "marketdata"
+  data_source: "desiquant"  # Options: "csv", "desiquant", "marketdata", "truedata"
   
   # CSV Data Source Configuration
   csv:
@@ -82,4 +82,17 @@ backtesting:
       NIFTY: 50  # Strike step for NIFTY (multiples of 50)
       BANKNIFTY: 100  # Strike step for BANKNIFTY (multiples of 100)
       FINNIFTY: 50  # Strike step for FINNIFTY (multiples of 50)
+  
+  # TrueData API Configuration (Professional data provider - Paid subscription required)
+  truedata:
+    enabled: false  # Set to true to enable TrueData API (requires subscription)
+    username: ""  # Your TrueData username (get from https://truedata.in)
+    password: ""  # Your TrueData password
+    
+    # Strike configuration
+    strike_step:
+      NIFTY: 50  # Strike step for NIFTY
+      BANKNIFTY: 100  # Strike step for BANKNIFTY
+      FINNIFTY: 50  # Strike step for FINNIFTY
+      MIDCPNIFTY: 25  # Strike step for MIDCPNIFTY
 
