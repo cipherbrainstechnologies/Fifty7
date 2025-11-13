@@ -10,6 +10,7 @@
 | Data Source | Compatibility | Recommendation |
 |-------------|---------------|----------------|
 | **DesiQuant S3** | ✅ **FULLY COMPATIBLE** | ✅ **USE THIS** (Primary) |
+| **Angel One (SmartAPI)** | ⚠️ **LIVE ONLY** | ✅ **USE FOR LIVE TRADING** |
 | **NSE Indices (Official)** | ⚠️ **VALIDATION ONLY** | ⚠️ Use for Validation |
 | **Yahoo Finance** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
 | **Investing.com** | 🔴 **NOT COMPATIBLE** | ❌ Do Not Use |
@@ -248,9 +249,11 @@ Need 1h intraday options data?
 
 ## Related Documents
 
+- [Angel One (SmartAPI) Historical Data Analysis](./ANGELONE_HISTORICAL_DATA_ANALYSIS.md)
 - [NSE Indices (Official) Compatibility Analysis](./NIFTYINDICES_COMPATIBILITY_ANALYSIS.md)
 - [Yahoo Finance Compatibility Analysis](./YAHOO_FINANCE_COMPATIBILITY_ANALYSIS.md)
 - [Investing.com Compatibility Analysis](./INVESTING_COM_COMPATIBILITY_ANALYSIS.md)
 - [DesiQuant Implementation](../../backtesting/datasource_desiquant.py)
+- [Angel One Broker Implementation](../../engine/broker_connector.py)
 - [Backtest Engine](../../engine/backtest_engine.py)
 
