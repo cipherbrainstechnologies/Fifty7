@@ -222,7 +222,11 @@ def _ensure_datetime_column(candles: pd.DataFrame) -> pd.DataFrame:
         else:
             raise ValueError("Candles DataFrame must include a 'Date' column or DateTimeIndex")
     
-    working['Date'] = pd.to_datetime(working['Date'])
+    # Handle mixed timezone-aware and timezone-naive values
+    # Convert to datetime first (with utc=True to handle mixed timezones)
+    working['Date'] = pd.to_datetime(working['Date'], utc=True)
+    # Strip timezone info to keep everything timezone-naive for compatibility
+    working['Date'] = working['Date'].dt.tz_localize(None)
     return working
 
 

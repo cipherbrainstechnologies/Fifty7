@@ -116,6 +116,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - 2025-11-07: Historical fetch windows pin to NSE close (15:15 IST) when server clocks lag, and stale direct interval responses automatically fall back to resampling 1-minute candles.
 - 2025-11-10: Historical candle requests clamp `to_date` to the most recent completed 15m/1h candle boundary to prevent SmartAPI AB1004 errors during live sessions.
 - 2025-11-10: 1H data window auto-extends to include the previous trading session start (09:15 IST) after weekends/holidays, keeping prior inside-bar structures available for breakout checks.
+- 2025-11-13: Fixed `ValueError: Cannot mix tz-aware with tz-naive values` in `_ensure_datetime_column()` by normalizing all datetime values to UTC first, then stripping timezone info to maintain timezone-naive consistency across the system.
 
 ## Debug Instrumentation
 
