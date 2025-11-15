@@ -24,6 +24,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 ### 4. Data Management
 - **data/historical/**: Historical market data for backtesting
 - **logs/**: Application logs and trade journal CSV files
+- **Angel SmartAPI Backtesting**: Optional `backtesting.angel_smartapi` config taps the SmartAPI Historical app (api key `oV0N6xt7`) for short-window spot candles (≈3–6 months, no options OHLC). Intended for validation/overlap checks, not full-scale simulations; reads credentials exclusively from `.streamlit/secrets.toml`.
 
 ### 5. Documentation (`docs/`)
 - **setup/**: Quick start guides, local run instructions, credential setup, and automation helpers
@@ -37,6 +38,25 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
   - **capital/**, **strategy/**, **strike/**, **infrastructure/**, **operations/**: Domain-specific retrospectives
 - **troubleshooting/**: Aggregated troubleshooting guide
 - **run/**: Reserved for runbook-style automation (currently empty)
+
+### SmartAPI Credential Roles
+
+Reference: `docs/api/API-Documentation-File.md`
+
+- **Trading API (SmartAPI Trading App)**  
+  - Credentials: `api_key` + `secret_key` (current pair `sz5neY7b` / `8a5bd331-9445-4d0e-a975-24ef7c73162a`).  
+  - Usage: `engine/broker_connector.py`, `engine/signal_handler.py`, and dashboard order controls issue session logins, JWT refresh, order placement, RMS/funds requests, and portfolio pulls via Angel One SmartAPI REST endpoints (X-PrivateKey header).  
+  - Notes: Sessions last 28 hours; authenticate with client code, PIN, and TOTP. Tokens must be persisted in memory only and refreshed via `generateTokens`.
+
+- **Historical Data API (SmartAPI Historical App)**  
+  - Credentials: `api_key` + `secret_key` pair `oV0N6xt7` / `4ab84310-301a-4114-be83-4b171e322e49`.  
+  - Usage: `engine/market_data.py` and backtesting flows call SmartAPI historical OHLC endpoints so live trading quota is not consumed. This app is scoped to data-only permissions and should never be used for order placement.  
+  - Notes: Rate limited separately; integrate through the market data provider class so requests can be throttled/thinned centrally.
+
+- **Publisher API (SmartAPI Publisher App)**  
+  - Credentials: Publisher `api_key` + `api_secret` pair `MIavKEDZ` / `899402fe-2641-4ffa-9683-545e60329642`.  
+  - Usage: Streamlit dashboard feed widgets and any websocket quote consumers obtain `auth_token` + `feed_token` via the publisher login redirect flow documented in `docs/api/API-Documentation-File.md`, then subscribe to live ticks.  
+  - Notes: Provides read-only quote distribution; do not use for authenticated trade actions. Feed token refresh ties to publisher session duration.
 
 ## System Flow
 

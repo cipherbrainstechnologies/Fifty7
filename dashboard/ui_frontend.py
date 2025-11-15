@@ -8,7 +8,7 @@ import streamlit as st
 import yaml
 from yaml.loader import SafeLoader
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 import sys
 import io
@@ -175,13 +175,20 @@ try:
 except Exception as e:
     logger.warning(f"Database initialization failed (non-critical): {e}")
 
-# Cloud data source
+# Cloud data sources
 try:
     from backtesting.datasource_desiquant import stream_data
     DESIQUANT_AVAILABLE = True
 except ImportError:
     DESIQUANT_AVAILABLE = False
     stream_data = None
+
+try:
+    from backtesting.datasource_smartapi import stream_data as smartapi_stream_data
+    SMARTAPI_BACKTEST_AVAILABLE = True
+except ImportError:
+    SMARTAPI_BACKTEST_AVAILABLE = False
+    smartapi_stream_data = None
 
 
 # Page config
@@ -1020,11 +1027,25 @@ def start_background_refresh_if_needed(interval_seconds=10):
                     # Thread completed, mark as not in progress
                     st.session_state.refresh_in_progress = False
 
-# Sidebar menu
+# Sidebar menu with persistent selection (key handles persistence automatically)
+MENU_TABS = [
+    "Dashboard",
+    "Portfolio",
+    "P&L",
+    "Insights",
+    "Orders & Trades",
+    "Trade Journal",
+    "Backtest",
+    "Settings",
+]
+default_tab = st.session_state.get("selected_main_tab", MENU_TABS[0])
+if default_tab not in MENU_TABS:
+    default_tab = MENU_TABS[0]
 tab = st.sidebar.radio(
     "📋 Menu",
-    ["Dashboard", "Portfolio", "P&L", "Insights", "Orders & Trades", "Trade Journal", "Backtest", "Settings"],
-    index=0
+    MENU_TABS,
+    index=MENU_TABS.index(default_tab),
+    key="selected_main_tab",
 )
 
 # Logout button - DISABLED (authentication bypassed)
@@ -3096,6 +3117,8 @@ elif tab == "Backtest":
     with open('config/config.yaml', 'r') as f:
         strategy_config = yaml_lib.safe_load(f)
     pm_config = strategy_config.get('position_management', {})
+    backtesting_settings = strategy_config.get('backtesting', {}) if isinstance(strategy_config, dict) else {}
+    angel_smartapi_cfg = backtesting_settings.get('angel_smartapi', {}) if isinstance(backtesting_settings, dict) else {}
     
     st.subheader("⚙️ Essential Parameters")
     col1, col2, col3 = st.columns(3, gap="small")
@@ -3457,7 +3480,7 @@ elif tab == "Backtest":
     # --- DATA & RUN TAB ----------------------------------------------------
     with data_run_tab:
         st.subheader("📂 Choose data source")
-        source_tabs = st.tabs(["📤 CSV Upload", "☁️ DesiQuant Cloud"])
+        source_tabs = st.tabs(["📤 CSV Upload", "☁️ DesiQuant Cloud", "📡 Angel SmartAPI"])
         
         # CSV Upload Workflow
         with source_tabs[0]:
@@ -3599,6 +3622,77 @@ elif tab == "Backtest":
                                 st.exception(e)
             else:
                 st.info("Cloud datasource unavailable. Install required packages to enable this tab.")
+
+        # Angel SmartAPI Workflow
+        with source_tabs[2]:
+            st.markdown("#### Angel SmartAPI Data Source")
+            st.caption("Runs the same strategy using Spot 1H candles fetched through your Angel One SmartAPI Historical app (≈3–6 months coverage).")
+
+            if not SMARTAPI_BACKTEST_AVAILABLE:
+                st.info("Install `smartapi-python` and ensure `backtesting/datasource_smartapi.py` is available to enable this source.")
+            else:
+                angel_enabled = bool(angel_smartapi_cfg.get("enabled"))
+                if not angel_enabled:
+                    st.warning("Enable this source via `backtesting.angel_smartapi.enabled: true` inside `config/config.yaml`.")
+                else:
+                    default_end = date.today()
+                    default_start = default_end - timedelta(days=60)
+                    angel_start_date = st.date_input(
+                        "Start date",
+                        value=default_start,
+                        key="angel_smartapi_start_date",
+                    )
+                    angel_end_date = st.date_input(
+                        "End date",
+                        value=default_end,
+                        key="angel_smartapi_end_date",
+                    )
+                    st.caption(
+                        f"Symbol: {angel_smartapi_cfg.get('symbol', 'NIFTY')} · Interval: {angel_smartapi_cfg.get('interval', 'ONE_HOUR')} · Exchange: {angel_smartapi_cfg.get('exchange', 'NSE')}"
+                    )
+
+                    if angel_end_date < angel_start_date:
+                        st.error("❌ End date cannot precede start date.")
+                    else:
+                        if st.button(
+                            "▶️ Run Backtest (Angel SmartAPI)",
+                            use_container_width=True,
+                            type="primary",
+                            key="run_backtest_angel_smartapi",
+                        ):
+                            with st.spinner("Fetching data from Angel SmartAPI and running backtest..."):
+                                try:
+                                    data = smartapi_stream_data(
+                                        symbol=angel_smartapi_cfg.get("symbol", "NIFTY"),
+                                        start=str(angel_start_date),
+                                        end=str(angel_end_date),
+                                        interval=angel_smartapi_cfg.get("interval", "ONE_HOUR"),
+                                        exchange=angel_smartapi_cfg.get("exchange", "NSE"),
+                                        symbol_token=angel_smartapi_cfg.get("symbol_token"),
+                                        secrets_path=angel_smartapi_cfg.get("secrets_path"),
+                                    )
+                                    spot_df = data.get("spot")
+
+                                    if spot_df is None or spot_df.empty:
+                                        st.warning("No spot data returned from Angel SmartAPI for this window.")
+                                    else:
+                                        with st.expander("Preview SmartAPI data", expanded=False):
+                                            st.dataframe(spot_df.head(10), use_container_width=True)
+
+                                        results = engine.run_backtest(
+                                            data_1h=spot_df,
+                                            options_df=None,
+                                            expiries_df=None,
+                                            initial_capital=initial_capital,
+                                        )
+                                        if not isinstance(results, dict):
+                                            st.error("Unexpected result format from backtest engine.")
+                                        else:
+                                            store_backtest_results(results, "Angel SmartAPI")
+                                            st.success("Backtest completed. Review analytics in the Results tab.")
+                                except Exception as e:
+                                    st.error(f"❌ Angel SmartAPI backtest failed: {e}")
+                                    st.exception(e)
     
     # --- RESULTS TAB -------------------------------------------------------
     with results_tab:
