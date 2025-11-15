@@ -23,10 +23,10 @@ wheels/
 .installed.cfg
 *.egg
 
-# Secrets and Configuration
-.streamlit/secrets.toml
-*.key
-*.pem
+# # Secrets and Configuration
+# .streamlit/secrets.toml
+# *.key
+# *.pem
 
 # Logs and Data
 logs/*.log
