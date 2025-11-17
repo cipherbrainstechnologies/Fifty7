@@ -219,6 +219,7 @@ class AngelOneBroker(BrokerInterface):
         self.refresh_token = None
         self.feed_token = None
         self.session_generated = False
+        self._symbol_token_cache: Dict[str, str] = {}
         
         logger.info("AngelOneBroker initialized. Session will be generated on first API call.")
 
@@ -513,31 +514,35 @@ class AngelOneBroker(BrokerInterface):
         Returns:
             Symbol token string if found, None otherwise
         """
+        cache_key = f"{exchange}:{tradingsymbol}"
+        if cache_key in self._symbol_token_cache:
+            return self._symbol_token_cache[cache_key]
+        
         try:
             if not self._ensure_session():
                 logger.error("Cannot fetch symbol token: No valid session")
                 return None
             
-            # Search for symbol using direct API call
-            symbol_result = self._search_symbol(exchange, tradingsymbol)
-            
-            if not symbol_result:
-                logger.error(f"Symbol lookup failed for {tradingsymbol}")
+            search_response = self.smart_api.searchScrip(exchange, tradingsymbol)
+            if not isinstance(search_response, dict):
+                logger.error(f"SmartAPI searchScrip returned unexpected response for {tradingsymbol}: {type(search_response)}")
                 return None
             
-            # Parse response - check different possible response formats
-            symbols = symbol_result.get('data', [])
-            if not symbols:
-                # Try alternative response format
-                symbols = symbol_result.get('fetched', [])
-            
-            if not symbols:
-                logger.warning(f"Symbol {tradingsymbol} not found in symbol master")
+            if search_response.get("status") is False:
+                logger.error(f"Symbol search failed for {tradingsymbol}: {search_response.get('message')}")
                 return None
             
-            # Return first match's symboltoken
-            symbol_token = symbols[0].get('symboltoken')
-            logger.info(f"Found symbol token for {tradingsymbol}: {symbol_token}")
+            symbols = search_response.get("data") or []
+            if not symbols:
+                logger.warning(f"Symbol {tradingsymbol} not found in search results for exchange {exchange}")
+                return None
+            
+            symbol_token = symbols[0].get("symboltoken")
+            if symbol_token:
+                self._symbol_token_cache[cache_key] = symbol_token
+                logger.info(f"Found symbol token for {tradingsymbol}: {symbol_token}")
+            else:
+                logger.warning(f"Symbol token missing in search result for {tradingsymbol}")
             return symbol_token
             
         except Exception as e:
