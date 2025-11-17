@@ -52,7 +52,7 @@ market_data:
   retry_delay_seconds: 5  # Delay between retries
   nifty_symbol: "NIFTY"  # Trading symbol for NIFTY index
   nifty_exchange: "NSE"
-  data_window_hours_1h: 48  # Window for 1-hour candles
+  data_window_hours_1h: 120  # Window for 1-hour candles (≈5 trading days to guarantee ≥20 candles)
   data_window_hours_15m: 12  # Window for 15-minute candles
   use_direct_intervals: true  # Prefer direct interval fetching (ONE_HOUR, FIFTEEN_MINUTE) over resampling
   api_delay_minutes: 5  # Request data up to N minutes ago to avoid API delays

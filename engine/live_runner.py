@@ -545,13 +545,16 @@ class LiveStrategyRunner:
             # --- [Enhancement: Live Inside Bar Lag Fix - 2025-11-06] ---
             # Pass include_latest=True to get current incomplete candle for real-time detection
             # Get aggregated dataframes (prefer direct interval fetching with fallback to resampling)
+            market_data_cfg = self.config.get('market_data', {})
+            window_hours_1h = market_data_cfg.get('data_window_hours_1h', 48)
+            min_1h_candles = market_data_cfg.get('min_1h_candles', self.config.get('strategy', {}).get('min_1h_candles', 20))
             data_1h = self.market_data.get_1h_data(
-                window_hours=self.config.get('market_data', {}).get('data_window_hours_1h', 48),
+                window_hours=window_hours_1h,
                 use_direct_interval=True,  # Try ONE_HOUR interval first
                 include_latest=True  # Include incomplete latest candle for live mode
             )
             data_15m = self.market_data.get_15m_data(
-                window_hours=self.config.get('market_data', {}).get('data_window_hours_15m', 12),
+                window_hours=market_data_cfg.get('data_window_hours_15m', 12),
                 use_direct_interval=True,  # Try FIFTEEN_MINUTE interval first
                 include_latest=True  # Include incomplete latest candle for live mode
             )
@@ -634,9 +637,40 @@ class LiveStrategyRunner:
             # Log candle counts for diagnostics
             logger.info(f"1H candles available: {len(data_1h)}, 15m candles available: {len(data_15m) if data_15m is not None and not data_15m.empty else 0} (NOT USED - only 1H breakouts)")
             
-            if len(data_1h) < 20:  # Need at least 20 candles for Inside Bar detection AND breakout confirmation
-                logger.warning(f"Insufficient 1h data ({len(data_1h)} candles). Need at least 20 for inside bar detection and 1H breakout. Skipping cycle. Data may be too recent or aggregation failed.")
-                return
+            if len(data_1h) < min_1h_candles:  # Need sufficient 1H candles for detection + breakout
+                extended_window = max(window_hours_1h * 2, min_1h_candles * 3)
+                if extended_window > window_hours_1h:
+                    logger.warning(
+                        "Insufficient 1h data (%s candles, need at least %s). "
+                        "Attempting backfill with an extended %s-hour window.",
+                        len(data_1h),
+                        min_1h_candles,
+                        extended_window,
+                    )
+                    data_1h = self.market_data.get_1h_data(
+                        window_hours=extended_window,
+                        use_direct_interval=True,
+                        include_latest=True,
+                    )
+                    if len(data_1h) >= min_1h_candles:
+                        # Persist new window size for subsequent cycles
+                        self.config.setdefault('market_data', {})['data_window_hours_1h'] = extended_window
+                        window_hours_1h = extended_window
+                    else:
+                        logger.warning(
+                            "Still insufficient 1h data after extended backfill (%s candles). "
+                            "Skipping cycle and waiting for more market data.",
+                            len(data_1h),
+                        )
+                        return
+                else:
+                    logger.warning(
+                        "Insufficient 1h data (%s candles). Need at least %s for inside bar detection. "
+                        "Skipping cycle. Data may be too recent or aggregation failed.",
+                        len(data_1h),
+                        min_1h_candles,
+                    )
+                    return
             
             # Note: 15m data is no longer required (only using 1H breakouts)
             # Still fetch it for backward compatibility but don't validate it

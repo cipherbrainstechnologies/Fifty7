@@ -851,6 +851,10 @@ if 'next_auto_refresh_ts' not in st.session_state:
     st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
 if 'auto_refresh_counter' not in st.session_state:
     st.session_state.auto_refresh_counter = 0
+if 'background_refresh_enabled' not in st.session_state:
+    st.session_state.background_refresh_enabled = True
+if 'background_refresh_interval_sec' not in st.session_state:
+    st.session_state.background_refresh_interval_sec = 10
 if 'breakout_alert_audio' not in st.session_state:
     st.session_state.breakout_alert_audio = _generate_breakout_alert_audio()
 if 'last_breakout_alert_key' not in st.session_state:
@@ -1323,18 +1327,55 @@ if tab == "Dashboard":
     except Exception:
         pass
 
-    # Auto-refresh toggle with tooltip
-    auto = st.checkbox(
-        f"🔄 Auto-refresh every {st.session_state.auto_refresh_interval_sec} seconds",
-        value=st.session_state.auto_refresh_enabled,
-        help="Automatically refreshes the dashboard to show latest market data and trade updates"
-    )
-    st.session_state.auto_refresh_enabled = auto
-    if auto:
-        st.caption("✅ Auto-refresh enabled - Market data will refresh in background (no UI flicker)")
-    else:
-        st.caption("⏸️ Auto-refresh paused - use manual refresh or restart the algo to resume.")
-        # Background refresh will be handled at the end of the page render
+    # Auto-refresh + interval controls
+    auto_col, interval_col = st.columns([2, 1], gap="small")
+    with auto_col:
+        auto = st.checkbox(
+            "🔄 Enable auto-refresh",
+            value=st.session_state.auto_refresh_enabled,
+            help="Automatically refresh the dashboard (blocking refresh, useful for live monitoring)."
+        )
+        st.session_state.auto_refresh_enabled = auto
+        if auto:
+            st.caption("✅ Auto-refresh enabled - UI will rerun on the chosen cadence.")
+        else:
+            st.caption("⏸️ Auto-refresh paused. Use manual refresh or background refresh to stay updated.")
+    with interval_col:
+        new_interval = st.number_input(
+            "Auto interval (sec)",
+            min_value=5,
+            max_value=180,
+            value=int(st.session_state.auto_refresh_interval_sec),
+            step=5,
+            help="How frequently the dashboard reruns to fetch the latest data."
+        )
+        if new_interval != st.session_state.auto_refresh_interval_sec:
+            st.session_state.auto_refresh_interval_sec = new_interval
+            st.session_state.next_auto_refresh_ts = time.time() + new_interval
+
+    bg_col, bg_interval_col = st.columns([2, 1], gap="small")
+    with bg_col:
+        bg_enabled = st.checkbox(
+            "🧵 Enable background refresh (non-blocking)",
+            value=st.session_state.background_refresh_enabled,
+            help="Refresh market data and broker tokens in a background thread without rerunning the UI."
+        )
+        st.session_state.background_refresh_enabled = bg_enabled
+        if bg_enabled:
+            st.caption("🧵 Background refresh active — data updates silently even when auto-refresh is paused.")
+        else:
+            st.caption("🚫 Background refresh disabled — no background threads will run.")
+    with bg_interval_col:
+        new_bg_interval = st.number_input(
+            "Background interval (sec)",
+            min_value=5,
+            max_value=180,
+            value=int(st.session_state.background_refresh_interval_sec),
+            step=5,
+            help="Minimum time between background refresh cycles."
+        )
+        if new_bg_interval != st.session_state.background_refresh_interval_sec:
+            st.session_state.background_refresh_interval_sec = new_bg_interval
     
     if st.session_state.show_strategy_settings:
         st.divider()
@@ -2183,21 +2224,18 @@ if tab == "Dashboard":
         st.write(f"- Volume Spike: {'✅' if filters.get('volume_spike') else '❌'}")
         st.write(f"- Avoid Open Range: {'✅' if filters.get('avoid_open_range') else '❌'}")
 
-    # Perform background API refresh if auto-refresh is enabled (non-blocking)
-    # Date: 2025-01-27
-    # Purpose: Refresh API data in background without causing UI flicker from full page rerun
+    # Perform background API refresh if enabled (non-blocking)
+    if st.session_state.background_refresh_enabled:
+        start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)
+
+    # Auto-refresh fallback (blocking rerun)
     if auto:
-        start_background_refresh_if_needed(interval_seconds=st.session_state.auto_refresh_interval_sec)
-        # Use time.sleep with rerun only if needed (fallback for very old data)
-        # But prefer background refresh to avoid UI flicker
         if st.session_state.last_refresh_time is not None:
             time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
-            # Only rerun if last refresh was more than 15 seconds ago (fallback)
             if time_since_last > 15:
                 time.sleep(10)
                 st.rerun()
         else:
-            # First load, wait a bit then refresh
             time.sleep(10)
             st.rerun()
 
