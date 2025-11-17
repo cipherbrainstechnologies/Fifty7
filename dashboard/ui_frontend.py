@@ -884,6 +884,14 @@ if st.session_state.live_runner is None:
         _set_live_runner_runtime(None)
 
 # Ensure auto-refresh session state defaults before usage
+if 'execution_armed' not in st.session_state:
+    st.session_state.execution_armed = False
+if st.session_state.live_runner is not None:
+    try:
+        st.session_state.live_runner.execution_armed = st.session_state.execution_armed
+    except Exception:
+        pass
+
 if 'auto_refresh_enabled' not in st.session_state:
     st.session_state.auto_refresh_enabled = True
 if 'auto_refresh_interval_sec' not in st.session_state:
