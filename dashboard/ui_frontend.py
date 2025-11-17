@@ -910,6 +910,9 @@ previous_ui_render_time = st.session_state.get('_last_ui_render_time')
 current_ui_render_time = datetime.now()
 st.session_state['_last_ui_render_time'] = current_ui_render_time
 
+current_main_tab = st.session_state.get("selected_main_tab", "Dashboard")
+
+
 def _trigger_market_data_refresh(reason: str) -> bool:
     """
     Refresh market data and capture telemetry.
@@ -960,7 +963,7 @@ if auto_refresh_active:
         st.session_state.auto_refresh_counter = st.session_state.get('auto_refresh_counter', 0) + 1
         st.rerun()
 else:
-    # Reset the next refresh timestamp so the timer starts fresh when re-enabled
+    # Reset the next refresh timestamp so the timer starts fresh when re-enabled or when returning to Dashboard
     st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
 
 # ===================================================================
