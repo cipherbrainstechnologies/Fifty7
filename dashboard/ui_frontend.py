@@ -2269,88 +2269,6 @@ if tab == "Dashboard":
     else:
         st.info("ℹ️ No active trades")
     
-    # Recent Trade Journal Section (last 5)
-    def _fetch_recent_missed(limit: int = 5):
-        try:
-            from engine.db import get_session, init_database
-            from engine.models import MissedTrade
-        except Exception:
-            return []
-        cfg = config if isinstance(config, dict) else {}
-        org_id, user_id = resolve_tenant(cfg)
-        try:
-            init_database(create_all=True)
-        except Exception:
-            pass
-        sess_gen = get_session()
-        db = next(sess_gen)
-        try:
-            rows = (
-                db.query(MissedTrade)
-                .filter(MissedTrade.org_id == org_id, MissedTrade.user_id == user_id)
-                .order_by(MissedTrade.logged_at.desc())
-                .limit(limit)
-                .all()
-            )
-            result = []
-            for r in rows:
-                result.append({
-                    "logged_at": r.logged_at.isoformat() if r.logged_at else None,
-                    "direction": r.direction,
-                    "strike": r.strike,
-                    "entry_est": float(r.entry_price) if r.entry_price is not None else None,
-                    "sl_est": float(r.sl_price) if r.sl_price is not None else None,
-                    "tp_est": float(r.tp_price) if r.tp_price is not None else None,
-                    "range_high": float(r.range_high) if r.range_high is not None else None,
-                    "range_low": float(r.range_low) if r.range_low is not None else None,
-                    "inside_bar_time": r.inside_bar_time.isoformat() if r.inside_bar_time else None,
-                    "signal_time": r.signal_time.isoformat() if r.signal_time else None,
-                    "reason": r.reason,
-                })
-            return result
-        except Exception:
-            return []
-        finally:
-            try:
-                next(sess_gen)
-            except StopIteration:
-                pass
-
-    st.divider()
-    st.subheader("📒 Trade Journal")
-    trade_tabs = st.tabs(["✅ Executed Trades", "⚠️ Missed Trades"])
-
-    with trade_tabs[0]:
-        try:
-            all_trades = st.session_state.trade_logger.get_all_trades()
-            if not all_trades.empty:
-                recent_trades = all_trades.tail(5)
-                st.dataframe(
-                    recent_trades,
-                    use_container_width=True,
-                    height=220
-                )
-                if len(recent_trades) > 0:
-                    recent_pnl = recent_trades['pnl'].sum() if 'pnl' in recent_trades.columns else 0
-                    st.caption(f"📊 Recent 5 trades P&L: ₹{recent_pnl:,.2f}")
-            else:
-                st.info("📝 No trades logged yet. Your trade journal will appear here once trades are executed.")
-        except Exception as e:
-            st.warning(f"⚠️ Could not load trade journal: {e}")
-
-    with trade_tabs[1]:
-        missed_records = _fetch_recent_missed(limit=5)
-        if missed_records:
-            missed_df = pd.DataFrame(missed_records)
-            st.dataframe(
-                missed_df,
-                use_container_width=True,
-                height=220
-            )
-            st.caption("🔍 Missed trades are stored for potential P&L analysis.")
-        else:
-            st.info("🎯 No missed trades recorded yet. Great job staying on schedule!")
-    
     # System Information
     st.divider()
     st.subheader("ℹ️ System Information")
@@ -2962,6 +2880,74 @@ elif tab == "Trade Journal":
     
     # Get all trades
     all_trades = trade_logger.get_all_trades()
+
+    def _fetch_recent_missed(limit: int = 5):
+        try:
+            from engine.db import get_session, init_database
+            from engine.models import MissedTrade
+        except Exception:
+            return []
+        cfg = config if isinstance(config, dict) else {}
+        org_id, user_id = resolve_tenant(cfg)
+        try:
+            init_database(create_all=True)
+        except Exception:
+            pass
+        sess_gen = get_session()
+        db = next(sess_gen)
+        try:
+            rows = (
+                db.query(MissedTrade)
+                .filter(MissedTrade.org_id == org_id, MissedTrade.user_id == user_id)
+                .order_by(MissedTrade.logged_at.desc())
+                .limit(limit)
+                .all()
+            )
+            results = []
+            for r in rows:
+                results.append({
+                    "logged_at": r.logged_at.isoformat() if r.logged_at else None,
+                    "direction": r.direction,
+                    "strike": r.strike,
+                    "entry_est": float(r.entry_price) if r.entry_price is not None else None,
+                    "sl_est": float(r.sl_price) if r.sl_price is not None else None,
+                    "tp_est": float(r.tp_price) if r.tp_price is not None else None,
+                    "range_high": float(r.range_high) if r.range_high is not None else None,
+                    "range_low": float(r.range_low) if r.range_low is not None else None,
+                    "inside_bar_time": r.inside_bar_time.isoformat() if r.inside_bar_time else None,
+                    "signal_time": r.signal_time.isoformat() if r.signal_time else None,
+                    "reason": r.reason,
+                })
+            return results
+        except Exception:
+            return []
+        finally:
+            try:
+                next(sess_gen)
+            except StopIteration:
+                pass
+
+    st.subheader("📒 Journal Snapshot")
+    snapshot_tabs = st.tabs(["✅ Executed (Last 5)", "⚠️ Missed Trades"])
+
+    with snapshot_tabs[0]:
+        if not all_trades.empty:
+            latest_executed = all_trades.tail(5)
+            st.dataframe(latest_executed, use_container_width=True, height=220)
+            if 'pnl' in latest_executed.columns:
+                pnl_total = latest_executed['pnl'].sum()
+                st.caption(f"📊 Recent 5 trades P&L: ₹{pnl_total:,.2f}")
+        else:
+            st.info("📝 No trades logged yet. Start the algo to capture live fills.")
+
+    with snapshot_tabs[1]:
+        missed_records = _fetch_recent_missed(limit=5)
+        if missed_records:
+            missed_df = pd.DataFrame(missed_records)
+            st.dataframe(missed_df, use_container_width=True, height=220)
+            st.caption("🔍 Missed trades are persisted for potential P&L review.")
+        else:
+            st.info("🎯 No missed trades recorded yet. Great job staying on schedule!")
     
     if not all_trades.empty:
         # Filters Section
