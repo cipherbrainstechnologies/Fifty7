@@ -918,7 +918,9 @@ previous_ui_render_time = st.session_state.get('_last_ui_render_time')
 current_ui_render_time = datetime.now()
 st.session_state['_last_ui_render_time'] = current_ui_render_time
 
-current_main_tab = st.session_state.get("selected_main_tab", "Dashboard")
+if 'selected_main_tab' not in st.session_state:
+    st.session_state.selected_main_tab = "Dashboard"
+current_main_tab = st.session_state.selected_main_tab
 
 
 def _trigger_market_data_refresh(reason: str) -> bool:
