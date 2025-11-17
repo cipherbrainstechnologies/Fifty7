@@ -785,6 +785,7 @@ if 'broker' not in st.session_state:
         if broker_config_for_interface:
             # Ensure config dict has broker section for create_broker_interface
             temp_config = {'broker': broker_config_for_interface}
+            st.session_state['_broker_interface_config'] = broker_config_for_interface
             st.session_state.broker = create_broker_interface(temp_config)
         else:
             st.session_state.broker = None
@@ -804,8 +805,37 @@ if 'trade_logger' not in st.session_state:
 # Initialize market data provider (only if broker is available)
 if 'market_data_provider' not in st.session_state:
     if st.session_state.broker is not None:
+        historical_app_config = None
         try:
-            st.session_state.market_data_provider = MarketDataProvider(st.session_state.broker)
+            smartapi_apps = getattr(st.secrets, "smartapi_apps", None)
+            historical_section = None
+            if smartapi_apps:
+                try:
+                    historical_section = smartapi_apps.get("historical")
+                except AttributeError:
+                    historical_section = getattr(smartapi_apps, "historical", None)
+            if historical_section:
+                try:
+                    hist_dict = dict(historical_section)
+                except Exception:
+                    hist_dict = historical_section
+                broker_defaults = st.session_state.get('_broker_interface_config', {}) or {}
+                historical_app_config = {
+                    "api_key": hist_dict.get("api_key"),
+                    "api_secret": hist_dict.get("api_secret"),
+                    "username": hist_dict.get("username", broker_defaults.get("username")),
+                    "client_id": hist_dict.get("client_id", broker_defaults.get("client_id")),
+                    "pwd": hist_dict.get("pwd", broker_defaults.get("pwd")),
+                    "token": hist_dict.get("token", broker_defaults.get("token")),
+                }
+        except Exception as cred_error:
+            logger.warning(f"Unable to load historical SmartAPI credentials: {cred_error}")
+            historical_app_config = None
+        try:
+            st.session_state.market_data_provider = MarketDataProvider(
+                st.session_state.broker,
+                historical_app_config=historical_app_config,
+            )
         except Exception as e:
             st.session_state.market_data_provider = None
             st.warning(f"Market data provider initialization warning: {e}")

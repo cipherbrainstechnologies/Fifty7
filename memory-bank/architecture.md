@@ -46,11 +46,11 @@ Reference: `docs/api/API-Documentation-File.md`
 - **Trading API (SmartAPI Trading App)**  
   - Credentials: `api_key` + `secret_key` (current pair `sz5neY7b` / `8a5bd331-9445-4d0e-a975-24ef7c73162a`).  
   - Usage: `engine/broker_connector.py`, `engine/signal_handler.py`, and dashboard order controls issue session logins, JWT refresh, order placement, RMS/funds requests, and portfolio pulls via Angel One SmartAPI REST endpoints (X-PrivateKey header).  
-  - Notes: Sessions last 28 hours; authenticate with client code, PIN, and TOTP. Tokens must be persisted in memory only and refreshed via `generateTokens`.
+  - Notes: Sessions last 28 hours; authenticate with client code, PIN, and TOTP. Tokens must be persisted in memory only and refreshed via `generateTokens`. As of 2025-11-17 the broker connector auto-regenerates a fresh session whenever refresh calls return `AG8001/Invalid Token`, preventing silent expiry loops.
 
 - **Historical Data API (SmartAPI Historical App)**  
   - Credentials: `api_key` + `secret_key` pair `oV0N6xt7` / `4ab84310-301a-4114-be83-4b171e322e49`.  
-  - Usage: `engine/market_data.py` and backtesting flows call SmartAPI historical OHLC endpoints so live trading quota is not consumed. This app is scoped to data-only permissions and should never be used for order placement.  
+  - Usage: `engine/market_data.py` and backtesting flows call SmartAPI historical OHLC endpoints so live trading quota is not consumed. Live trading now initializes a dedicated SmartConnect session for this app (using the trader’s login + TOTP) and automatically falls back to the trading session if the data-only login is unavailable.  
   - Notes: Rate limited separately; integrate through the market data provider class so requests can be throttled/thinned centrally.
 
 - **Publisher API (SmartAPI Publisher App)**  

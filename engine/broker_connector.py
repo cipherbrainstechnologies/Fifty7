@@ -338,15 +338,39 @@ class AngelOneBroker(BrokerInterface):
                 logger.warning("No refresh token available. Generating new session...")
                 return self._generate_session()
             
-            # Generate new token using refresh token
             token_data = self.smart_api.generateToken(self.refresh_token)
-            
-            if token_data.get('status') == False:
-                logger.warning("Token refresh failed. Generating new session...")
+
+            if isinstance(token_data, str):
+                logger.warning("Token refresh returned string response. Regenerating full session.")
+                return self._generate_session()
+
+            if not isinstance(token_data, dict):
+                logger.error(f"Token refresh returned unexpected response type: {type(token_data)}")
                 return self._generate_session()
             
-            response_data = token_data.get('data', {})
-            self.auth_token = response_data.get('jwtToken', self.auth_token)
+            status = token_data.get('status', True)
+            if status is False:
+                logger.warning(
+                    "Token refresh failed with error %s. Regenerating full session.",
+                    token_data.get('errorcode', 'UNKNOWN'),
+                )
+                return self._generate_session()
+            
+            response_data = token_data.get('data')
+            if not isinstance(response_data, dict):
+                logger.warning("Token refresh response missing data payload. Regenerating full session.")
+                return self._generate_session()
+            
+            new_jwt = response_data.get('jwtToken')
+            new_refresh = response_data.get('refreshToken')
+            if new_jwt:
+                self.auth_token = new_jwt
+                try:
+                    self.smart_api.setAccessToken(new_jwt)
+                except Exception:
+                    pass
+            if new_refresh:
+                self.refresh_token = new_refresh
             logger.info("Token refreshed successfully")
             return True
             

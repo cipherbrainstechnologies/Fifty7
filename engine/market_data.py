@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import time
 from logzero import logger
 import pytz
+import pyotp
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -28,7 +29,7 @@ class MarketDataProvider:
     Handles OHLC data fetching, symbol token lookup, and timeframe aggregation.
     """
     
-    def __init__(self, broker_instance):
+    def __init__(self, broker_instance, historical_app_config: Optional[Dict] = None):
         """
         Initialize MarketDataProvider with broker instance.
         
@@ -42,6 +43,27 @@ class MarketDataProvider:
         
         self.broker = broker_instance
         self.smart_api = broker_instance.smart_api
+        self.historical_app_config = historical_app_config or {}
+        self.historical_api = None
+        self._historical_session_generated = False
+        self._historical_refresh_token = None
+        self.historical_username = self.historical_app_config.get(
+            "username", getattr(broker_instance, "username", getattr(broker_instance, "client_id", ""))
+        )
+        self.historical_pwd = self.historical_app_config.get(
+            "pwd", getattr(broker_instance, "pwd", "")
+        )
+        self.historical_totp_secret = self.historical_app_config.get(
+            "token", getattr(broker_instance, "token", "")
+        )
+        self.use_dedicated_historical = bool(self.historical_app_config.get("api_key"))
+        if self.use_dedicated_historical and SmartConnect is not None:
+            try:
+                self.historical_api = SmartConnect(self.historical_app_config.get("api_key"))
+                logger.info("Historical SmartAPI client initialized for dedicated candle fetching")
+            except Exception as e:
+                logger.warning(f"Failed to initialize historical SmartAPI client: {e}")
+                self.use_dedicated_historical = False
         
         # Cache NIFTY token (fetch once)
         self.nifty_token = None
@@ -59,6 +81,96 @@ class MarketDataProvider:
         self._min_request_interval = 1.0  # 1 second between requests
         
         logger.info("MarketDataProvider initialized")
+    
+    def _generate_historical_session(self) -> bool:
+        """
+        Generate a session for the dedicated historical SmartAPI app (if configured).
+        """
+        if not self.historical_api or not self.use_dedicated_historical:
+            return False
+        
+        totp_secret = self.historical_totp_secret or getattr(self.broker, "token", "")
+        if not totp_secret:
+            logger.error("Cannot generate historical session: No TOTP secret configured.")
+            return False
+        
+        username = self.historical_username or getattr(self.broker, "username", "")
+        password = self.historical_pwd or getattr(self.broker, "pwd", "")
+        if not username or not password:
+            logger.error("Cannot generate historical session: Missing username or password.")
+            return False
+        
+        try:
+            totp = pyotp.TOTP(totp_secret).now()
+            data = self.historical_api.generateSession(username, password, totp)
+            if not isinstance(data, dict) or data.get("status") is False:
+                logger.error(f"Historical session generation failed: {data.get('message') if isinstance(data, dict) else data}")
+                return False
+            response_data = data.get("data", {})
+            self._historical_refresh_token = response_data.get("refreshToken")
+            self._historical_session_generated = True
+            logger.info("Historical SmartAPI session generated successfully")
+            return True
+        except Exception as exc:
+            logger.exception(f"Error generating historical SmartAPI session: {exc}")
+            self._historical_session_generated = False
+            return False
+    
+    def _refresh_historical_session(self) -> bool:
+        """
+        Refresh the dedicated historical SmartAPI session.
+        """
+        if not self.historical_api or not self.use_dedicated_historical:
+            return False
+        if not self._historical_refresh_token:
+            logger.warning("Historical refresh token unavailable. Re-generating session.")
+            return self._generate_historical_session()
+        try:
+            token_data = self.historical_api.generateToken(self._historical_refresh_token)
+            if isinstance(token_data, str):
+                logger.warning("Historical token refresh returned string. Regenerating session.")
+                return self._generate_historical_session()
+            if not isinstance(token_data, dict):
+                logger.error(f"Historical token refresh returned unexpected type: {type(token_data)}")
+                return self._generate_historical_session()
+            if token_data.get("status") is False:
+                logger.warning(f"Historical token refresh failed ({token_data.get('errorcode', 'UNKNOWN')}). Regenerating session.")
+                return self._generate_historical_session()
+            response_data = token_data.get("data", {})
+            if not isinstance(response_data, dict):
+                logger.warning("Historical token refresh response missing data payload. Regenerating session.")
+                return self._generate_historical_session()
+            new_refresh = response_data.get("refreshToken")
+            if new_refresh:
+                self._historical_refresh_token = new_refresh
+            logger.debug("Historical SmartAPI token refreshed successfully")
+            return True
+        except Exception as exc:
+            logger.exception(f"Error refreshing historical SmartAPI token: {exc}")
+            return self._generate_historical_session()
+    
+    def _ensure_historical_session(self) -> bool:
+        if not self.historical_api or not self.use_dedicated_historical:
+            return False
+        if not self._historical_session_generated:
+            return self._generate_historical_session()
+        return self._refresh_historical_session()
+    
+    def _get_smart_api_client(self, prefer_historical: bool = False):
+        """
+        Return an authenticated SmartConnect client for historical data requests.
+        Prefers the dedicated historical app when available, but falls back to the broker session.
+        """
+        if prefer_historical and self.use_dedicated_historical:
+            if self._ensure_historical_session():
+                return self.historical_api
+            logger.warning("Historical SmartAPI session unavailable, falling back to trading session.")
+        
+        if hasattr(self.broker, "_ensure_session") and self.broker._ensure_session():
+            return self.smart_api
+        
+        logger.error("Unable to obtain valid SmartAPI session for market data.")
+        return None
     
     def _is_candle_complete(self, candle_time: datetime, timeframe_minutes: int) -> bool:
         """
@@ -193,7 +305,8 @@ class MarketDataProvider:
         self,
         params: Dict,
         max_retries: int = MAX_RETRIES,
-        retry_delay: int = RETRY_DELAY
+        retry_delay: int = RETRY_DELAY,
+        smart_api_client=None,
     ) -> Optional[Dict]:
         """
         Fetch historical candles with retry logic for resilient API calls.
@@ -207,12 +320,17 @@ class MarketDataProvider:
         Returns:
             API response dictionary or None if all retries failed
         """
+        client = smart_api_client or self.smart_api
+        if client is None:
+            logger.error("No SmartAPI client available for historical candle request.")
+            return None
+
         for attempt in range(1, max_retries + 1):
             try:
                 self._rate_limit()
                 
                 # Call SmartAPI getCandleData
-                response = self.smart_api.getCandleData(params)
+                response = client.getCandleData(params)
                 
                 # Check if response is valid
                 if not isinstance(response, dict):
@@ -464,8 +582,9 @@ class MarketDataProvider:
             DataFrame with columns: Date, Open, High, Low, Close, Volume or None
         """
         try:
-            if not self.broker._ensure_session():
-                logger.error("Cannot fetch historical candles: No valid session")
+            api_client = self._get_smart_api_client(prefer_historical=True)
+            if api_client is None:
+                logger.error("Cannot fetch historical candles: no SmartAPI client available.")
                 return None
             
             if symbol_token is None:
@@ -503,7 +622,7 @@ class MarketDataProvider:
             }
             
             # Call SmartAPI getCandleData with retry logic
-            response = self._fetch_candles_with_retry(params)
+            response = self._fetch_candles_with_retry(params, smart_api_client=api_client)
             
             if response is None:
                 if cache_key in self._historical_cache:
