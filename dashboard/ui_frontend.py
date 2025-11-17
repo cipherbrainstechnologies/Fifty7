@@ -836,6 +836,16 @@ if 'market_data_provider' not in st.session_state:
                 st.session_state.broker,
                 historical_app_config=historical_app_config,
             )
+        except TypeError as type_err:
+            logger.warning(
+                "MarketDataProvider does not support historical_app_config parameter (%s). Falling back to legacy initialization.",
+                type_err,
+            )
+            try:
+                st.session_state.market_data_provider = MarketDataProvider(st.session_state.broker)
+            except Exception as legacy_err:
+                st.session_state.market_data_provider = None
+                st.warning(f"Market data provider initialization warning: {legacy_err}")
         except Exception as e:
             st.session_state.market_data_provider = None
             st.warning(f"Market data provider initialization warning: {e}")
