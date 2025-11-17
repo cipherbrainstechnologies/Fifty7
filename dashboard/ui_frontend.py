@@ -1550,7 +1550,20 @@ if tab == "Dashboard":
         except Exception:
             return str(ts_value)
     
+    def _fmt_currency(val):
+        try:
+            return f"₹{float(val):,.2f}"
+        except Exception:
+            return "—"
+    
+    def _fmt_number(val):
+        try:
+            return f"{float(val):,.2f}"
+        except Exception:
+            return "—"
+    
     one_hour_data = pd.DataFrame()
+    latest_close_price = None
     try:
         if st.session_state.get('market_data_provider') is not None:
             window_hours = 48
@@ -1573,6 +1586,10 @@ if tab == "Dashboard":
             except Exception:
                 pass
         df_ib = df_ib.sort_values('Date').reset_index(drop=True)
+        try:
+            latest_close_price = float(df_ib['Close'].iloc[-1])
+        except Exception:
+            latest_close_price = None
         
         try:
             inside_indices = detect_inside_bar(df_ib)
@@ -1651,15 +1668,48 @@ if tab == "Dashboard":
     missed_trade_info = st.session_state.get("last_missed_trade")
     if missed_trade_info:
         with st.expander("⚠️ Missed Breakout Window", expanded=True):
+            missed_close = _fmt_currency(missed_trade_info.get('close_price'))
             st.warning(
                 f"Trade skipped — breakout candle closed more than 5 minutes ago.\n\n"
                 f"- Direction: **{missed_trade_info.get('direction', '—')}**\n"
                 f"- Inside Bar: {missed_trade_info.get('inside_bar_time', '—')}\n"
                 f"- Mother Candle: {missed_trade_info.get('signal_time', '—')}\n"
                 f"- Range: {missed_trade_info.get('range_low', '—')} → {missed_trade_info.get('range_high', '—')}\n"
+                f"- Strike: **{missed_trade_info.get('strike', '—')}**\n"
+                f"- Breakout Close: {missed_close}\n"
                 f"- Logged at: {missed_trade_info.get('timestamp', '—')}"
             )
             st.caption("Breakout execution is blocked after 5 minutes to avoid chasing late entries.")
+    
+    pending_signal = st.session_state.get("pending_trade_signal")
+    if pending_signal:
+        st.divider()
+        st.subheader("🎯 Pending Trade (Awaiting Execution)")
+        ps_cols = st.columns(4)
+        with ps_cols[0]:
+            st.metric("Direction", pending_signal.get("direction", "—"))
+            st.metric("Strike", pending_signal.get("strike", "—"))
+        with ps_cols[1]:
+            st.metric("Entry (est.)", _fmt_currency(pending_signal.get('entry')))
+            st.metric("Stop Loss", _fmt_currency(pending_signal.get('sl')))
+        with ps_cols[2]:
+            st.metric("Target", _fmt_currency(pending_signal.get('tp')))
+            st.metric("Range High", _fmt_number(pending_signal.get('range_high')))
+        with ps_cols[3]:
+            st.metric("Range Low", _fmt_number(pending_signal.get('range_low')))
+            st.metric("Symbol", pending_signal.get("symbol", "NIFTY"))
+        st.caption(
+            f"Inside bar: {pending_signal.get('inside_bar_time', '—')} • "
+            f"Signal detected: {pending_signal.get('signal_time', '—')}"
+        )
+    elif inside_bar_available and latest_close_price:
+        atm_offset = config.get('strategy', {}).get('atm_offset', 0)
+        projected_ce = strategy_engine_module.calculate_strike_price(latest_close_price, "CE", atm_offset)
+        projected_pe = strategy_engine_module.calculate_strike_price(latest_close_price, "PE", atm_offset)
+        st.info(
+            f"Projected strikes if breakout triggers — CE: {projected_ce}, PE: {projected_pe} "
+            f"(ATM offset {atm_offset})"
+        )
     
     # Live data status
     if st.session_state.algo_running and st.session_state.live_runner is not None:

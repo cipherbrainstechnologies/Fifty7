@@ -11,7 +11,7 @@ from logzero import logger
 import pandas as pd
 
 from engine.market_data import MarketDataProvider
-from engine.signal_handler import SignalHandler
+from engine.signal_handler import SignalHandler, _set_session_state
 from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
 from engine.position_monitor import PositionMonitor, PositionRules
@@ -869,6 +869,7 @@ class LiveStrategyRunner:
                 f"Trade logged: Order {order_id}, {direction} {strike} @ ₹{entry_price:.2f}, "
                 f"{self.order_lots} lot(s) ({self.order_lots * self.lot_size} units)"
             )
+            _set_session_state('pending_trade_signal', None)
 
             # Start PositionMonitor for this position
             try:

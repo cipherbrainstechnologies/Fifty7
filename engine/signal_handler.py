@@ -23,6 +23,15 @@ def _set_session_state(key: str, value):
     st.session_state[key] = value
 
 
+def _format_ts(value):
+    if value is None:
+        return None
+    try:
+        return value.strftime("%Y-%m-%d %H:%M:%S IST")
+    except Exception:
+        return str(value)
+
+
 class SignalHandler:
     """
     Handles signal processing, validation, and trade signal generation.
@@ -107,6 +116,7 @@ class SignalHandler:
         sl_points = self.config.get('strategy', {}).get('sl', 30)
         rr_ratio = self.config.get('strategy', {}).get('rr', 1.8)
         atm_offset = self.config.get('strategy', {}).get('atm_offset', 0)
+        symbol_name = self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
         
         # Validate data sufficiency
         if data_1h.empty or len(data_1h) < 20:
@@ -146,17 +156,22 @@ class SignalHandler:
             logger.warning("Missed trade detected - invalidating signal")
             self._active_signal_state = None
             _set_session_state('last_breakout_direction', None)
+            latest_close = latest_closed_candle['Close'] if latest_closed_candle is not None else current_price
+            missed_strike = calculate_strike_price(latest_close, breakout_direction, atm_offset)
             _set_session_state(
                 'last_missed_trade',
                 {
                     'direction': breakout_direction,
                     'range_high': active_signal['range_high'],
                     'range_low': active_signal['range_low'],
-                    'inside_bar_time': active_signal['inside_bar_time'],
-                    'signal_time': active_signal['signal_time'],
+                    'inside_bar_time': _format_ts(active_signal['inside_bar_time']),
+                    'signal_time': _format_ts(active_signal['signal_time']),
                     'timestamp': datetime.now().isoformat(),
+                    'strike': missed_strike,
+                    'close_price': latest_close,
                 }
             )
+            _set_session_state('pending_trade_signal', None)
             return None
         
         # Breakout confirmed - generate trade signal
@@ -183,7 +198,8 @@ class SignalHandler:
             'range_low': active_signal['range_low'],
             'reason': f"Inside Bar 1H breakout on {breakout_direction} side",
             'inside_bar_time': active_signal['inside_bar_time'],
-            'signal_time': active_signal['signal_time']
+            'signal_time': active_signal['signal_time'],
+            'symbol': symbol_name,
         }
         
         # Validate signal
@@ -201,6 +217,10 @@ class SignalHandler:
         self._active_signal_state = None
         _set_session_state('last_breakout_direction', breakout_direction)
         _set_session_state('last_missed_trade', None)
+        ui_signal = signal.copy()
+        ui_signal['inside_bar_time'] = _format_ts(active_signal['inside_bar_time'])
+        ui_signal['signal_time'] = _format_ts(active_signal['signal_time'])
+        _set_session_state('pending_trade_signal', ui_signal)
         
         return signal
     
