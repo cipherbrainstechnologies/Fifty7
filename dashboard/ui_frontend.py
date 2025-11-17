@@ -3134,6 +3134,7 @@ elif tab == "Backtest":
     st.session_state.setdefault("backtest_results_source", None)
     st.session_state.setdefault("backtest_equity_curve", None)
     st.session_state.setdefault("backtest_trades", None)
+    st.session_state.setdefault("backtest_flash", None)
     
     def store_backtest_results(results: Dict, source_label: str) -> None:
         st.session_state.backtest_results = results
@@ -3270,6 +3271,11 @@ elif tab == "Backtest":
             else:
                 st.info("No individual trade records were returned.")
     
+    flash_msg = st.session_state.get("backtest_flash")
+    if flash_msg:
+        st.success(flash_msg)
+        st.session_state.backtest_flash = None
+
     # Quick glance cards (latest results)
     last_results = st.session_state.backtest_results
     summary_cols = st.columns(3, gap="small")
@@ -3749,6 +3755,8 @@ elif tab == "Backtest":
                         else:
                             store_backtest_results(results, "CSV Upload")
                             st.success("Backtest completed. Review analytics in the Results tab.")
+                            st.session_state.backtest_flash = "Backtest completed. Review analytics in the Results tab."
+                            st.rerun()
                     except Exception as e:
                         st.error(f"❌ Backtest failed: {e}")
                         st.exception(e)
@@ -3804,6 +3812,8 @@ elif tab == "Backtest":
                                     else:
                                         store_backtest_results(results, "DesiQuant Cloud")
                                         st.success("Backtest completed. Review analytics in the Results tab.")
+                                        st.session_state.backtest_flash = "Backtest completed. Review analytics in the Results tab."
+                                        st.rerun()
                             except Exception as e:
                                 st.error(f"❌ Cloud backtest failed: {e}")
                                 st.exception(e)
@@ -3877,6 +3887,8 @@ elif tab == "Backtest":
                                         else:
                                             store_backtest_results(results, "Angel SmartAPI")
                                             st.success("Backtest completed. Review analytics in the Results tab.")
+                                            st.session_state.backtest_flash = "Backtest completed. Review analytics in the Results tab."
+                                            st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Angel SmartAPI backtest failed: {e}")
                                     st.exception(e)
