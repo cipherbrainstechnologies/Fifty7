@@ -66,3 +66,35 @@ class PositionSnapshot(Base):
     )
 
 
+class MissedTrade(Base):
+    __tablename__ = "missed_trades"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    org_id = Column(String(64), nullable=False, index=True)
+    user_id = Column(String(64), nullable=False, index=True)
+
+    direction = Column(String(4), nullable=False)
+    strike = Column(Integer, nullable=True)
+
+    entry_price = Column(Numeric(18, 6), nullable=True)
+    sl_price = Column(Numeric(18, 6), nullable=True)
+    tp_price = Column(Numeric(18, 6), nullable=True)
+
+    range_high = Column(Numeric(18, 6), nullable=True)
+    range_low = Column(Numeric(18, 6), nullable=True)
+
+    inside_bar_time = Column(DateTime(timezone=True), nullable=True)
+    signal_time = Column(DateTime(timezone=True), nullable=True)
+    breakout_close = Column(Numeric(18, 6), nullable=True)
+
+    reason = Column(String(255), nullable=True)
+
+    logged_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("ix_missed_trades_org_user_logged", "org_id", "user_id", "logged_at"),
+    )
+
+

@@ -12,6 +12,7 @@ import pandas as pd
 
 from engine.market_data import MarketDataProvider
 from engine.signal_handler import SignalHandler, _set_session_state
+from engine.tenant_context import resolve_tenant
 from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
 from engine.position_monitor import PositionMonitor, PositionRules
@@ -46,6 +47,9 @@ class LiveStrategyRunner:
         self.broker = broker
         self.trade_logger = trade_logger
         self.config = config
+        self.org_id, self.user_id = resolve_tenant(config)
+        self.strategy_id = config.get('strategy', {}).get('type', 'inside_bar')
+        self.broker_name = config.get('broker', {}).get('type', 'angel')
         
         # Running state
         self._running = False
@@ -823,7 +827,12 @@ class LiveStrategyRunner:
                     'tp': signal.get('tp'),
                     'status': 'failed',
                     'pre_reason': f"Order failed: {error_msg}",
-                    'quantity': self.order_lots
+                    'quantity': self.order_lots,
+                    'org_id': self.org_id,
+                    'user_id': self.user_id,
+                    'broker': self.broker_name,
+                    'strategy_id': self.strategy_id,
+                    'side': 'BUY',
                 })
                 return
             
@@ -862,7 +871,12 @@ class LiveStrategyRunner:
                 'tp': signal.get('tp'),
                 'status': 'open',
                 'pre_reason': signal.get('reason', 'Inside Bar breakout'),
-                'quantity': self.order_lots
+                'quantity': self.order_lots,
+                'org_id': self.org_id,
+                'user_id': self.user_id,
+                'broker': self.broker_name,
+                'strategy_id': self.strategy_id,
+                'side': 'BUY',
             })
             
             logger.info(

@@ -4,7 +4,7 @@ Signal Handler for processing and validating trading signals
 
 import pandas as pd
 from typing import Optional, Dict, List
-from datetime import datetime
+from datetime import datetime, timezone
 from engine.inside_bar_breakout_strategy import (
     detect_inside_bar,
     confirm_breakout_on_hour_close,
@@ -12,7 +12,18 @@ from engine.inside_bar_breakout_strategy import (
     calculate_sl_tp_levels,
     get_active_signal
 )
+from engine.tenant_context import resolve_tenant
 from logzero import logger
+
+try:
+    from engine.db import get_session, init_database
+    from engine.models import MissedTrade
+    MISSED_DB_AVAILABLE = True
+except Exception:
+    get_session = None
+    init_database = None
+    MissedTrade = None
+    MISSED_DB_AVAILABLE = False
 
 
 def _set_session_state(key: str, value):
@@ -48,6 +59,7 @@ class SignalHandler:
         self.active_signals = []
         self.signal_history = []
         self._active_signal_state = None  # Track active signal for new strategy
+        self.org_id, self.user_id = resolve_tenant(config)
     
     def validate_signal(self, signal: Dict) -> bool:
         """
@@ -158,6 +170,18 @@ class SignalHandler:
             _set_session_state('last_breakout_direction', None)
             latest_close = latest_closed_candle['Close'] if latest_closed_candle is not None else current_price
             missed_strike = calculate_strike_price(latest_close, breakout_direction, atm_offset)
+            self._record_missed_trade(
+                direction=breakout_direction,
+                strike=missed_strike,
+                entry=latest_close,
+                sl=stop_loss,
+                tp=take_profit,
+                range_high=active_signal['range_high'],
+                range_low=active_signal['range_low'],
+                inside_bar_time=active_signal['inside_bar_time'],
+                signal_time=active_signal['signal_time'],
+                reason="Breakout window expired"
+            )
             _set_session_state(
                 'last_missed_trade',
                 {
@@ -223,6 +247,68 @@ class SignalHandler:
         _set_session_state('pending_trade_signal', ui_signal)
         
         return signal
+
+    def _coerce_datetime(self, value) -> Optional[datetime]:
+        if value is None:
+            return None
+        try:
+            ts = pd.to_datetime(value)
+            if isinstance(ts, pd.Timestamp):
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize("UTC")
+                else:
+                    ts = ts.tz_convert("UTC")
+                return ts.to_pydatetime()
+            if isinstance(value, datetime):
+                if value.tzinfo is None:
+                    return value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc)
+        except Exception:
+            return None
+        return None
+
+    def _record_missed_trade(self, **kwargs) -> None:
+        if not MISSED_DB_AVAILABLE or MissedTrade is None or get_session is None:
+            return
+        try:
+            init_database(create_all=True)
+        except Exception:
+            pass
+
+        entry = kwargs.get('entry')
+        sl_price = kwargs.get('sl')
+        tp_price = kwargs.get('tp')
+
+        inside_bar_time = self._coerce_datetime(kwargs.get('inside_bar_time'))
+        signal_time = self._coerce_datetime(kwargs.get('signal_time'))
+
+        sess_gen = get_session()
+        db = next(sess_gen)
+        try:
+            row = MissedTrade(
+                org_id=str(self.org_id),
+                user_id=str(self.user_id),
+                direction=str(kwargs.get('direction', '')).upper(),
+                strike=kwargs.get('strike'),
+                entry_price=entry,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                range_high=kwargs.get('range_high'),
+                range_low=kwargs.get('range_low'),
+                inside_bar_time=inside_bar_time,
+                signal_time=signal_time,
+                breakout_close=entry,
+                reason=kwargs.get('reason'),
+            )
+            db.add(row)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            try:
+                next(sess_gen)
+            except StopIteration:
+                pass
     
     def get_active_signals(self) -> List[Dict]:
         """

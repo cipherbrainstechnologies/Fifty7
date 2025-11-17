@@ -25,6 +25,7 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - **data/historical/**: Historical market data for backtesting
 - **logs/**: Application logs and trade journal CSV files
 - **Angel SmartAPI Backtesting**: Optional `backtesting.angel_smartapi` config taps the SmartAPI Historical app (api key `oV0N6xt7`) for short-window spot candles (≈3–6 months, no options OHLC). Intended for validation/overlap checks, not full-scale simulations; reads credentials exclusively from `.streamlit/secrets.toml`.
+- **Trade Persistence**: Every executed trade logged via `TradeLogger` now writes both to CSV (`logs/trades.csv`) and the `trades` Postgres table once `org_id`/`user_id` are resolved (see `tenant_context`). Missed trades detected by the signal handler are also archived in the `missed_trades` table with strike, range, entry/SL/TP, and breakout close so post-analysis can compute potential gain/loss on skipped setups.
 
 ### 5. Documentation (`docs/`)
 - **setup/**: Quick start guides, local run instructions, credential setup, and automation helpers
