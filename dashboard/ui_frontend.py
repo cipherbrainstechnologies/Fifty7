@@ -3135,12 +3135,14 @@ elif tab == "Backtest":
     st.session_state.setdefault("backtest_equity_curve", None)
     st.session_state.setdefault("backtest_trades", None)
     st.session_state.setdefault("backtest_flash", None)
+    st.session_state.setdefault("backtest_results_timeframe", None)
     
     def store_backtest_results(results: Dict, source_label: str) -> None:
         st.session_state.backtest_results = results
         st.session_state.backtest_results_source = source_label
         st.session_state.backtest_equity_curve = results.get("equity_curve")
         st.session_state.backtest_trades = results.get("trades")
+        st.session_state.backtest_results_timeframe = results.get("strategy_timeframe")
     
     def render_backtest_results(results: Optional[Dict]) -> None:
         if not results:
@@ -3153,6 +3155,8 @@ elif tab == "Backtest":
         summary_cols[1].metric("Win Rate", f"{results.get('win_rate', 0.0):.2f}%")
         summary_cols[2].metric("Net P&L", f"₹{results.get('total_pnl', 0.0):,.2f}")
         summary_cols[3].metric("Return %", f"{results.get('return_pct', 0.0):.2f}%")
+        timeframe_label = results.get("strategy_timeframe", "1h")
+        st.caption(f"Strategy timeframe: {timeframe_label.upper()}")
         
         if results.get("total_trades", 0) == 0:
             st.warning("⚠️ No trades were executed during this backtest window.")
@@ -3282,10 +3286,11 @@ elif tab == "Backtest":
     if last_results:
         summary_cols[0].metric("Last P&L", f"₹{last_results.get('total_pnl', 0.0):,.2f}")
         summary_cols[1].metric("Last Win Rate", f"{last_results.get('win_rate', 0.0):.2f}%")
-        summary_cols[2].metric(
-            "Last Run Source",
-            st.session_state.backtest_results_source or "—",
-        )
+        timeframe_badge = st.session_state.backtest_results_timeframe
+        source_label = st.session_state.backtest_results_source or "—"
+        if timeframe_badge:
+            source_label = f"{source_label} · {timeframe_badge.upper()}"
+        summary_cols[2].metric("Last Run Source", source_label)
     else:
         for col, label in zip(summary_cols, ["Last P&L", "Last Win Rate", "Last Run Source"]):
             col.metric(label, "—")
@@ -3314,7 +3319,10 @@ elif tab == "Backtest":
     angel_smartapi_cfg = backtesting_settings.get('angel_smartapi', {}) if isinstance(backtesting_settings, dict) else {}
     
     st.subheader("⚙️ Essential Parameters")
-    col1, col2, col3 = st.columns(3, gap="small")
+    timeframe_options = ["1h", "4h"]
+    timeframe_default = backtesting_settings.get('strategy_timeframe', '1h')
+    timeframe_index = timeframe_options.index(timeframe_default) if timeframe_default in timeframe_options else 0
+    col1, col2, col3, col4 = st.columns(4, gap="small")
     with col1:
         initial_capital = st.number_input(
             "Initial Capital (₹)",
@@ -3339,6 +3347,15 @@ elif tab == "Backtest":
             max_value=60,
             step=5,
             help="Legacy premium stop-loss percentage (used when enhanced features are disabled).",
+        )
+    with col4:
+        strategy_timeframe = st.selectbox(
+            "Strategy timeframe",
+            options=timeframe_options,
+            index=timeframe_index,
+            format_func=lambda x: x.upper(),
+            help="Controls which candle size (1H or 4H) powers inside-bar detection during backtests.",
+            key="backtest_strategy_timeframe_select",
         )
     
     estimated_strike_price = 24000
@@ -3611,6 +3628,7 @@ elif tab == "Backtest":
     is_otm = strike_selection.startswith("OTM")
     
     backtest_config_dict = {
+        "strategy_timeframe": strategy_timeframe,
         "strategy": {
             "type": "inside_bar_breakout",
             "sl": int(sl_points_main),
@@ -3921,6 +3939,7 @@ elif tab == "Backtest":
     
     # Prepare strategy config with all enhanced features
     backtest_config = {
+        'strategy_timeframe': strategy_timeframe,
         'initial_capital': float(initial_capital),
         'lot_size': int(lot_size),
         'strike_selection': strike_selection,  # Store selection for reference

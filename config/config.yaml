@@ -59,6 +59,7 @@ market_data:
 
 # Backtesting Data Sources Configuration
 backtesting:
+  strategy_timeframe: "1h"  # Strategy candle size for backtests (1h or 4h)
   data_source: "desiquant"  # Options: "csv", "desiquant", "marketdata", "truedata", "angel_smartapi"
   
   # CSV Data Source Configuration

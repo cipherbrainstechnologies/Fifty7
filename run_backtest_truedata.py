@@ -26,6 +26,7 @@ import sys
 import yaml
 from logzero import logger
 from datetime import datetime
+from typing import Optional
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -44,7 +45,7 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         return {}
 
 
-def run_backtest_with_truedata():
+def run_backtest_with_truedata(timeframe_override: Optional[str] = None):
     """
     Run backtest using TrueData API as data source.
     
@@ -65,6 +66,16 @@ def run_backtest_with_truedata():
     if not config:
         logger.error("Failed to load configuration file")
         return
+    
+    backtesting_cfg = config.get("backtesting", {}) if isinstance(config.get("backtesting", {}), dict) else {}
+    strategy_timeframe = (
+        timeframe_override
+        or config.get("strategy_timeframe")
+        or backtesting_cfg.get("strategy_timeframe")
+        or "1h"
+    )
+    config["strategy_timeframe"] = strategy_timeframe
+    logger.info(f"Strategy timeframe: {strategy_timeframe.upper()}")
     
     # Get data source configuration
     data_source = config.get("backtesting", {}).get("data_source", "desiquant")
@@ -356,6 +367,11 @@ Notes:
         action="store_true",
         help="Test API connection and exit"
     )
+    parser.add_argument(
+        "--timeframe",
+        choices=["1h", "4h"],
+        help="Override strategy timeframe for the backtest engine (default from config)."
+    )
     
     args = parser.parse_args()
     
@@ -364,4 +380,4 @@ Notes:
         test_api_connection()
     else:
         # Run full backtest
-        run_backtest_with_truedata()
+        run_backtest_with_truedata(timeframe_override=args.timeframe)

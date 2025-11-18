@@ -54,6 +54,13 @@ strategy:
   atm_offset: 0        # Strike offset from ATM (0 = ATM, positive = OTM for calls)
 ```
 
+## Backtesting Timeframes
+
+- Backtests can be executed on either **1H** (default) or **4H** candles.
+- The Streamlit backtest tab exposes a timeframe selector that forwards the choice to `BacktestEngine`.
+- Logic, filters, and SL/TP handling remain unchanged; only the candle aggregation window differs.
+- Live trading continues to operate on 1H candles; 4H is intended for comparative research and longer-term structure analysis.
+
 ## Code Structure
 
 ### Core Functions (engine/strategy_engine.py)

@@ -59,8 +59,15 @@ def summarize_results(results: dict) -> None:
 
 def run_backtest(args: argparse.Namespace) -> None:
     config = load_config()
-    backtest_cfg = config.get("backtesting", {})
+    backtest_cfg = config.get("backtesting", {}) if isinstance(config.get("backtesting", {}), dict) else {}
     angel_cfg = backtest_cfg.get("angel_smartapi", {})
+    strategy_timeframe = (
+        args.timeframe
+        or config.get("strategy_timeframe")
+        or backtest_cfg.get("strategy_timeframe")
+        or "1h"
+    )
+    config["strategy_timeframe"] = strategy_timeframe
 
     symbol = args.symbol or angel_cfg.get("symbol", "NIFTY")
     symbol_token = args.symbol_token or angel_cfg.get("symbol_token")
@@ -79,6 +86,7 @@ def run_backtest(args: argparse.Namespace) -> None:
     logger.info("Interval  : %s", interval)
     logger.info("Window    : %s → %s", start_date, end_date)
     logger.info("Secrets   : %s", secrets_path or datasource_smartapi.DEFAULT_SECRETS_PATH)
+    logger.info("Strategy timeframe: %s", strategy_timeframe.upper())
 
     data = datasource_smartapi.stream_data(
         symbol=symbol,
@@ -122,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--secrets", help="Path to secrets TOML (default .streamlit/secrets.toml)")
     parser.add_argument("--capital", type=float, help="Initial capital for backtest")
     parser.add_argument("--show-head", action="store_true", help="Print head() of fetched candles")
+    parser.add_argument(
+        "--timeframe",
+        choices=["1h", "4h"],
+        help="Override strategy timeframe for the backtest engine (default from config).",
+    )
     return parser
 
 
