@@ -762,7 +762,7 @@ class LiveStrategyRunner:
             if not self._is_safe_to_trade_expiry(expiry):
                 logger.warning(f"Expiry validation failed - skipping trade")
             self._record_execution_skip(signal, entry_estimate, "Expiry validation failed")
-                return
+            return
             
             # FIX for Issue #2: Fetch actual option price from broker
             expiry_date_str = None
