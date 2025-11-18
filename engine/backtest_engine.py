@@ -122,6 +122,12 @@ class BacktestEngine:
         }
         self.params = self.config.get("strategy", {})
         self.sizing = self.config.get("sizing", {})
+        backtesting_cfg = self.config.get("backtesting")
+        if not isinstance(backtesting_cfg, dict):
+            backtesting_cfg = {}
+        self.strategy_timeframe = self._normalize_timeframe(
+            self.config.get("strategy_timeframe") or backtesting_cfg.get("strategy_timeframe") or "1h"
+        )
         
         # Strike selection configuration
         self.strike_offset_base = self.config.get("strike_offset_base", 0)
@@ -169,6 +175,18 @@ class BacktestEngine:
 
         # normalize columns
         data = self._norm_ohlc(data_1h).copy()
+        data = self._apply_strategy_timeframe(data)
+        if data.empty:
+            logger.warning(
+                "No spot candles available after resampling to %s timeframe",
+                self.strategy_timeframe.upper(),
+            )
+            return self._generate_results(initial_capital, current_capital)
+        logger.info(
+            "Running backtest with %s timeframe (%d spot candles)",
+            self.strategy_timeframe.upper(),
+            len(data),
+        )
         if options_df is not None:
             options_df = self._norm_options(options_df)
 
@@ -565,6 +583,50 @@ class BacktestEngine:
         d = d[['timestamp','open','high','low','close','expiry','strike','type']]
         d.sort_values('timestamp', inplace=True)
         return d
+
+    @staticmethod
+    def _normalize_timeframe(value: Optional[str]) -> str:
+        """
+        Normalize timeframe input into supported canonical values.
+        Supported:
+            - "1h": aliases 1h/60m/one_hour/1hour/1hr
+            - "4h": aliases 4h/240m/four_hour/4hour/4hr
+        """
+        if not value:
+            return "1h"
+        val = str(value).strip().lower()
+        if val in {"1h", "60m", "one_hour", "1hour", "1hr"}:
+            return "1h"
+        if val in {"4h", "240m", "four_hour", "4hour", "4hr"}:
+            return "4h"
+        logger.warning("Unsupported timeframe '%s' supplied to BacktestEngine. Defaulting to 1h.", value)
+        return "1h"
+
+    def _apply_strategy_timeframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Resample normalized OHLC data to the configured timeframe.
+        Keeping logic consistent ensures detection/breakouts operate on the right cadence.
+        """
+        if df.empty or self.strategy_timeframe == "1h":
+            return df
+
+        freq_map = {"4h": "4H"}
+        freq = freq_map.get(self.strategy_timeframe)
+        if not freq:
+            return df
+
+        resampled = (
+            df.resample(
+                freq,
+                origin="start_day",
+                offset="15min",
+                label="right",
+                closed="right",
+            )
+            .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"})
+            .dropna()
+        )
+        return resampled
 
     @staticmethod
     def _nearest_100(x: float) -> int:
@@ -1014,7 +1076,8 @@ class BacktestEngine:
                 'avg_capital_required': avg_capital_required,
                 # ========== TRAILING SL ANALYSIS (backtest-only) ==========
                 'winning_trades_trail_exit': 0,
-                'trail_exit_pct_of_winners': 0.0
+                'trail_exit_pct_of_winners': 0.0,
+                'strategy_timeframe': self.strategy_timeframe,
             }
 
         df = pd.DataFrame(self.trades)
@@ -1067,7 +1130,8 @@ class BacktestEngine:
             'avg_capital_required': avg_capital_required,
             # ========== TRAILING SL ANALYSIS (backtest-only) ==========
             'winning_trades_trail_exit': self.winning_trades_trail_exit,
-            'trail_exit_pct_of_winners': trail_exit_pct
+            'trail_exit_pct_of_winners': trail_exit_pct,
+            'strategy_timeframe': self.strategy_timeframe,
         }
 
     def _calculate_max_drawdown(self) -> float:

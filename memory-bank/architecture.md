@@ -11,10 +11,10 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - **signal_handler.py**: Signal processing, validation, and trade signal generation
 - **trade_logger.py**: Comprehensive trade logging to CSV format
 - **broker_connector.py**: Abstract broker interface supporting multiple broker APIs (Angel One, Fyers)
-- **backtest_engine.py**: Historical backtesting framework with trade simulation
+- **backtest_engine.py**: Historical backtesting framework with trade simulation, now supporting configurable strategy timeframes (1H or 4H) via resampled spot data
 
 ### 2. Dashboard (`dashboard/`)
-- **ui_frontend.py**: Main Streamlit application with authentication
+- **ui_frontend.py**: Main Streamlit application with authentication and a backtesting timeframe selector (1H vs 4H) that pipes directly into the backtest engine
 - **streamlit_app.py**: Application entry point wrapper
 
 ### 3. Configuration (`config/`)
@@ -91,6 +91,8 @@ Reference: `docs/api/API-Documentation-File.md`
 - **Secrets Management**: Environment variables or Render secrets config
 
 ## Strategy Logic
+
+Live runs continue to use 1-hour candles for detection and confirmation, while the backtesting stack can now resample to either 1H or 4H via the new timeframe selector. Logic and filters remain identical regardless of the selected cadence.
 
 ### Inside Bar Pattern Detection (1H Timeframe)
 - Detects when a candle is completely contained within the previous candle's range
