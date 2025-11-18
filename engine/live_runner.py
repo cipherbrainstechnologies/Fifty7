@@ -5,13 +5,15 @@ Live Strategy Runner for real-time market monitoring and trade execution
 import threading
 import time
 from typing import Dict, Optional, List
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone as dt_timezone
 from pytz import timezone
 from logzero import logger
 import pandas as pd
 
 from engine.market_data import MarketDataProvider
 from engine.signal_handler import SignalHandler, _set_session_state
+from engine.db import get_session, init_database
+from engine.models import MissedTrade
 from engine.tenant_context import resolve_tenant
 from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
@@ -759,6 +761,7 @@ class LiveStrategyRunner:
             expiry = self._get_nearest_expiry()
             if not self._is_safe_to_trade_expiry(expiry):
                 logger.warning(f"Expiry validation failed - skipping trade")
+            self._record_execution_skip(signal, entry_price, "Expiry validation failed")
                 return
             
             # FIX for Issue #2: Fetch actual option price from broker
@@ -928,6 +931,60 @@ class LiveStrategyRunner:
             logger.exception(f"Error executing trade: {e}")
             self.error_count += 1
     
+    def _coerce_datetime(self, value):
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.replace(tzinfo=dt_timezone.utc)
+            return value.astimezone(dt_timezone.utc)
+        try:
+            ts = pd.to_datetime(value)
+            if isinstance(ts, pd.Timestamp):
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize("UTC")
+                else:
+                    ts = ts.tz_convert("UTC")
+                return ts.to_pydatetime()
+        except Exception:
+            return None
+        return None
+
+    def _record_execution_skip(self, signal: Dict, entry_price: Optional[float], reason: str) -> None:
+        if MissedTrade is None or get_session is None:
+            return
+        try:
+            init_database(create_all=True)
+        except Exception:
+            pass
+        sess_gen = get_session()
+        db = next(sess_gen)
+        try:
+            row = MissedTrade(
+                org_id=str(self.org_id),
+                user_id=str(self.user_id),
+                direction=str(signal.get('direction', '')).upper(),
+                strike=signal.get('strike'),
+                entry_price=entry_price,
+                sl_price=signal.get('sl'),
+                tp_price=signal.get('tp'),
+                range_high=signal.get('range_high'),
+                range_low=signal.get('range_low'),
+                inside_bar_time=self._coerce_datetime(signal.get('inside_bar_time')),
+                signal_time=self._coerce_datetime(signal.get('signal_time')),
+                breakout_close=entry_price,
+                reason=reason,
+            )
+            db.add(row)
+            db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            try:
+                next(sess_gen)
+            except StopIteration:
+                pass
+
     def _handle_position_update(self, update: Dict):
         """
         Receive position updates from PositionMonitor and update P&L / trade state.
