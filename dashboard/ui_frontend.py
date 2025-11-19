@@ -1119,6 +1119,7 @@ tab = st.sidebar.radio(
     index=MENU_TABS.index(default_tab),
     key="selected_main_tab",
 )
+current_main_tab = tab
 
 # Logout button - DISABLED (authentication bypassed)
 # authenticator.logout("Logout", "sidebar")
