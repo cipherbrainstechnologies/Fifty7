@@ -932,7 +932,9 @@ if st.session_state.get('auto_refresh_enabled', True):
     now = time.time()
     if now - st.session_state['_last_ui_refresh_trigger'] >= global_refresh_interval:
         st.session_state['_last_ui_refresh_trigger'] = now
-        st.experimental_rerun()
+        rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+        if rerun_fn:
+            rerun_fn()
 
 
 def _trigger_market_data_refresh(reason: str) -> bool:
