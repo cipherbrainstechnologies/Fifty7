@@ -914,6 +914,8 @@ if 'last_missed_trade' not in st.session_state:
     st.session_state.last_missed_trade = None
 if 'last_refresh_error' not in st.session_state:
     st.session_state.last_refresh_error = None
+if '_last_ui_refresh_trigger' not in st.session_state:
+    st.session_state['_last_ui_refresh_trigger'] = time.time()
 previous_ui_render_time = st.session_state.get('_last_ui_render_time')
 current_ui_render_time = datetime.now()
 st.session_state['_last_ui_render_time'] = current_ui_render_time
@@ -921,6 +923,16 @@ st.session_state['_last_ui_render_time'] = current_ui_render_time
 if 'selected_main_tab' not in st.session_state:
     st.session_state.selected_main_tab = "Dashboard"
 current_main_tab = st.session_state.selected_main_tab
+
+global_refresh_interval = st.session_state.get(
+    'global_refresh_interval_sec',
+    st.session_state.auto_refresh_interval_sec
+)
+if st.session_state.get('auto_refresh_enabled', True):
+    now = time.time()
+    if now - st.session_state['_last_ui_refresh_trigger'] >= global_refresh_interval:
+        st.session_state['_last_ui_refresh_trigger'] = now
+        st.experimental_rerun()
 
 
 def _trigger_market_data_refresh(reason: str) -> bool:
