@@ -6,10 +6,44 @@ IMPORTANT: Only uses 1-hour data for both inside bar detection AND breakout conf
 No 15-minute breakouts are processed.
 """
 
+import os
+import sys
+import logging
+
 import pandas as pd
 import numpy as np
 from typing import List, Optional, Dict, Tuple
 from logzero import logger
+
+_ASCII_ONLY_LOGS = (
+    sys.platform.startswith("win")
+    and os.environ.get("ALLOW_LOG_EMOJI", "").strip() == ""
+)
+
+
+def _sanitize_log_text(value):
+    if not _ASCII_ONLY_LOGS or not isinstance(value, str):
+        return value
+    try:
+        return value.encode("ascii", "ignore").decode("ascii")
+    except Exception:
+        return value
+
+
+class _AsciiSanitizerFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _ASCII_ONLY_LOGS:
+            return True
+        record.msg = _sanitize_log_text(record.msg)
+        if record.args:
+            record.args = tuple(
+                _sanitize_log_text(arg) if isinstance(arg, str) else arg
+                for arg in record.args
+            )
+        return True
+
+
+logger.addFilter(_AsciiSanitizerFilter())
 def _find_mother_index(data_1h: pd.DataFrame, inside_bar_idx: int) -> Optional[int]:
     """
     Traverse backwards from the supplied inside bar index to locate the original

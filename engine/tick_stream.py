@@ -90,6 +90,9 @@ class LiveTickStreamer:
 
         token = str(token)
         ts_upper = str(tradingsymbol).upper()
+        if not ts_upper or ts_upper in {"NAN", "NONE", "NULL"}:
+            logger.debug(f"Skipping tick subscription for invalid tradingsymbol: {tradingsymbol!r}")
+            return
         exchange = exchange.upper()
 
         with self._lock:
@@ -138,7 +141,22 @@ class LiveTickStreamer:
             logger.warning("Tick streamer cannot start without feed token")
             return
 
+        auth_token = getattr(self.broker, "auth_token", None)
+        if not auth_token:
+            ensure_session = getattr(self.broker, "_ensure_session", None)
+            try:
+                if callable(ensure_session):
+                    ensure_session()
+            except Exception as exc:
+                logger.warning(f"Tick streamer failed to refresh broker session: {exc}")
+            auth_token = getattr(self.broker, "auth_token", None)
+
+        if not auth_token:
+            logger.warning("Tick streamer cannot start without broker auth token")
+            return
+
         ws = SmartWebSocketV2(
+            auth_token=auth_token,
             api_key=self.api_key,
             client_code=self.client_code,
             feed_token=self.feed_token,

@@ -23,6 +23,57 @@ import time
 import pytz
 from typing import Any, Dict, Optional
 
+
+def _ensure_utf8_console() -> None:
+    """Best effort: force Windows stdout/stderr to UTF-8 so logging can emit emoji."""
+    if not sys.platform.startswith("win"):
+        return
+
+    def _patch_stream(name: str) -> None:
+        stream = getattr(sys, name, None)
+        if stream is None:
+            return
+
+        encoding = getattr(stream, "encoding", "")
+        if isinstance(encoding, str) and encoding.lower() == "utf-8":
+            return
+
+        # 1) Try native reconfigure (TextIOWrapper on Python 3.7+)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+                return
+            except Exception:
+                pass
+
+        # 2) Try wrapping the underlying buffer
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:
+            try:
+                wrapped = io.TextIOWrapper(buffer, encoding="utf-8", errors="replace", line_buffering=True)
+                setattr(sys, name, wrapped)
+                return
+            except Exception:
+                pass
+
+        # 3) Fall back to codecs wrapper if detach is available
+        if hasattr(stream, "detach"):
+            try:
+                import codecs
+
+                detached = stream.detach()
+                wrapped = codecs.getwriter("utf-8")(detached)  # type: ignore[arg-type]
+                setattr(sys, name, wrapped)
+                return
+            except Exception:
+                pass
+
+    _patch_stream("stdout")
+    _patch_stream("stderr")
+
+
+_ensure_utf8_console()
+
 # TOML support - use tomllib (Python 3.11+) or tomli package
 try:
     import tomllib  # Python 3.11+
@@ -1194,6 +1245,19 @@ if tab == "Dashboard":
                         return float(value)
                     except (TypeError, ValueError):
                         return None
+
+                def _clean_symbol(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    try:
+                        if pd.isna(value):
+                            return ""
+                    except Exception:
+                        pass
+                    text = str(value).strip()
+                    if text.lower() == "nan":
+                        return ""
+                    return text
                 
                 entry_price = _to_float(latest_trade.get('entry'))
                 sl_price = _to_float(latest_trade.get('sl'))
@@ -1211,7 +1275,8 @@ if tab == "Dashboard":
                 except (TypeError, ValueError):
                     qty_lots = 0
                 
-                tradingsymbol = str(latest_trade.get('tradingsymbol', '') or '').upper()
+                raw_tradingsymbol = latest_trade.get('tradingsymbol', '')
+                tradingsymbol = _clean_symbol(raw_tradingsymbol).upper()
                 active_trade = {
                     'direction': str(latest_trade.get('direction', '')).upper(),
                     'strike': strike_value if strike_value is not None else latest_trade.get('strike', '—'),
