@@ -2707,6 +2707,42 @@ elif tab == "P&L":
         from engine.db import init_database
         from sqlalchemy.exc import OperationalError
         
+        # Prepare CSV-based fallback in case database snapshots are empty/unavailable
+        csv_total_pnl = None
+        csv_series = []
+        trade_logger = st.session_state.get('trade_logger')
+        if trade_logger is not None:
+            try:
+                csv_df = trade_logger.get_all_trades()
+            except Exception as csv_error:
+                logger.debug(f"CSV trade log unavailable for P&L fallback: {csv_error}")
+                csv_df = pd.DataFrame()
+            if csv_df is not None and not csv_df.empty:
+                csv_df = csv_df.copy()
+                if 'pnl' in csv_df.columns:
+                    csv_df['pnl'] = pd.to_numeric(csv_df['pnl'], errors='coerce')
+                else:
+                    csv_df['pnl'] = pd.NA
+                if 'status' not in csv_df.columns:
+                    csv_df['status'] = ''
+                if 'timestamp' in csv_df.columns:
+                    csv_df['timestamp'] = pd.to_datetime(csv_df['timestamp'], errors='coerce')
+                closed_mask = csv_df['status'].astype(str).str.lower() == 'closed'
+                closed_df = csv_df[closed_mask]
+                if not closed_df.empty:
+                    total_from_csv = closed_df['pnl'].sum(skipna=True)
+                    if pd.notna(total_from_csv):
+                        csv_total_pnl = float(total_from_csv)
+                    if 'timestamp' in closed_df.columns:
+                        ts_df = closed_df.dropna(subset=['timestamp'])
+                        if not ts_df.empty:
+                            grouped = ts_df.groupby(ts_df['timestamp'].dt.date)['pnl'].sum()
+                            csv_series = [
+                                {"date": d.isoformat(), "pnl": float(val)}
+                                for d, val in grouped.items()
+                                if pd.notna(val)
+                            ]
+        
         # Ensure database is initialized
         try:
             init_database(create_all=True)
@@ -2740,6 +2776,11 @@ elif tab == "P&L":
             st.warning(f"⚠️ P&L service error: {pnl_error}")
             total_pnl = 0.0
             series = []
+        
+        if (total_pnl in (None, ) or (isinstance(total_pnl, (int, float)) and total_pnl == 0.0)) and csv_total_pnl is not None:
+            total_pnl = csv_total_pnl
+        if (not series or len(series) == 0) and csv_series:
+            series = csv_series
         
         # Cumulative P&L Card
         pnl_color = "🟢" if total_pnl >= 0 else "🔴"
