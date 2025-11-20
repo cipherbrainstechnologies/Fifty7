@@ -162,7 +162,14 @@ class SignalHandler:
         if breakout_direction is None:
             # No breakout yet - signal is still active but not triggered
             return None
-        
+
+        current_price = data_1h['Close'].iloc[-1]
+        entry_price_est = (
+            latest_closed_candle['Close']
+            if latest_closed_candle is not None
+            else current_price
+        )
+
         # Handle missed trade - invalidate signal and wait for new one
         if is_missed_trade:
             logger.warning("Missed trade detected - invalidating signal")
@@ -170,12 +177,17 @@ class SignalHandler:
             _set_session_state('last_breakout_direction', None)
             latest_close = latest_closed_candle['Close'] if latest_closed_candle is not None else current_price
             missed_strike = calculate_strike_price(latest_close, breakout_direction, atm_offset)
+            missed_stop_loss, missed_take_profit = calculate_sl_tp_levels(
+                latest_close,
+                sl_points,
+                rr_ratio
+            )
             self._record_missed_trade(
                 direction=breakout_direction,
                 strike=missed_strike,
                 entry=latest_close,
-                sl=stop_loss,
-                tp=take_profit,
+                sl=missed_stop_loss,
+                tp=missed_take_profit,
                 range_high=active_signal['range_high'],
                 range_low=active_signal['range_low'],
                 inside_bar_time=active_signal['inside_bar_time'],
@@ -199,11 +211,10 @@ class SignalHandler:
             return None
         
         # Breakout confirmed - generate trade signal
-        current_price = data_1h['Close'].iloc[-1]
         strike = calculate_strike_price(current_price, breakout_direction, atm_offset)
         
         # Use actual close price from breakout candle as entry estimate
-        entry_price = latest_closed_candle['Close'] if latest_closed_candle else current_price
+        entry_price = entry_price_est
         
         # Calculate SL and TP
         stop_loss, take_profit = calculate_sl_tp_levels(
