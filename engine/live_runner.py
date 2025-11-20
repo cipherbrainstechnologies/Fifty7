@@ -548,6 +548,12 @@ class LiveStrategyRunner:
         """
         self.cycle_count += 1
         logger.info(f"Running strategy cycle #{self.cycle_count}")
+
+        # Sync manual exits (broker-side square-offs) before doing anything else
+        try:
+            self._reconcile_manual_exits()
+        except Exception as sync_error:
+            logger.debug(f"Manual exit reconciliation skipped: {sync_error}")
         
         # Fetch latest market data
         try:
@@ -878,6 +884,9 @@ class LiveStrategyRunner:
                 # Still proceed but log warning
             
             # Mark signal as executed
+            tradingsymbol = order_result.get('order_data', {}).get('tradingsymbol')
+            signal['symbol'] = symbol
+            signal['tradingsymbol'] = tradingsymbol
             signal['executed_qty_lots'] = self.order_lots
             signal['lot_size'] = self.lot_size
             self.signal_handler.mark_signal_executed(signal, order_id)
@@ -1091,6 +1100,145 @@ class LiveStrategyRunner:
             # Re-evaluate daily loss limit post exit
             if not self._check_daily_loss_limit():
                 logger.error("Daily loss limit breached after position update")
+
+    def _reconcile_manual_exits(self):
+        """
+        Detect trades that were closed manually outside the algo (broker app)
+        and mirror the exit locally so dashboards / P&L stay accurate.
+        """
+        if not self._orders_to_signals:
+            return
+
+        broker = getattr(self, "broker", None)
+        if broker is None or not hasattr(broker, "get_trade_book"):
+            return
+
+        try:
+            trade_book = broker.get_trade_book()
+        except Exception as e:
+            logger.debug(f"Unable to fetch trade book for reconciliation: {e}")
+            return
+
+        if not trade_book:
+            return
+
+        for order_id, signal in list(self._orders_to_signals.items()):
+            if signal.get("_manual_exit_logged"):
+                continue
+            tradingsymbol = signal.get("tradingsymbol")
+            if not tradingsymbol:
+                continue
+
+            try:
+                executed_lots = int(signal.get("executed_qty_lots", self.order_lots))
+            except Exception:
+                executed_lots = self.order_lots
+            lot_size = int(signal.get("lot_size", self.lot_size))
+            required_units = executed_lots * lot_size
+            if required_units <= 0:
+                continue
+
+            closing_side = "SELL"
+            matched_rows = []
+
+            for row in trade_book:
+                row_symbol = str(row.get("tradingsymbol") or row.get("symbol") or "").upper()
+                if row_symbol != str(tradingsymbol).upper():
+                    continue
+                txn = str(row.get("transactiontype") or row.get("side") or "").upper()
+                if txn != closing_side:
+                    continue
+                try:
+                    qty_units = int(float(row.get("quantity") or row.get("filledshares") or 0))
+                except Exception:
+                    qty_units = 0
+                if qty_units <= 0:
+                    continue
+                try:
+                    price_val = float(row.get("price") or row.get("tradeprice") or 0)
+                except Exception:
+                    price_val = 0.0
+                matched_rows.append((qty_units, price_val))
+
+            filled_units = sum(q for q, _ in matched_rows)
+            if filled_units < required_units or not matched_rows:
+                continue
+
+            avg_exit_price = (
+                sum(q * p for q, p in matched_rows) / filled_units if filled_units else None
+            )
+            if avg_exit_price is None:
+                continue
+
+            logger.info(
+                f"Detected manual exit for order {order_id} ({tradingsymbol}) via broker trade book. "
+                f"Units closed: {filled_units}, avg exit ₹{avg_exit_price:.2f}"
+            )
+            self._finalize_manual_exit(order_id, signal, avg_exit_price, filled_units)
+
+    def _finalize_manual_exit(self, order_id: str, signal: Dict, exit_price: float, filled_units: int):
+        """
+        Mirror a broker-managed/manual exit into local bookkeeping.
+        """
+        try:
+            entry_price = float(signal.get("entry", 0.0))
+        except Exception:
+            entry_price = 0.0
+        executed_lots = int(signal.get("executed_qty_lots", self.order_lots))
+        lot_size = int(signal.get("lot_size", self.lot_size))
+        total_units = executed_lots * lot_size
+        if total_units <= 0:
+            total_units = filled_units
+
+        pnl_value = (exit_price - entry_price) * total_units
+        self._update_daily_pnl(pnl_value)
+
+        metadata = {
+            "org_id": self.org_id,
+            "user_id": self.user_id,
+            "strategy_id": self.strategy_id,
+            "broker": self.broker_name,
+            "lot_size": lot_size,
+            "quantity": executed_lots,
+            "exit_timestamp": datetime.now().isoformat(),
+        }
+
+        try:
+            self.trade_logger.update_trade_exit(
+                order_id,
+                exit_price,
+                pnl_value,
+                "manual_exit",
+                metadata=metadata,
+            )
+        except Exception as log_error:
+            logger.exception(f"Failed to log manual exit for order {order_id}: {log_error}")
+
+        signal["_manual_exit_logged"] = True
+
+        try:
+            self.signal_handler.mark_signal_closed(signal, exit_price, pnl_value)
+        except Exception as signal_error:
+            logger.exception(f"Failed to mark signal closed for order {order_id}: {signal_error}")
+
+        self._orders_to_signals.pop(order_id, None)
+
+        # Stop any monitors associated with this order
+        monitor = next((m for m in self.active_monitors if getattr(m, 'order_id', None) == order_id), None)
+        if monitor:
+            try:
+                monitor.stop()
+            except Exception as stop_error:
+                logger.exception(f"Error stopping monitor for manual exit {order_id}: {stop_error}")
+            finally:
+                self.active_monitors = [
+                    m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
+                ]
+
+        logger.info(
+            f"Manual exit reconciled for order {order_id}: closed at ₹{exit_price:.2f}, "
+            f"P&L ₹{pnl_value:,.2f}"
+        )
     
     def get_status(self) -> Dict:
         """
