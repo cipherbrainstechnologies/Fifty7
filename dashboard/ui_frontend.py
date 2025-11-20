@@ -1515,6 +1515,7 @@ if tab == "Dashboard":
         st.metric("📈 NIFTY LTP", nifty_ltp)
     with metric_cols[2]:
         realized_pnl = 0.0
+        csv_pnl_used = False
         try:
             from engine.pnl_service import compute_realized_pnl
             from engine.db import init_database
@@ -1531,9 +1532,24 @@ if tab == "Dashboard":
                 realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
         except Exception:
             realized_pnl = 0.0
+        if realized_pnl == 0.0 and st.session_state.get('trade_logger') is not None:
+            try:
+                trades_df = st.session_state.trade_logger.get_all_trades()
+                if not trades_df.empty and 'status' in trades_df.columns:
+                    closed_df = trades_df[trades_df['status'] == 'closed'].copy()
+                    if not closed_df.empty:
+                        closed_df['pnl'] = pd.to_numeric(closed_df['pnl'], errors='coerce')
+                        fallback_val = closed_df['pnl'].sum(min_count=1)
+                        if pd.notna(fallback_val) and float(fallback_val) != 0.0:
+                            realized_pnl = float(fallback_val)
+                            csv_pnl_used = True
+            except Exception:
+                pass
         pnl_prefix = "🟢" if realized_pnl >= 0 else "🔴"
         st.metric("💰 Realized P&L", f"{pnl_prefix} ₹{realized_pnl:,.2f}")
-        if realized_pnl == 0 and active_trade:
+        if csv_pnl_used:
+            st.caption("Using CSV trade log for realized P&L (database snapshot empty).")
+        elif realized_pnl == 0 and active_trade:
             st.caption("Closes update this metric; open trades remain unrealized.")
     with metric_cols[3]:
         if active_trade and active_trade_unrealized_value is not None:

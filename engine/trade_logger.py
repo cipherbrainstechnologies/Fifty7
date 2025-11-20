@@ -433,6 +433,41 @@ class TradeLogger:
         if quantity_lots > 0:
             self._maybe_write_trade_to_db(exit_trade)
 
+    def update_tradingsymbol(self, order_id: str, tradingsymbol: str) -> None:
+        """
+        Persist/overwrite the tradingsymbol for a logged trade.
+
+        Ensures manual-exit reconciliation and tick-stream subscriptions
+        survive runner restarts even if the broker did not return the symbol
+        when the trade was first recorded.
+        """
+        if not order_id or not tradingsymbol:
+            return
+
+        df = self.get_all_trades()
+        if df.empty or 'order_id' not in df.columns:
+            return
+
+        mask = df['order_id'] == order_id
+        if not mask.any():
+            return
+
+        ts_upper = str(tradingsymbol).strip().upper()
+        if not ts_upper:
+            return
+
+        existing = (
+            df.loc[mask, 'tradingsymbol']
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+        if not existing.empty and existing.eq(ts_upper).all():
+            return
+
+        df.loc[mask, 'tradingsymbol'] = ts_upper
+        df.to_csv(self.trades_file, index=False)
+
     def import_trades_from_csv(self, file_like) -> Dict:
         """
         Import manual/external trades from an uploaded CSV and merge into trade log.

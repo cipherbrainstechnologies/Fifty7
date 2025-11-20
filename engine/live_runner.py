@@ -4,7 +4,7 @@ Live Strategy Runner for real-time market monitoring and trade execution
 
 import threading
 import time
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from datetime import datetime, timedelta, time as dt_time, timezone as dt_timezone
 from pytz import timezone
 from logzero import logger
@@ -876,6 +876,27 @@ class LiveStrategyRunner:
             
             order_id = order_result.get('order_id')
             logger.info(f"Order placed successfully: {order_id}")
+
+            order_data = order_result.get('order_data') or {}
+            tradingsymbol = (
+                order_data.get('tradingsymbol')
+                or order_result.get('tradingsymbol')
+                or ""
+            )
+            tradingsymbol = str(tradingsymbol or "").upper()
+            exchange_for_ticks = (
+                order_data.get('exchange')
+                or order_result.get('exchange')
+                or 'NFO'
+            )
+            symboltoken = order_result.get('symboltoken') or order_data.get('symboltoken')
+            if not symboltoken and tradingsymbol:
+                token_getter = getattr(self.broker, "_get_symbol_token", None)
+                if callable(token_getter):
+                    try:
+                        symboltoken = token_getter(tradingsymbol, exchange_for_ticks)
+                    except Exception:
+                        symboltoken = None
             
             # FIX for Issue #9: Wait and verify order execution
             import time as sleep_time
@@ -887,19 +908,16 @@ class LiveStrategyRunner:
                 # Still proceed but log warning
             
             # Mark signal as executed
-            tradingsymbol = order_result.get('order_data', {}).get('tradingsymbol')
             signal['symbol'] = symbol
             signal['tradingsymbol'] = tradingsymbol
             signal['executed_qty_lots'] = self.order_lots
             signal['lot_size'] = self.lot_size
             if self.tick_streamer and tradingsymbol:
-                exchange_for_ticks = order_result.get('order_data', {}).get('exchange', 'NFO')
-                self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange=exchange_for_ticks, token=symboltoken)
+                self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange=exchange_for_ticks)
             self.signal_handler.mark_signal_executed(signal, order_id)
             self._orders_to_signals[order_id] = signal
             
             # Get tradingsymbol from order result for PositionMonitor
-            tradingsymbol = order_result.get('order_data', {}).get('tradingsymbol')
             if not tradingsymbol:
                 # Fallback: generate from parameters
                 if expiry_date_str:
@@ -909,6 +927,7 @@ class LiveStrategyRunner:
             self.trade_logger.log_trade({
                 'timestamp': datetime.now().isoformat(),
                 'symbol': symbol,
+                'tradingsymbol': tradingsymbol,
                 'strike': strike,
                 'direction': direction,
                 'order_id': order_id,
@@ -924,6 +943,7 @@ class LiveStrategyRunner:
                 'strategy_id': self.strategy_id,
                 'side': 'BUY',
             })
+            self._maybe_update_logged_tradingsymbol(order_id, tradingsymbol)
             
             logger.info(
                 f"Trade logged: Order {order_id}, {direction} {strike} @ ₹{entry_price:.2f}, "
@@ -933,8 +953,8 @@ class LiveStrategyRunner:
 
             # Start PositionMonitor for this position
             try:
-                symboltoken = order_result.get('symboltoken')
-                exchange = order_result.get('exchange', 'NFO')
+                symboltoken = symboltoken or order_result.get('symboltoken')
+                exchange = exchange_for_ticks
                 pm_cfg = self.config.get('position_management', {})
                 # Use self.trail_points if available (from UI update), otherwise use config
                 trail_pts = self.trail_points if hasattr(self, 'trail_points') else pm_cfg.get('trail_points', 10)
@@ -1128,6 +1148,7 @@ class LiveStrategyRunner:
                 continue
             signal = self._build_signal_from_row(row, lot_size)
             if signal:
+                self._ensure_tradingsymbol_for_signal(order_id, signal, row=row)
                 self._orders_to_signals[order_id] = signal
                 tradingsymbol = signal.get("tradingsymbol")
                 if self.tick_streamer and tradingsymbol:
@@ -1171,14 +1192,145 @@ class LiveStrategyRunner:
         }
         return signal
 
+    def _ensure_tradingsymbol_for_signal(
+        self,
+        order_id: str,
+        signal: Dict,
+        row: Optional[pd.Series] = None,
+    ) -> Optional[str]:
+        if not signal:
+            return None
+        existing = str(signal.get("tradingsymbol") or "").strip().upper()
+        if existing:
+            return existing
+        derived = self._derive_tradingsymbol_from_sources(order_id, signal, row=row)
+        if derived:
+            signal["tradingsymbol"] = derived
+            self._maybe_update_logged_tradingsymbol(order_id, derived)
+            return derived
+        return None
+
+    def _derive_tradingsymbol_from_sources(
+        self,
+        order_id: str,
+        signal: Dict,
+        row: Optional[pd.Series] = None,
+    ) -> Optional[str]:
+        broker_symbol = self._lookup_tradingsymbol_from_broker(order_id)
+        if broker_symbol:
+            return broker_symbol
+
+        symbol = (
+            signal.get("symbol")
+            or (row.get("symbol") if row is not None else None)
+            or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+        )
+        strike = signal.get("strike") or (row.get("strike") if row is not None else None)
+        direction = signal.get("direction") or (row.get("direction") if row is not None else None)
+        reference_ts = None
+        if row is not None:
+            try:
+                reference_ts = row.get("timestamp")
+            except Exception:
+                reference_ts = None
+        return self._format_tradingsymbol_from_components(symbol, strike, direction, reference_ts)
+
+    def _lookup_tradingsymbol_from_broker(self, order_id: Optional[str]) -> Optional[str]:
+        broker = getattr(self, "broker", None)
+        if broker is None or not order_id:
+            return None
+        normalized = str(order_id).strip()
+        if not normalized:
+            return None
+
+        try:
+            trade_book = broker.get_trade_book() or []
+            for trade in trade_book:
+                ids = {
+                    str(trade.get("orderid") or trade.get("order_id") or "").strip(),
+                    str(trade.get("parentorderid") or trade.get("parentorderId") or "").strip(),
+                }
+                if normalized in ids:
+                    ts = trade.get("tradingsymbol") or trade.get("symbol")
+                    if ts:
+                        return str(ts).upper()
+        except Exception as exc:
+            logger.debug(f"Trade book lookup failed for {normalized}: {exc}")
+
+        try:
+            order_book = broker.get_order_book() or []
+            for order in order_book:
+                ids = {
+                    str(order.get("orderid") or order.get("orderId") or "").strip(),
+                    str(order.get("parentorderid") or order.get("parentorderId") or "").strip(),
+                    str(order.get("legorderid") or "").strip(),
+                }
+                if normalized in ids:
+                    ts = order.get("tradingsymbol") or order.get("symbol")
+                    if ts:
+                        return str(ts).upper()
+        except Exception as exc:
+            logger.debug(f"Order book lookup failed for {normalized}: {exc}")
+        return None
+
+    def _format_tradingsymbol_from_components(
+        self,
+        symbol: Optional[str],
+        strike: Optional[Any],
+        direction: Optional[str],
+        reference_ts: Optional[str] = None,
+    ) -> Optional[str]:
+        if not symbol or strike in (None, "") or not direction:
+            return None
+        try:
+            strike_int = int(float(strike))
+        except (TypeError, ValueError):
+            return None
+        expiry_code = self._infer_expiry_code(reference_ts)
+        if not expiry_code:
+            return None
+        return f"{str(symbol).upper()}{expiry_code}{strike_int}{str(direction).upper()}"
+
+    def _infer_expiry_code(self, reference_ts: Optional[str]) -> Optional[str]:
+        try:
+            ist = timezone('Asia/Kolkata')
+            if reference_ts:
+                ts_text = str(reference_ts)
+                if ts_text.endswith("Z"):
+                    ts_text = ts_text.replace("Z", "+00:00")
+                dt_obj = datetime.fromisoformat(ts_text)
+                if dt_obj.tzinfo is None:
+                    dt_obj = ist.localize(dt_obj)
+                else:
+                    dt_obj = dt_obj.astimezone(ist)
+            else:
+                dt_obj = datetime.now(ist)
+            weekday = dt_obj.weekday()
+            market_close = dt_obj.replace(hour=15, minute=30, second=0, microsecond=0)
+            days_ahead = (1 - weekday) % 7
+            if days_ahead == 0 and dt_obj > market_close:
+                days_ahead = 7
+            expiry_dt = dt_obj + timedelta(days=days_ahead)
+            return expiry_dt.strftime('%d%b%y').upper()
+        except Exception as exc:
+            logger.debug(f"Unable to infer expiry code: {exc}")
+            return None
+
+    def _maybe_update_logged_tradingsymbol(self, order_id: str, tradingsymbol: Optional[str]) -> None:
+        if not tradingsymbol:
+            return
+        updater = getattr(self.trade_logger, "update_tradingsymbol", None)
+        if callable(updater):
+            try:
+                updater(order_id, tradingsymbol)
+            except Exception as exc:
+                logger.debug(f"Unable to persist tradingsymbol for {order_id}: {exc}")
+
     def _reconcile_manual_exits(self):
         """
         Detect trades that were closed manually outside the algo (broker app)
         and mirror the exit locally so dashboards / P&L stay accurate.
         """
-        if not self._orders_to_signals:
-            return
-
         broker = getattr(self, "broker", None)
         if broker is None or not hasattr(broker, "get_trade_book"):
             return
@@ -1194,6 +1346,8 @@ class LiveStrategyRunner:
 
         open_positions = self._get_open_position_map()
         tracked_signals = self._gather_open_trade_signals()
+        if not tracked_signals:
+            return
 
         for order_id, signal in tracked_signals.items():
             if signal.get("_manual_exit_logged"):
@@ -1388,6 +1542,7 @@ class LiveStrategyRunner:
                 continue
             signal = self._build_signal_from_row(row, lot_size)
             if signal:
+                self._ensure_tradingsymbol_for_signal(order_id, signal, row=row)
                 combined[order_id] = signal
         return combined
 
