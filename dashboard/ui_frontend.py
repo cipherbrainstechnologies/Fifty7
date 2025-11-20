@@ -1149,6 +1149,9 @@ if tab == "Dashboard":
             market_open = False
     
     active_trade = None
+    active_trade_unrealized_value = None
+    active_trade_unrealized_points = None
+    active_trade_option_ltp = None
     if st.session_state.get('trade_logger') is not None:
         try:
             open_trades = st.session_state.trade_logger.get_open_trades()
@@ -1167,6 +1170,12 @@ if tab == "Dashboard":
                 entry_price = _to_float(latest_trade.get('entry'))
                 sl_price = _to_float(latest_trade.get('sl'))
                 tp_price = _to_float(latest_trade.get('tp'))
+                strike_value = _to_float(latest_trade.get('strike'))
+                if strike_value is not None:
+                    try:
+                        strike_value = int(round(strike_value))
+                    except Exception:
+                        strike_value = None
                 target_points = (tp_price - entry_price) if (tp_price is not None and entry_price is not None) else None
                 qty_raw = latest_trade.get('quantity', 0)
                 try:
@@ -1176,7 +1185,8 @@ if tab == "Dashboard":
                 
                 active_trade = {
                     'direction': str(latest_trade.get('direction', '')).upper(),
-                    'strike': latest_trade.get('strike', '—'),
+                    'strike': strike_value if strike_value is not None else latest_trade.get('strike', '—'),
+                    'strike_value': strike_value,
                     'status': str(latest_trade.get('status', 'open')).title(),
                     'entry': entry_price,
                     'sl': sl_price,
@@ -1186,6 +1196,38 @@ if tab == "Dashboard":
                     'timestamp': latest_trade.get('timestamp', ''),
                     'order_id': latest_trade.get('order_id', '')
                 }
+
+                # Attempt to fetch live option LTP for unrealized P&L
+                broker = st.session_state.get('broker')
+                lot_size = int(config.get('lot_size', 75) or 75)
+                total_units = lot_size * qty_lots
+                symbol_name = config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+                if (
+                    broker
+                    and hasattr(broker, "get_option_price")
+                    and total_units > 0
+                    and entry_price is not None
+                    and active_trade['direction'] in ("CE", "PE")
+                ):
+                    strike_for_quote = active_trade.get('strike_value') or active_trade.get('strike')
+                    try:
+                        strike_for_quote = int(float(strike_for_quote))
+                    except (TypeError, ValueError):
+                        strike_for_quote = None
+                    if strike_for_quote is not None:
+                        try:
+                            opt_ltp = broker.get_option_price(
+                                symbol=symbol_name,
+                                strike=strike_for_quote,
+                                direction=active_trade['direction'],
+                            )
+                            if opt_ltp is not None:
+                                active_trade_option_ltp = float(opt_ltp)
+                                active_trade_unrealized_points = active_trade_option_ltp - entry_price
+                                active_trade_unrealized_value = active_trade_unrealized_points * total_units
+                                active_trade['option_ltp'] = active_trade_option_ltp
+                        except Exception as opt_exc:
+                            logger.debug(f"Option LTP fetch failed: {opt_exc}")
         except Exception as e:
             logger.debug(f"Active trade summary failed: {e}")
     
@@ -1344,11 +1386,11 @@ if tab == "Dashboard":
         
         st.markdown('</div>', unsafe_allow_html=True)
     
-    info_cols = st.columns(3, gap="small")
-    with info_cols[0]:
+    metric_cols = st.columns(4, gap="small")
+    with metric_cols[0]:
         active_signals = st.session_state.signal_handler.get_active_signals()
         st.metric("📊 Signals Watching", len(active_signals))
-    with info_cols[1]:
+    with metric_cols[1]:
         nifty_ltp = "—"
         try:
             if st.session_state.market_data_provider is not None:
@@ -1360,7 +1402,7 @@ if tab == "Dashboard":
         except Exception:
             pass
         st.metric("📈 NIFTY LTP", nifty_ltp)
-    with info_cols[2]:
+    with metric_cols[2]:
         realized_pnl = 0.0
         try:
             from engine.pnl_service import compute_realized_pnl
@@ -1380,6 +1422,30 @@ if tab == "Dashboard":
             realized_pnl = 0.0
         pnl_prefix = "🟢" if realized_pnl >= 0 else "🔴"
         st.metric("💰 Realized P&L", f"{pnl_prefix} ₹{realized_pnl:,.2f}")
+        if realized_pnl == 0 and active_trade:
+            st.caption("Closes update this metric; open trades remain unrealized.")
+    with metric_cols[3]:
+        if active_trade and active_trade_unrealized_value is not None:
+            prefix = "🟢" if active_trade_unrealized_value >= 0 else "🔴"
+            delta_pts = active_trade_unrealized_points or 0.0
+            st.metric(
+                "💹 Active P&L",
+                f"{prefix} ₹{active_trade_unrealized_value:,.2f}",
+                delta=f"{delta_pts:+.2f} pts vs entry",
+            )
+            caption_bits = []
+            if active_trade.get('order_id'):
+                caption_bits.append(f"Order `{active_trade['order_id']}`")
+            if active_trade_option_ltp is not None:
+                caption_bits.append(f"LTP ₹{active_trade_option_ltp:.2f}")
+            if caption_bits:
+                st.caption(" · ".join(caption_bits))
+        elif active_trade:
+            st.metric("💹 Active P&L", "Fetching…")
+            st.caption("Awaiting option quote for live P&L.")
+        else:
+            st.metric("💹 Active P&L", "—")
+            st.caption("No open trades.")
     
     st.divider()
 
