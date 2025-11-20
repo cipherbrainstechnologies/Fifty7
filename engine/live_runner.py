@@ -1122,6 +1122,8 @@ class LiveStrategyRunner:
         if not trade_book:
             return
 
+        open_positions = self._get_open_position_map()
+
         for order_id, signal in list(self._orders_to_signals.items()):
             if signal.get("_manual_exit_logged"):
                 continue
@@ -1161,20 +1163,45 @@ class LiveStrategyRunner:
                 matched_rows.append((qty_units, price_val))
 
             filled_units = sum(q for q, _ in matched_rows)
-            if filled_units < required_units or not matched_rows:
-                continue
-
             avg_exit_price = (
                 sum(q * p for q, p in matched_rows) / filled_units if filled_units else None
-            )
-            if avg_exit_price is None:
+            ) if matched_rows else None
+
+            if filled_units >= required_units and avg_exit_price is not None:
+                logger.info(
+                    f"Detected manual exit for order {order_id} ({tradingsymbol}) via broker trade book. "
+                    f"Units closed: {filled_units}, avg exit ₹{avg_exit_price:.2f}"
+                )
+                self._finalize_manual_exit(order_id, signal, avg_exit_price, filled_units)
                 continue
 
-            logger.info(
-                f"Detected manual exit for order {order_id} ({tradingsymbol}) via broker trade book. "
-                f"Units closed: {filled_units}, avg exit ₹{avg_exit_price:.2f}"
-            )
-            self._finalize_manual_exit(order_id, signal, avg_exit_price, filled_units)
+            exit_price = self._lookup_order_book_exit(tradingsymbol, order_id)
+            if exit_price is not None:
+                logger.info(
+                    f"Detected manual exit for order {order_id} ({tradingsymbol}) via order book. "
+                    f"Closing price ₹{exit_price:.2f}"
+                )
+                self._finalize_manual_exit(order_id, signal, exit_price, required_units)
+                continue
+
+            position_qty = open_positions.get(str(tradingsymbol).upper(), required_units)
+            if position_qty <= 0:
+                symbol_name = signal.get("symbol") or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+                try:
+                    live_price = self.broker.get_option_price(
+                        symbol=symbol_name,
+                        strike=signal.get('strike'),
+                        direction=signal.get('direction')
+                    )
+                except Exception:
+                    live_price = None
+                if live_price is None:
+                    live_price = signal.get('entry', 0.0)
+                logger.info(
+                    f"Detected manual exit for order {order_id} ({tradingsymbol}) via position map. "
+                    f"Using quote ₹{live_price:.2f} for settlement."
+                )
+                self._finalize_manual_exit(order_id, signal, float(live_price or 0.0), required_units)
 
     def _finalize_manual_exit(self, order_id: str, signal: Dict, exit_price: float, filled_units: int):
         """
@@ -1239,6 +1266,67 @@ class LiveStrategyRunner:
             f"Manual exit reconciled for order {order_id}: closed at ₹{exit_price:.2f}, "
             f"P&L ₹{pnl_value:,.2f}"
         )
+
+    def _get_open_position_map(self) -> Dict[str, int]:
+        broker = getattr(self, "broker", None)
+        if broker is None or not hasattr(broker, "get_positions"):
+            return {}
+        try:
+            positions = broker.get_positions() or []
+        except Exception as e:
+            logger.debug(f"Positions fetch failed: {e}")
+            return {}
+        mapping: Dict[str, int] = {}
+        for pos in positions:
+            tradingsymbol = str(pos.get("tradingsymbol") or pos.get("symbol") or "").upper()
+            if not tradingsymbol:
+                continue
+            qty = (
+                pos.get("netqty")
+                or pos.get("netqtyday")
+                or pos.get("sellqty") - pos.get("buyqty")
+                if pos.get("sellqty") is not None and pos.get("buyqty") is not None
+                else 0
+            )
+            try:
+                qty = int(float(qty))
+            except Exception:
+                qty = 0
+            mapping[tradingsymbol] = qty
+        return mapping
+
+    def _lookup_order_book_exit(self, tradingsymbol: str, original_order_id: str) -> Optional[float]:
+        broker = getattr(self, "broker", None)
+        if broker is None or not hasattr(broker, "get_order_book"):
+            return None
+        try:
+            orders = broker.get_order_book() or []
+        except Exception as e:
+            logger.debug(f"Order book fetch failed: {e}")
+            return None
+
+        tradingsymbol = str(tradingsymbol or "").upper()
+        for order in orders:
+            ts = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
+            if ts != tradingsymbol:
+                continue
+            txn = str(order.get("transactiontype") or order.get("side") or "").upper()
+            if txn != "SELL":
+                continue
+            status = str(order.get("status") or "").upper()
+            if status not in ("COMPLETE", "FILLED", "COMPLETE/DONE"):
+                continue
+            parent = str(order.get("parentorderid") or order.get("parentorderId") or "")
+            if parent and str(original_order_id) not in parent:
+                continue
+            price_val = order.get("averageprice") or order.get("price")
+            if price_val is None:
+                continue
+            try:
+                return float(price_val)
+            except Exception:
+                continue
+        return None
     
     def get_status(self) -> Dict:
         """
