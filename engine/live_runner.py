@@ -109,6 +109,7 @@ class LiveStrategyRunner:
         self.daily_pnl = 0.0  # Track daily P&L
         self.daily_pnl_date = datetime.now().date()  # Track which day we're on
         self._orders_to_signals: Dict[str, Dict] = {}
+        self._bootstrap_open_trades()
         
         # FIX for Issue #7: Position limits
         self.max_concurrent_positions = config.get('position_management', {}).get('max_concurrent_positions', 
@@ -1106,6 +1107,70 @@ class LiveStrategyRunner:
             if not self._check_daily_loss_limit():
                 logger.error("Daily loss limit breached after position update")
 
+    def _bootstrap_open_trades(self):
+        """
+        Seed _orders_to_signals from existing open trades in the CSV log so that
+        manual exit reconciliation works even after restarts.
+        """
+        if not hasattr(self.trade_logger, "get_open_trades"):
+            return
+        try:
+            open_df = self.trade_logger.get_open_trades()
+        except Exception as exc:
+            logger.debug(f"Unable to bootstrap open trades: {exc}")
+            return
+        if open_df is None or open_df.empty:
+            return
+        lot_size = int(self.config.get("lot_size", 75) or 75)
+        for _, row in open_df.iterrows():
+            order_id = str(row.get("order_id") or "").strip()
+            if not order_id or order_id in self._orders_to_signals:
+                continue
+            signal = self._build_signal_from_row(row, lot_size)
+            if signal:
+                self._orders_to_signals[order_id] = signal
+                tradingsymbol = signal.get("tradingsymbol")
+                if self.tick_streamer and tradingsymbol:
+                    self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+        if self._orders_to_signals:
+            logger.info(f"Bootstrapped {len(self._orders_to_signals)} open trade(s) from log")
+
+    def _build_signal_from_row(self, row, lot_size: int) -> Optional[Dict]:
+        try:
+            direction = str(row.get("direction") or "").upper()
+            strike = row.get("strike")
+            strike = int(float(strike)) if strike not in (None, "") else None
+            entry = row.get("entry")
+            entry = float(entry) if entry not in (None, "") else None
+            sl_price = row.get("sl")
+            sl_price = float(sl_price) if sl_price not in (None, "") else None
+            tp_price = row.get("tp")
+            tp_price = float(tp_price) if tp_price not in (None, "") else None
+            qty = row.get("quantity") or 0
+            qty = int(float(qty)) if qty not in (None, "") else 0
+            tradingsymbol = str(row.get("tradingsymbol") or row.get("symbol") or "").upper()
+        except Exception as exc:
+            logger.debug(f"Failed to parse open trade row: {exc}")
+            return None
+        if not direction or entry is None:
+            return None
+        signal = {
+            "direction": direction,
+            "strike": strike,
+            "entry": entry,
+            "sl": sl_price,
+            "tp": tp_price,
+            "symbol": str(row.get("symbol") or "NIFTY"),
+            "tradingsymbol": tradingsymbol,
+            "range_high": row.get("range_high"),
+            "range_low": row.get("range_low"),
+            "inside_bar_time": row.get("inside_bar_time"),
+            "signal_time": row.get("signal_time"),
+            "executed_qty_lots": qty if qty > 0 else self.order_lots,
+            "lot_size": lot_size,
+        }
+        return signal
+
     def _reconcile_manual_exits(self):
         """
         Detect trades that were closed manually outside the algo (broker app)
@@ -1128,8 +1193,9 @@ class LiveStrategyRunner:
             return
 
         open_positions = self._get_open_position_map()
+        tracked_signals = self._gather_open_trade_signals()
 
-        for order_id, signal in list(self._orders_to_signals.items()):
+        for order_id, signal in tracked_signals.items():
             if signal.get("_manual_exit_logged"):
                 continue
             tradingsymbol = signal.get("tradingsymbol")
@@ -1303,6 +1369,27 @@ class LiveStrategyRunner:
                 qty = 0
             mapping[tradingsymbol] = qty
         return mapping
+
+    def _gather_open_trade_signals(self) -> Dict[str, Dict]:
+        combined = dict(self._orders_to_signals)
+        if not hasattr(self.trade_logger, "get_open_trades"):
+            return combined
+        try:
+            open_df = self.trade_logger.get_open_trades()
+        except Exception as exc:
+            logger.debug(f"Unable to load open trades for reconciliation: {exc}")
+            return combined
+        if open_df is None or open_df.empty:
+            return combined
+        lot_size = int(self.config.get("lot_size", 75) or 75)
+        for _, row in open_df.iterrows():
+            order_id = str(row.get("order_id") or "").strip()
+            if not order_id or order_id in combined:
+                continue
+            signal = self._build_signal_from_row(row, lot_size)
+            if signal:
+                combined[order_id] = signal
+        return combined
 
     def _lookup_order_book_exit(self, tradingsymbol: str, original_order_id: str) -> Optional[float]:
         broker = getattr(self, "broker", None)
