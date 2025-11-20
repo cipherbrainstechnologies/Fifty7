@@ -148,3 +148,9 @@ Live runs continue to use 1-hour candles for detection and confirmation, while t
 - 2025-11-07: Streamlit cache TTL for broker portfolio/order fetches set to 0 seconds to avoid serving stale remote data during comparative debugging.
 - 2025-11-10: Dashboard removes embedded TradingView charts, adds a live inside-bar snapshot deck, and wraps Option Greeks plus strategy settings in lightweight controls for faster runtime refresh.
 
+## Live Execution Safeguards
+
+- 2025-11-20: Fixed `LiveStrategyRunner._execute_trade` expiry validation guard so `_record_execution_skip()` and its early return only run when `_is_safe_to_trade_expiry()` fails. This prevents armed live sessions from silently skipping trades after valid breakouts.
+- 2025-11-20: `TradeLogger.update_trade_exit()` now persists SELL legs (using actual filled quantity and average exit price) into Postgres, so `pnl_service` can report non-zero realized P&L on the dashboard instead of staying at zero after live trades.
+- 2025-11-20: Live trading can now raise SmartAPI ROBO (bracket) orders directly from `_execute_trade`, wiring strategy SL/TP and trailing steps into broker-managed square-off orders. `PositionMonitor` mirrors broker-managed exits without sending duplicate SELL orders, so the dashboard sees both broker-level protection and accurate local P&L updates.
+

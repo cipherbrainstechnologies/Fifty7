@@ -22,6 +22,11 @@ timeframes:
 broker:
   type: "angel"       # Options: "angel", "fyers"
   default_qty: 150     # Default quantity per trade (2 lots x 75)
+  enable_bracket_orders: true   # Place SL/TP directly at broker via bracket (ROBO) orders
+  bracket_variety: "ROBO"       # Order variety to use when enable_bracket_orders is true
+  bracket_product_type: "INTRADAY"  # Product type for bracket orders
+  order_variety: "NORMAL"       # Fallback variety when bracket orders are disabled
+  product_type: "INTRADAY"      # Fallback product type when bracket orders are disabled
 
 # Credential Source Mapping (avoid storing secrets in YAML)
 credentials:

@@ -52,6 +52,12 @@ class LiveStrategyRunner:
         self.org_id, self.user_id = resolve_tenant(config)
         self.strategy_id = config.get('strategy', {}).get('type', 'inside_bar')
         self.broker_name = config.get('broker', {}).get('type', 'angel')
+        broker_cfg = config.get('broker', {})
+        self.enable_bracket_orders = broker_cfg.get('enable_bracket_orders', False)
+        self.bracket_variety = broker_cfg.get('bracket_variety', 'ROBO')
+        self.bracket_product_type = broker_cfg.get('bracket_product_type', 'INTRADAY')
+        self.fallback_variety = broker_cfg.get('order_variety', 'NORMAL')
+        self.fallback_product_type = broker_cfg.get('product_type', 'INTRADAY')
         
         # Running state
         self._running = False
@@ -760,9 +766,9 @@ class LiveStrategyRunner:
             # FIX for Issue #6: Get and validate expiry
             expiry = self._get_nearest_expiry()
             if not self._is_safe_to_trade_expiry(expiry):
-                logger.warning(f"Expiry validation failed - skipping trade")
-            self._record_execution_skip(signal, entry_estimate, "Expiry validation failed")
-            return
+                logger.warning("Expiry validation failed - skipping trade")
+                self._record_execution_skip(signal, entry_estimate, "Expiry validation failed")
+                return
             
             # FIX for Issue #2: Fetch actual option price from broker
             expiry_date_str = None
@@ -786,6 +792,25 @@ class LiveStrategyRunner:
             # Recompute SL/TP based on actual entry for downstream consumers
             signal['sl'] = entry_price - self.sl_points
             signal['tp'] = entry_price + (self.sl_points * self.rr_ratio)
+
+            stoploss_points = max(entry_price - signal['sl'], 0)
+            squareoff_points = max(signal['tp'] - entry_price, 0)
+            trailing_points = self.trail_points if self.enable_bracket_orders else None
+
+            order_kwargs = {}
+            if self.enable_bracket_orders:
+                order_kwargs.update({
+                    "squareoff_points": squareoff_points,
+                    "stoploss_points": stoploss_points or self.sl_points,
+                    "trailing_points": trailing_points,
+                    "variety": self.bracket_variety,
+                    "product_type": self.bracket_product_type,
+                })
+            else:
+                order_kwargs.update({
+                    "variety": self.fallback_variety,
+                    "product_type": self.fallback_product_type,
+                })
             
             # Display strategy summary before execution
             self._display_strategy_summary(signal, entry_price, strike, direction)
@@ -810,7 +835,8 @@ class LiveStrategyRunner:
                 direction=direction,
                 quantity=self.order_lots,  # In LOTS (1 lot = 75 units)
                 order_type="MARKET",
-                transaction_type="BUY"  # Explicitly set BUY for opening positions
+                transaction_type="BUY",  # Explicitly set BUY for opening positions
+                **order_kwargs,
             )
             
             # FIX for Issue #9: Validate order execution
@@ -852,6 +878,8 @@ class LiveStrategyRunner:
                 # Still proceed but log warning
             
             # Mark signal as executed
+            signal['executed_qty_lots'] = self.order_lots
+            signal['lot_size'] = self.lot_size
             self.signal_handler.mark_signal_executed(signal, order_id)
             self._orders_to_signals[order_id] = signal
             
@@ -917,7 +945,10 @@ class LiveStrategyRunner:
                     direction=direction,  # FIX: Add direction info
                     tradingsymbol=tradingsymbol,  # FIX: Add tradingsymbol for order placement
                     lot_size=self.lot_size,
-                    pnl_callback=self._handle_position_update
+                    pnl_callback=self._handle_position_update,
+                    broker_managed=self.enable_bracket_orders,
+                    bracket_stop_points=stoploss_points if self.enable_bracket_orders else None,
+                    bracket_target_points=squareoff_points if self.enable_bracket_orders else None,
                 )
                 if monitor.start():
                     self.active_monitors.append(monitor)
@@ -1009,14 +1040,36 @@ class LiveStrategyRunner:
 
         if remaining_lots == 0:
             # Update trade journal with exit info
+            tracked_signal = self._orders_to_signals.get(order_id)
+            executed_lots = self.order_lots
+            lot_size = self.lot_size
+            if tracked_signal:
+                executed_lots = tracked_signal.get('executed_qty_lots', executed_lots)
+                lot_size = tracked_signal.get('lot_size', lot_size)
+
             if exit_price is not None and total_pnl is not None:
                 try:
-                    self.trade_logger.update_trade_exit(order_id, exit_price, total_pnl, reason)
+                    metadata = {
+                        'org_id': self.org_id,
+                        'user_id': self.user_id,
+                        'strategy_id': self.strategy_id,
+                        'broker': self.broker_name,
+                        'lot_size': lot_size,
+                        'quantity': executed_lots,
+                        'exit_timestamp': update.get('timestamp'),
+                    }
+                    self.trade_logger.update_trade_exit(
+                        order_id,
+                        exit_price,
+                        total_pnl,
+                        reason,
+                        metadata=metadata,
+                    )
                 except Exception as log_error:
                     logger.exception(f"Failed to update trade log for order {order_id}: {log_error}")
 
             # Mark signal closed if we tracked one for this order
-            signal = self._orders_to_signals.pop(order_id, None)
+            signal = self._orders_to_signals.pop(order_id, tracked_signal)
             if signal and exit_price is not None and total_pnl is not None:
                 try:
                     self.signal_handler.mark_signal_closed(signal, exit_price, total_pnl)

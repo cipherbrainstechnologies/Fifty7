@@ -29,7 +29,13 @@ class BrokerInterface(ABC):
         quantity: int,
         order_type: str = "MARKET",
         price: Optional[float] = None,
-        transaction_type: str = "BUY"
+        transaction_type: str = "BUY",
+        squareoff_points: Optional[float] = None,
+        stoploss_points: Optional[float] = None,
+        trailing_points: Optional[float] = None,
+        variety: str = "NORMAL",
+        product_type: str = "INTRADAY",
+        duration: str = "DAY",
     ) -> Dict:
         """
         Place an order with the broker.
@@ -41,6 +47,12 @@ class BrokerInterface(ABC):
             quantity: Number of lots
             order_type: 'MARKET' or 'LIMIT'
             price: Limit price (required for LIMIT orders)
+            squareoff_points: Target distance in points for bracket orders
+            stoploss_points: Stop-loss distance in points for bracket orders
+            trailing_points: Trailing stop distance in points for bracket orders
+            variety: Order variety (NORMAL, STOPLOSS, ROBO)
+            product_type: Product type (INTRADAY, DELIVERY, etc.)
+            duration: Order validity duration (DAY/IOC)
         
         Returns:
             Dictionary with order details including 'order_id'
@@ -648,7 +660,13 @@ class AngelOneBroker(BrokerInterface):
         quantity: int,
         order_type: str = "MARKET",
         price: Optional[float] = None,
-        transaction_type: str = "BUY"
+        transaction_type: str = "BUY",
+        squareoff_points: Optional[float] = None,
+        stoploss_points: Optional[float] = None,
+        trailing_points: Optional[float] = None,
+        variety: str = "NORMAL",
+        product_type: str = "INTRADAY",
+        duration: str = "DAY",
     ) -> Dict:
         """
         Place order via Angel One SmartAPI.
@@ -660,6 +678,12 @@ class AngelOneBroker(BrokerInterface):
             quantity: Number of lots (will be multiplied by lot size)
             order_type: 'MARKET' or 'LIMIT'
             price: Limit price (required for LIMIT orders)
+            squareoff_points: Target distance in points for ROBO orders
+            stoploss_points: Stop-loss distance in points for ROBO orders
+            trailing_points: Trailing stop distance in points for ROBO orders
+            variety: Order variety (NORMAL/ROBO/STOPLOSS)
+            product_type: Product type (INTRADAY/DELIVERY)
+            duration: Order validity (DAY/IOC)
         
         Returns:
             Dictionary with order details including 'order_id' and 'status'
@@ -694,19 +718,34 @@ class AngelOneBroker(BrokerInterface):
             quantity_units = quantity * LOT_SIZE  # Convert lots to units for broker API
             
             orderparams = {
-                "variety": "NORMAL",
+                "variety": variety or "NORMAL",
                 "tradingsymbol": tradingsymbol,
                 "symboltoken": symboltoken,
                 "transactiontype": transaction_type,
                 "exchange": "NFO",
                 "ordertype": order_type,
-                "producttype": "INTRADAY",
-                "duration": "DAY",
+                "producttype": product_type or "INTRADAY",
+                "duration": duration or "DAY",
                 "price": str(price) if order_type == "LIMIT" and price else "0",
                 "squareoff": "0",
                 "stoploss": "0",
                 "quantity": str(quantity_units)  # Send units to broker API
             }
+
+            # Attach bracket order fields when requested
+            if variety == "ROBO":
+                if stoploss_points is None or squareoff_points is None:
+                    return {
+                        "status": False,
+                        "message": "ROBO order requires stoploss_points and squareoff_points",
+                        "order_id": None,
+                        "order_data": orderparams,
+                    }
+                orderparams["squareoff"] = str(round(squareoff_points, 2))
+                orderparams["stoploss"] = str(round(stoploss_points, 2))
+                orderparams["trailStopLoss"] = (
+                    str(round(trailing_points, 2)) if trailing_points else "0"
+                )
             
             logger.info(f"Placing order: {orderparams}")
             

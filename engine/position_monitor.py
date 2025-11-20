@@ -42,6 +42,9 @@ class PositionMonitor:
         tradingsymbol: Optional[str] = None,
         lot_size: int = 75,
         pnl_callback: Optional[Callable[[Dict], None]] = None,
+        broker_managed: bool = False,
+        bracket_stop_points: Optional[float] = None,
+        bracket_target_points: Optional[float] = None,
     ):
         self.broker = broker
         self.symbol_token = symbol_token
@@ -59,12 +62,28 @@ class PositionMonitor:
         self.direction = direction  # e.g., 'CE' or 'PE'
         self.tradingsymbol = tradingsymbol  # e.g., 'NIFTY29OCT2419000CE'
         self.pnl_callback = pnl_callback
+        self.broker_managed = broker_managed
+        self.bracket_stop_points = bracket_stop_points
+        self.bracket_target_points = bracket_target_points
 
         # Derived levels
         self.stop_loss = self.entry_price - self.rules.sl_points
         self.trail_anchor = self.entry_price
         self.book1_done = False
         self.book2_done = False
+
+        if self.broker_managed:
+            # Broker handles partial exits; disable book1
+            self.book1_done = True
+            if self.bracket_stop_points is not None:
+                self.stop_loss = self.entry_price - float(self.bracket_stop_points)
+            self.broker_target_price = (
+                self.entry_price + float(self.bracket_target_points)
+                if self.bracket_target_points is not None
+                else self.entry_price + self.rules.book2_points
+            )
+        else:
+            self.broker_target_price = self.entry_price + self.rules.book2_points
 
         # Threading
         self._running = False
@@ -127,8 +146,8 @@ class PositionMonitor:
         self.last_ltp = ltp
         self.last_quote_time = datetime.now()
 
-        # Update trailing SL if price advances beyond anchor by trail_points
-        if ltp - self.trail_anchor >= self.rules.trail_points:
+        # Update trailing SL if price advances beyond anchor by trail_points (only when we manage exits)
+        if not self.broker_managed and (ltp - self.trail_anchor) >= self.rules.trail_points:
             increments = int((ltp - self.trail_anchor) // self.rules.trail_points)
             if increments > 0:
                 self.trail_anchor += increments * self.rules.trail_points
@@ -139,24 +158,31 @@ class PositionMonitor:
 
         # Profit booking levels (point-based off entry)
         # Note: total_qty and remaining_qty are in LOTS (1 lot = 75 units)
-        if not self.book1_done and (ltp >= self.entry_price + self.rules.book1_points):
+        if (not self.book1_done) and (ltp >= self.entry_price + self.rules.book1_points) and not self.broker_managed:
             qty_to_close_lots = int(round(self.remaining_qty * self.rules.book1_ratio))
             if qty_to_close_lots > 0:
                 self._book_profit(qty_to_close_lots, level="L1")
                 self.book1_done = True
 
         # Full target
-        if not self.book2_done and (ltp >= self.entry_price + self.rules.book2_points):
+        target_price = self.broker_target_price if self.broker_managed else (self.entry_price + self.rules.book2_points)
+        if not self.book2_done and (ltp >= target_price):
             qty_to_close = self.remaining_qty
             if qty_to_close > 0:
-                self._book_profit(qty_to_close, level="L2")
+                if self.broker_managed:
+                    self._finalize_broker_exit("target", qty_to_close, ltp)
+                else:
+                    self._book_profit(qty_to_close, level="L2")
                 self.book2_done = True
 
         # Stop loss
         if ltp <= self.stop_loss:
             qty_to_close = self.remaining_qty
             if qty_to_close > 0:
-                self._exit_sl(qty_to_close)
+                if self.broker_managed:
+                    self._finalize_broker_exit("stop_loss", qty_to_close, ltp)
+                else:
+                    self._exit_sl(qty_to_close)
 
     def _emit_position_event(self, event: str, qty_lots: int, exit_price: float, level: Optional[str] = None):
         """
@@ -212,6 +238,9 @@ class PositionMonitor:
         if qty <= 0 or self.remaining_qty <= 0 or self.closed:
             return
         qty = min(qty, self.remaining_qty)
+        if getattr(self, "broker_managed", False):
+            self._finalize_broker_exit("target", qty, self.last_ltp or (self.entry_price + self.rules.book2_points), level=level)
+            return
         try:
             logger.info(f"Profit booking {level}: closing {qty} @ market")
             
@@ -286,6 +315,9 @@ class PositionMonitor:
         if qty <= 0 or self.remaining_qty <= 0 or self.closed:
             return
         qty = min(qty, self.remaining_qty)
+        if getattr(self, "broker_managed", False):
+            self._finalize_broker_exit("stop_loss", qty, self.last_ltp or self.stop_loss)
+            return
         try:
             logger.info(f"Stop loss hit: closing {qty} @ market")
             
@@ -327,5 +359,21 @@ class PositionMonitor:
         
         exit_price = self.last_ltp if self.last_ltp is not None else self.stop_loss
         self._emit_position_event("stop_loss", qty, exit_price)
+
+    def _finalize_broker_exit(self, reason: str, qty: int, exit_price: float, level: Optional[str] = None):
+        """
+        Mirror a broker-managed square-off (ROBO order) so the rest of the system records the exit.
+        """
+        qty = min(qty, self.remaining_qty)
+        if qty <= 0:
+            return
+        self.remaining_qty -= qty
+        if self.remaining_qty <= 0:
+            self.remaining_qty = 0
+            self.closed = True
+        event = "book_profit" if reason == "target" else "stop_loss"
+        self._emit_position_event(event, qty, exit_price, level=level or "BROKER")
+        if self.closed:
+            logger.info("Broker-managed position closed")
 
 

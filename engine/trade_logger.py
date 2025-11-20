@@ -292,7 +292,14 @@ class TradeLogger:
             'avg_loss': float(avg_loss)
         }
     
-    def update_trade_exit(self, order_id: str, exit_price: float, pnl: float, outcome: str):
+    def update_trade_exit(
+        self,
+        order_id: str,
+        exit_price: float,
+        pnl: float,
+        outcome: str,
+        metadata: Optional[Dict] = None,
+    ):
         """
         Update trade with exit information.
         
@@ -321,6 +328,84 @@ class TradeLogger:
         
         # Write back to CSV
         df.to_csv(self.trades_file, index=False)
+
+        # Persist SELL leg to database for realized P&L calculations
+        metadata = metadata or {}
+        org_id = metadata.get('org_id')
+        user_id = metadata.get('user_id')
+        if not org_id or not user_id:
+            return
+
+        try:
+            trade_row = df.loc[mask].iloc[0]
+        except IndexError:
+            return
+
+        direction = trade_row.get('direction')
+        symbol = trade_row.get('symbol')
+        strike = trade_row.get('strike')
+        quantity_val = trade_row.get('quantity') or metadata.get('quantity')
+        try:
+            quantity_lots = int(quantity_val)
+        except (TypeError, ValueError):
+            quantity_lots = 0
+
+        lot_size = metadata.get('lot_size', 75)
+        try:
+            lot_size = int(lot_size)
+        except (TypeError, ValueError):
+            lot_size = 75
+
+        try:
+            entry_price_val = float(trade_row.get('entry'))
+        except (TypeError, ValueError):
+            entry_price_val = 0.0
+
+        try:
+            exit_price_val = float(exit_price)
+        except (TypeError, ValueError):
+            exit_price_val = entry_price_val
+
+        pnl_value = None
+        try:
+            pnl_value = float(pnl)
+        except (TypeError, ValueError):
+            pnl_value = None
+
+        units = quantity_lots * lot_size
+        avg_exit_price = exit_price_val
+        if units > 0 and pnl_value is not None:
+            try:
+                avg_exit_price = entry_price_val + (pnl_value / units)
+            except ZeroDivisionError:
+                avg_exit_price = exit_price_val
+
+        exit_trade = {
+            'timestamp': metadata.get('exit_timestamp', datetime.now().isoformat()),
+            'symbol': symbol,
+            'strike': strike,
+            'direction': direction,
+            'order_id': metadata.get('exit_order_id') or f"{order_id}-EXIT",
+            'entry': avg_exit_price,
+            'sl': trade_row.get('sl'),
+            'tp': trade_row.get('tp'),
+            'exit': avg_exit_price,
+            'pnl': pnl,
+            'status': 'closed',
+            'pre_reason': trade_row.get('pre_reason', ''),
+            'post_outcome': outcome,
+            'quantity': quantity_lots,
+            'side': 'SELL',
+            'org_id': org_id,
+            'user_id': user_id,
+            'strategy_id': metadata.get('strategy_id'),
+            'broker': metadata.get('broker'),
+            'fees': metadata.get('fees', '0'),
+            'price': avg_exit_price,
+        }
+
+        if quantity_lots > 0:
+            self._maybe_write_trade_to_db(exit_trade)
 
     def import_trades_from_csv(self, file_like) -> Dict:
         """
