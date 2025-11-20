@@ -158,6 +158,7 @@ from engine.broker_connector import create_broker_interface
 from engine.signal_handler import SignalHandler
 from engine.backtest_engine import BacktestEngine
 from engine.market_data import MarketDataProvider
+from engine.tick_stream import LiveTickStreamer
 from engine.live_runner import LiveStrategyRunner
 from engine.firebase_auth import FirebaseAuth
 from engine.tenant_context import resolve_tenant
@@ -853,6 +854,32 @@ if 'market_data_provider' not in st.session_state:
     else:
         st.session_state.market_data_provider = None
 
+if 'tick_streamer' not in st.session_state:
+    st.session_state.tick_streamer = None
+
+if st.session_state.tick_streamer is None and st.session_state.broker is not None:
+    try:
+        default_symbols = []
+        nifty_token = None
+        if st.session_state.market_data_provider is not None:
+            nifty_token = getattr(st.session_state.market_data_provider, "nifty_token", None)
+        if not nifty_token:
+            try:
+                nifty_token = st.session_state.broker._get_symbol_token("NIFTY", "NSE")
+            except Exception:
+                nifty_token = "99926000"
+        default_symbols.append({
+            "tradingsymbol": "NIFTY",
+            "exchange": "NSE",
+            "token": str(nifty_token) if nifty_token else None,
+        })
+        streamer = LiveTickStreamer(st.session_state.broker, default_symbols=default_symbols)
+        streamer.start()
+        st.session_state.tick_streamer = streamer
+    except Exception as streamer_error:
+        st.session_state.tick_streamer = None
+        logger.warning(f"Tick streamer initialization warning: {streamer_error}")
+
 # Initialize live runner (lazy - only when needed)
 if st.session_state.live_runner is None:
     # Load full config (with market_data section)
@@ -872,7 +899,8 @@ if st.session_state.live_runner is None:
                         signal_handler=st.session_state.signal_handler,
                         broker=st.session_state.broker,
                         trade_logger=st.session_state.trade_logger,
-                        config=full_config
+                        config=full_config,
+                        tick_streamer=st.session_state.tick_streamer,
                     )
                     _set_live_runner_runtime(runner)
                 else:
@@ -1183,6 +1211,7 @@ if tab == "Dashboard":
                 except (TypeError, ValueError):
                     qty_lots = 0
                 
+                tradingsymbol = str(latest_trade.get('tradingsymbol', '') or '').upper()
                 active_trade = {
                     'direction': str(latest_trade.get('direction', '')).upper(),
                     'strike': strike_value if strike_value is not None else latest_trade.get('strike', '—'),
@@ -1194,7 +1223,8 @@ if tab == "Dashboard":
                     'target_points': target_points,
                     'quantity': qty_lots,
                     'timestamp': latest_trade.get('timestamp', ''),
-                    'order_id': latest_trade.get('order_id', '')
+                    'order_id': latest_trade.get('order_id', ''),
+                    'tradingsymbol': tradingsymbol,
                 }
 
                 # Attempt to fetch live option LTP for unrealized P&L
@@ -1202,8 +1232,18 @@ if tab == "Dashboard":
                 lot_size = int(config.get('lot_size', 75) or 75)
                 total_units = lot_size * qty_lots
                 symbol_name = config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+                tick_streamer = st.session_state.get('tick_streamer')
+                if tick_streamer and tradingsymbol:
+                    tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+                    tick_quote = tick_streamer.get_quote(tradingsymbol)
+                    if tick_quote and 'ltp' in tick_quote and entry_price is not None:
+                        active_trade_option_ltp = float(tick_quote['ltp'])
+                        active_trade_unrealized_points = active_trade_option_ltp - entry_price
+                        active_trade_unrealized_value = active_trade_unrealized_points * total_units
+                        active_trade['option_ltp'] = active_trade_option_ltp
                 if (
-                    broker
+                    active_trade_option_ltp is None
+                    and broker
                     and hasattr(broker, "get_option_price")
                     and total_units > 0
                     and entry_price is not None
@@ -1392,15 +1432,21 @@ if tab == "Dashboard":
         st.metric("📊 Signals Watching", len(active_signals))
     with metric_cols[1]:
         nifty_ltp = "—"
-        try:
-            if st.session_state.market_data_provider is not None:
-                ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
-                if isinstance(ohlc, dict):
-                    ltp_val = ohlc.get('ltp') or ohlc.get('close')
-                    if ltp_val is not None:
-                        nifty_ltp = f"{float(ltp_val):.2f}"
-        except Exception:
-            pass
+        tick_streamer = st.session_state.get('tick_streamer')
+        if tick_streamer:
+            quote = tick_streamer.get_quote("NIFTY")
+            if quote and 'ltp' in quote:
+                nifty_ltp = f"{float(quote['ltp']):.2f}"
+        if nifty_ltp == "—":
+            try:
+                if st.session_state.market_data_provider is not None:
+                    ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                    if isinstance(ohlc, dict):
+                        ltp_val = ohlc.get('ltp') or ohlc.get('close')
+                        if ltp_val is not None:
+                            nifty_ltp = f"{float(ltp_val):.2f}"
+            except Exception:
+                pass
         st.metric("📈 NIFTY LTP", nifty_ltp)
     with metric_cols[2]:
         realized_pnl = 0.0

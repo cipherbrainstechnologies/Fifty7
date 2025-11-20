@@ -32,7 +32,8 @@ class LiveStrategyRunner:
         signal_handler: SignalHandler,
         broker: BrokerInterface,
         trade_logger: TradeLogger,
-        config: Dict
+        config: Dict,
+        tick_streamer=None,
     ):
         """
         Initialize LiveStrategyRunner.
@@ -49,6 +50,7 @@ class LiveStrategyRunner:
         self.broker = broker
         self.trade_logger = trade_logger
         self.config = config
+        self.tick_streamer = tick_streamer
         self.org_id, self.user_id = resolve_tenant(config)
         self.strategy_id = config.get('strategy', {}).get('type', 'inside_bar')
         self.broker_name = config.get('broker', {}).get('type', 'angel')
@@ -889,6 +891,9 @@ class LiveStrategyRunner:
             signal['tradingsymbol'] = tradingsymbol
             signal['executed_qty_lots'] = self.order_lots
             signal['lot_size'] = self.lot_size
+            if self.tick_streamer and tradingsymbol:
+                exchange_for_ticks = order_result.get('order_data', {}).get('exchange', 'NFO')
+                self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange=exchange_for_ticks, token=symboltoken)
             self.signal_handler.mark_signal_executed(signal, order_id)
             self._orders_to_signals[order_id] = signal
             
@@ -1187,14 +1192,18 @@ class LiveStrategyRunner:
             position_qty = open_positions.get(str(tradingsymbol).upper(), required_units)
             if position_qty <= 0:
                 symbol_name = signal.get("symbol") or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
-                try:
-                    live_price = self.broker.get_option_price(
-                        symbol=symbol_name,
-                        strike=signal.get('strike'),
-                        direction=signal.get('direction')
-                    )
-                except Exception:
-                    live_price = None
+                live_price = None
+                if self.tick_streamer and tradingsymbol:
+                    live_price = self.tick_streamer.get_ltp(tradingsymbol)
+                if live_price is None:
+                    try:
+                        live_price = self.broker.get_option_price(
+                            symbol=symbol_name,
+                            strike=signal.get('strike'),
+                            direction=signal.get('direction')
+                        )
+                    except Exception:
+                        live_price = None
                 if live_price is None:
                     live_price = signal.get('entry', 0.0)
                 logger.info(

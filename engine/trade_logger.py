@@ -59,13 +59,34 @@ class TradeLogger:
         """Ensure CSV file has header row if it's new."""
         if not os.path.exists(self.trades_file):
             header = [
-                'timestamp', 'symbol', 'strike', 'direction', 'order_id',
+                'timestamp', 'symbol', 'tradingsymbol', 'strike', 'direction', 'order_id',
                 'entry', 'sl', 'tp', 'exit', 'pnl', 'status',
                 'pre_reason', 'post_outcome', 'quantity'
             ]
             with open(self.trades_file, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow(header)
+        else:
+            try:
+                with open(self.trades_file, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    existing_header = next(reader, [])
+                if 'tradingsymbol' not in existing_header:
+                    df = pd.read_csv(self.trades_file)
+                    if 'tradingsymbol' not in df.columns:
+                        df['tradingsymbol'] = ''
+                    desired_cols = [
+                        'timestamp', 'symbol', 'tradingsymbol', 'strike', 'direction', 'order_id',
+                        'entry', 'sl', 'tp', 'exit', 'pnl', 'status',
+                        'pre_reason', 'post_outcome', 'quantity'
+                    ]
+                    for col in desired_cols:
+                        if col not in df.columns:
+                            df[col] = ''
+                    df = df[desired_cols]
+                    df.to_csv(self.trades_file, index=False)
+            except Exception:
+                pass
     
     def log_trade(self, trade: Dict):
         """
@@ -91,6 +112,7 @@ class TradeLogger:
         row = {
             'timestamp': trade.get('timestamp', datetime.now().isoformat()),
             'symbol': trade.get('symbol', 'NIFTY'),
+            'tradingsymbol': trade.get('tradingsymbol', ''),
             'strike': trade.get('strike', ''),
             'direction': trade.get('direction', ''),
             'order_id': trade.get('order_id', ''),
@@ -107,11 +129,15 @@ class TradeLogger:
         
         # Write to CSV
         with open(self.trades_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=[
-                'timestamp', 'symbol', 'strike', 'direction', 'order_id',
-                'entry', 'sl', 'tp', 'exit', 'pnl', 'status',
-                'pre_reason', 'post_outcome', 'quantity'
-            ])
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    'timestamp', 'symbol', 'tradingsymbol', 'strike', 'direction', 'order_id',
+                    'entry', 'sl', 'tp', 'exit', 'pnl', 'status',
+                    'pre_reason', 'post_outcome', 'quantity'
+                ],
+                extrasaction='ignore',
+            )
             writer.writerow(row)
 
         # Also attempt to persist executed trades to Postgres if fields are available
@@ -438,7 +464,7 @@ class TradeLogger:
         incoming = incoming.rename(columns={k: v for k, v in rename_map.items() if k in incoming.columns})
 
         # Ensure all expected columns exist
-        expected_cols = ['timestamp','symbol','strike','direction','order_id','entry','sl','tp','exit','pnl','status','pre_reason','post_outcome','quantity']
+        expected_cols = ['timestamp','symbol','tradingsymbol','strike','direction','order_id','entry','sl','tp','exit','pnl','status','pre_reason','post_outcome','quantity']
         for col in expected_cols:
             if col not in incoming.columns:
                 incoming[col] = ''
