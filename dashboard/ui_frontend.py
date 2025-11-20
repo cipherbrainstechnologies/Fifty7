@@ -213,6 +213,7 @@ from engine.tick_stream import LiveTickStreamer
 from engine.live_runner import LiveStrategyRunner
 from engine.firebase_auth import FirebaseAuth
 from engine.tenant_context import resolve_tenant
+from engine.symbol_utils import canonicalize_tradingsymbol
 from dashboard.auth_page import (
     render_login_page,
     load_persisted_firebase_session,
@@ -1276,7 +1277,7 @@ if tab == "Dashboard":
                     qty_lots = 0
                 
                 raw_tradingsymbol = latest_trade.get('tradingsymbol', '')
-                tradingsymbol = _clean_symbol(raw_tradingsymbol).upper()
+                tradingsymbol = canonicalize_tradingsymbol(_clean_symbol(raw_tradingsymbol))
                 active_trade = {
                     'direction': str(latest_trade.get('direction', '')).upper(),
                     'strike': strike_value if strike_value is not None else latest_trade.get('strike', '—'),

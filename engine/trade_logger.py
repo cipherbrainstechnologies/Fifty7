@@ -5,7 +5,7 @@ Trade Logger for comprehensive trade logging to CSV
 import csv
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 from decimal import Decimal, InvalidOperation
 
 import pandas as pd
@@ -32,6 +32,8 @@ except ImportError:
     Trade = None
     DB_AVAILABLE = False
 
+from .symbol_utils import canonicalize_tradingsymbol
+
 
 class TradeLogger:
     """
@@ -48,6 +50,7 @@ class TradeLogger:
         self.trades_file = trades_file
         self._ensure_directory_exists()
         self._ensure_header_exists()
+        self._canonicalize_existing_log()
     
     def _ensure_directory_exists(self):
         """Ensure logs directory exists."""
@@ -87,6 +90,29 @@ class TradeLogger:
                     df.to_csv(self.trades_file, index=False)
             except Exception:
                 pass
+
+    def _canonicalize_existing_log(self):
+        """Normalize existing tradingsymbol entries once on startup."""
+        if not os.path.exists(self.trades_file):
+            return
+        try:
+            df = pd.read_csv(self.trades_file)
+        except Exception:
+            return
+        normalized = self._canonicalize_dataframe(df)
+        if normalized is not df:
+            normalized.to_csv(self.trades_file, index=False)
+
+    def _canonicalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return a DataFrame whose tradingsymbol column uses canonical formatting."""
+        if df.empty or 'tradingsymbol' not in df.columns:
+            return df
+        canonical = df['tradingsymbol'].apply(canonicalize_tradingsymbol)
+        if canonical.equals(df['tradingsymbol']):
+            return df
+        updated = df.copy()
+        updated['tradingsymbol'] = canonical
+        return updated
     
     def log_trade(self, trade: Dict):
         """
@@ -112,7 +138,7 @@ class TradeLogger:
         row = {
             'timestamp': trade.get('timestamp', datetime.now().isoformat()),
             'symbol': trade.get('symbol', 'NIFTY'),
-            'tradingsymbol': trade.get('tradingsymbol', ''),
+            'tradingsymbol': canonicalize_tradingsymbol(trade.get('tradingsymbol', '')),
             'strike': trade.get('strike', ''),
             'direction': trade.get('direction', ''),
             'order_id': trade.get('order_id', ''),
@@ -244,7 +270,7 @@ class TradeLogger:
         
         try:
             df = pd.read_csv(self.trades_file)
-            return df
+            return self._canonicalize_dataframe(df)
         except Exception as e:
             print(f"Error reading trades: {e}")
             return pd.DataFrame()
@@ -452,16 +478,11 @@ class TradeLogger:
         if not mask.any():
             return
 
-        ts_upper = str(tradingsymbol).strip().upper()
+        ts_upper = canonicalize_tradingsymbol(tradingsymbol)
         if not ts_upper:
             return
 
-        existing = (
-            df.loc[mask, 'tradingsymbol']
-            .astype(str)
-            .str.strip()
-            .str.upper()
-        )
+        existing = df.loc[mask, 'tradingsymbol'].apply(canonicalize_tradingsymbol)
         if not existing.empty and existing.eq(ts_upper).all():
             return
 
@@ -504,6 +525,8 @@ class TradeLogger:
             if col not in incoming.columns:
                 incoming[col] = ''
 
+        incoming['tradingsymbol'] = incoming['tradingsymbol'].apply(canonicalize_tradingsymbol)
+
         # Coerce timestamp to string ISO if possible
         try:
             incoming['timestamp'] = pd.to_datetime(incoming['timestamp'], errors='coerce').dt.strftime('%Y-%m-%dT%H:%M:%S')
@@ -522,6 +545,7 @@ class TradeLogger:
         after = len(merged)
 
         # Write back
+        merged = self._canonicalize_dataframe(merged)
         merged.to_csv(self.trades_file, index=False)
 
         return {"imported": len(incoming), "skipped": before + 0 - after, "total": after}

@@ -9,6 +9,8 @@ from typing import Callable, Dict, Optional
 from datetime import datetime
 from logzero import logger
 
+from .symbol_utils import canonicalize_tradingsymbol
+
 
 @dataclass
 class PositionRules:
@@ -60,7 +62,7 @@ class PositionMonitor:
         self.symbol = symbol  # e.g., 'NIFTY'
         self.strike = strike  # e.g., 19000
         self.direction = direction  # e.g., 'CE' or 'PE'
-        self.tradingsymbol = tradingsymbol  # e.g., 'NIFTY29OCT2419000CE'
+        self.tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)  # e.g., 'NIFTY29OCT2419000CE'
         self.pnl_callback = pnl_callback
         self.broker_managed = broker_managed
         self.bracket_stop_points = bracket_stop_points

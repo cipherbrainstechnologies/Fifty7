@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 
 from logzero import logger
 
+from .symbol_utils import canonicalize_tradingsymbol
+
 try:
     from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 except ImportError:  # pragma: no cover - optional dependency
@@ -77,6 +79,7 @@ class LiveTickStreamer:
             self._thread.join(timeout=2)
 
     def subscribe_tradingsymbol(self, tradingsymbol: str, exchange: str = "NFO", token: Optional[str] = None):
+        tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)
         if not tradingsymbol:
             return
         if not token:
@@ -89,7 +92,7 @@ class LiveTickStreamer:
             return
 
         token = str(token)
-        ts_upper = str(tradingsymbol).upper()
+        ts_upper = tradingsymbol
         if not ts_upper or ts_upper in {"NAN", "NONE", "NULL"}:
             logger.debug(f"Skipping tick subscription for invalid tradingsymbol: {tradingsymbol!r}")
             return
@@ -107,9 +110,10 @@ class LiveTickStreamer:
         self.subscribe_tradingsymbol(symbol, exchange=exchange, token=token)
 
     def get_quote(self, tradingsymbol: str) -> Optional[Dict]:
+        tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)
         if not tradingsymbol:
             return None
-        ts_upper = str(tradingsymbol).upper()
+        ts_upper = tradingsymbol
         with self._lock:
             for token, meta in self._subscriptions.items():
                 if meta["tradingsymbol"] == ts_upper:

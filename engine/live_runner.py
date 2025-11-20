@@ -18,6 +18,7 @@ from engine.tenant_context import resolve_tenant
 from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
 from engine.position_monitor import PositionMonitor, PositionRules
+from engine.symbol_utils import canonicalize_tradingsymbol, tradingsymbols_equal
 
 
 class LiveStrategyRunner:
@@ -883,7 +884,7 @@ class LiveStrategyRunner:
                 or order_result.get('tradingsymbol')
                 or ""
             )
-            tradingsymbol = str(tradingsymbol or "").upper()
+            tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)
             exchange_for_ticks = (
                 order_data.get('exchange')
                 or order_result.get('exchange')
@@ -918,10 +919,8 @@ class LiveStrategyRunner:
             self._orders_to_signals[order_id] = signal
             
             # Get tradingsymbol from order result for PositionMonitor
-            if not tradingsymbol:
-                # Fallback: generate from parameters
-                if expiry_date_str:
-                    tradingsymbol = f"{symbol}{expiry_date_str}{strike}{direction}"
+            if not tradingsymbol and expiry_date_str:
+                tradingsymbol = canonicalize_tradingsymbol(f"{symbol}{expiry_date_str}{strike}{direction}")
             
             # Log trade with actual entry price
             self.trade_logger.log_trade({
@@ -1169,7 +1168,7 @@ class LiveStrategyRunner:
             tp_price = float(tp_price) if tp_price not in (None, "") else None
             qty = row.get("quantity") or 0
             qty = int(float(qty)) if qty not in (None, "") else 0
-            tradingsymbol = str(row.get("tradingsymbol") or row.get("symbol") or "").upper()
+            tradingsymbol = canonicalize_tradingsymbol(row.get("tradingsymbol") or row.get("symbol"))
         except Exception as exc:
             logger.debug(f"Failed to parse open trade row: {exc}")
             return None
@@ -1200,8 +1199,9 @@ class LiveStrategyRunner:
     ) -> Optional[str]:
         if not signal:
             return None
-        existing = str(signal.get("tradingsymbol") or "").strip().upper()
+        existing = canonicalize_tradingsymbol(signal.get("tradingsymbol"))
         if existing:
+            signal["tradingsymbol"] = existing
             return existing
         derived = self._derive_tradingsymbol_from_sources(order_id, signal, row=row)
         if derived:
@@ -1233,7 +1233,8 @@ class LiveStrategyRunner:
                 reference_ts = row.get("timestamp")
             except Exception:
                 reference_ts = None
-        return self._format_tradingsymbol_from_components(symbol, strike, direction, reference_ts)
+        formatted = self._format_tradingsymbol_from_components(symbol, strike, direction, reference_ts)
+        return canonicalize_tradingsymbol(formatted)
 
     def _lookup_tradingsymbol_from_broker(self, order_id: Optional[str]) -> Optional[str]:
         broker = getattr(self, "broker", None)
@@ -1252,8 +1253,9 @@ class LiveStrategyRunner:
                 }
                 if normalized in ids:
                     ts = trade.get("tradingsymbol") or trade.get("symbol")
+                    ts = canonicalize_tradingsymbol(ts)
                     if ts:
-                        return str(ts).upper()
+                        return ts
         except Exception as exc:
             logger.debug(f"Trade book lookup failed for {normalized}: {exc}")
 
@@ -1267,8 +1269,9 @@ class LiveStrategyRunner:
                 }
                 if normalized in ids:
                     ts = order.get("tradingsymbol") or order.get("symbol")
+                    ts = canonicalize_tradingsymbol(ts)
                     if ts:
-                        return str(ts).upper()
+                        return ts
         except Exception as exc:
             logger.debug(f"Order book lookup failed for {normalized}: {exc}")
         return None
@@ -1317,6 +1320,7 @@ class LiveStrategyRunner:
             return None
 
     def _maybe_update_logged_tradingsymbol(self, order_id: str, tradingsymbol: Optional[str]) -> None:
+        tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)
         if not tradingsymbol:
             return
         updater = getattr(self.trade_logger, "update_tradingsymbol", None)
@@ -1352,9 +1356,10 @@ class LiveStrategyRunner:
         for order_id, signal in tracked_signals.items():
             if signal.get("_manual_exit_logged"):
                 continue
-            tradingsymbol = signal.get("tradingsymbol")
+            tradingsymbol = canonicalize_tradingsymbol(signal.get("tradingsymbol"))
             if not tradingsymbol:
                 continue
+            signal["tradingsymbol"] = tradingsymbol
 
             try:
                 executed_lots = int(signal.get("executed_qty_lots", self.order_lots))
@@ -1369,8 +1374,8 @@ class LiveStrategyRunner:
             matched_rows = []
 
             for row in trade_book:
-                row_symbol = str(row.get("tradingsymbol") or row.get("symbol") or "").upper()
-                if row_symbol != str(tradingsymbol).upper():
+                row_symbol = canonicalize_tradingsymbol(row.get("tradingsymbol") or row.get("symbol"))
+                if not tradingsymbols_equal(row_symbol, tradingsymbol):
                     continue
                 txn = str(row.get("transactiontype") or row.get("side") or "").upper()
                 if txn != closing_side:
@@ -1409,7 +1414,7 @@ class LiveStrategyRunner:
                 self._finalize_manual_exit(order_id, signal, exit_price, required_units)
                 continue
 
-            position_qty = open_positions.get(str(tradingsymbol).upper(), required_units)
+            position_qty = open_positions.get(tradingsymbol, required_units)
             if position_qty <= 0:
                 symbol_name = signal.get("symbol") or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
                 live_price = None
@@ -1507,7 +1512,7 @@ class LiveStrategyRunner:
             return {}
         mapping: Dict[str, int] = {}
         for pos in positions:
-            tradingsymbol = str(pos.get("tradingsymbol") or pos.get("symbol") or "").upper()
+            tradingsymbol = canonicalize_tradingsymbol(pos.get("tradingsymbol") or pos.get("symbol"))
             if not tradingsymbol:
                 continue
             qty = (
@@ -1556,10 +1561,10 @@ class LiveStrategyRunner:
             logger.debug(f"Order book fetch failed: {e}")
             return None
 
-        tradingsymbol = str(tradingsymbol or "").upper()
+        tradingsymbol = canonicalize_tradingsymbol(tradingsymbol)
         for order in orders:
-            ts = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
-            if ts != tradingsymbol:
+            ts = canonicalize_tradingsymbol(order.get("tradingsymbol") or order.get("symbol"))
+            if not tradingsymbols_equal(ts, tradingsymbol):
                 continue
             txn = str(order.get("transactiontype") or order.get("side") or "").upper()
             if txn != "SELL":
