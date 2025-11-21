@@ -256,82 +256,389 @@ st.set_page_config(
 # Custom CSS for enhanced UI
 st.markdown("""
 <style>
-    /* Card styling */
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #1f77b4;
+    body {
+        background-color: #f1f5f9;
     }
-    .status-card {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-bottom: 1rem;
+    .dashboard-shell {
+        max-width: 1280px;
+        margin: 0 auto;
+        padding: 1rem 1.5rem 3rem;
     }
-    .status-green {
-        background-color: #d4edda;
-        border-left: 4px solid #28a745;
-    }
-    .status-red {
-        background-color: #f8d7da;
-        border-left: 4px solid #dc3545;
-    }
-    .status-yellow {
-        background-color: #fff3cd;
-        border-left: 4px solid #ffc107;
-    }
-    .dashboard-hero {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 1rem;
-        margin-bottom: 1rem;
-    }
-    .dashboard-hero > div {
-        flex: 1 1 260px;
-    }
-    div[data-testid="stMetric"] {
+    .status-ribbon {
+        position: sticky;
+        top: 0;
+        z-index: 50;
         background: #ffffff;
+        border: 1px solid #e2e8f0;
         border-radius: 12px;
         padding: 0.75rem 1rem;
-        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+        margin-bottom: 1.5rem;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
     }
-    div[data-testid="stMetric"] label {
+    .status-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+    .status-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        border-radius: 8px;
+        padding: 0.35rem 0.75rem;
+        font-size: 0.9rem;
+        border: 1px solid #e2e8f0;
+        background: #f8fafc;
+    }
+    .status-chip .chip-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 9999px;
+        display: inline-flex;
+    }
+    .status-chip.success {
+        background: #ecfdf5;
+        border-color: #a7f3d0;
+        color: #065f46;
+    }
+    .status-chip.success .chip-dot {
+        background: #10b981;
+    }
+    .status-chip.info {
+        background: #eff6ff;
+        border-color: #bfdbfe;
+        color: #1d4ed8;
+    }
+    .status-chip.info .chip-dot {
+        background: #3b82f6;
+    }
+    .status-chip.warning {
+        background: #fff7ed;
+        border-color: #fed7aa;
+        color: #c2410c;
+    }
+    .status-chip.warning .chip-dot {
+        background: #fb923c;
+    }
+    .status-chip.danger {
+        background: #fef2f2;
+        border-color: #fecaca;
+        color: #991b1b;
+    }
+    .status-chip.danger .chip-dot {
+        background: #ef4444;
+    }
+    .auto-refresh-controls {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    .trading-panel {
+        border: 2px solid #fed7aa;
+        background: #fff7ed;
+        border-radius: 12px;
+        padding: 1rem 1.25rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 12px 24px rgba(251, 146, 60, 0.12);
+    }
+    .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+        gap: 1.2rem;
+        margin-bottom: 1.5rem;
+    }
+    @media (max-width: 992px) {
+        .hero-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    .card {
+        background: #ffffff;
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+        padding: 1.25rem;
+    }
+    .metric-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 1rem;
+    }
+    .metric-tile h5 {
+        margin: 0 0 0.35rem;
+        font-size: 0.9rem;
+        color: #475569;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .metric-tile {
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+        padding: 1rem;
+        background: #ffffff;
+    }
+    .metric-value {
+        font-size: 1.4rem;
+        font-weight: 600;
+        color: #0f172a;
+    }
+    .metric-subtle {
+        font-size: 0.85rem;
+        color: #94a3b8;
+    }
+    .snapshot-card {
+        margin-bottom: 1.5rem;
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+    }
+    .snapshot-section {
+        border-radius: 12px;
+        padding: 1rem;
+        border: 1px solid #e2e8f0;
+    }
+    .snapshot-section.mother {
+        background: #f8fafc;
+        border-color: #cbd5f5;
+    }
+    .snapshot-section.inside {
+        background: #eff6ff;
+        border-color: #bfdbfe;
+    }
+    .snapshot-section.range {
+        background: #f5f3ff;
+        border-color: #ddd6fe;
+    }
+    .snapshot-section .snapshot-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        color: #0f172a;
+    }
+    .snapshot-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+        gap: 0.75rem;
+    }
+    .snapshot-cell label {
+        font-size: 0.75rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .snapshot-cell span {
+        display: block;
+        font-size: 1.05rem;
+        font-weight: 600;
+        color: #0f172a;
+    }
+    .config-strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+    }
+    .config-chip {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 0.5rem 0.85rem;
+        font-size: 0.9rem;
+        color: #0f172a;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    }
+    .config-chip span {
+        display: block;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .config-chip strong {
+        display: block;
+        font-size: 1rem;
+        color: #0f172a;
+    }
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 9999px;
+        padding: 0.1rem 0.75rem;
+        font-size: 0.8rem;
         font-weight: 600;
     }
-    div[data-testid="stMetricValue"] {
-        font-weight: 700;
+    .badge-green {
+        background: #dcfce7;
+        color: #166534;
     }
-    /* Responsive adjustments */
-    @media (max-width: 768px) {
-        .metric-card {
-            margin-bottom: 1rem;
-        }
-        .dashboard-hero {
-            flex-direction: column;
-        }
-        div[data-testid="column"] {
-            width: 100% !important;
-        }
-        div[data-testid="stMetric"] {
-            text-align: center;
-            align-items: center;
-        }
-        div[data-testid="stMetricLabel"] {
-            justify-content: center;
-            text-align: center;
-        }
-        .status-card {
-            margin-bottom: 0.75rem;
-        }
+    .badge-red {
+        background: #fee2e2;
+        color: #991b1b;
     }
-    /* Empty state styling */
-    .empty-state {
-        text-align: center;
-        padding: 3rem;
-        color: #6c757d;
+    .badge-blue {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+    .footer-bar {
+        margin-top: 1.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 0.75rem 1rem;
+        background: #ffffff;
+    }
+    .footer-bar a {
+        text-decoration: none;
+        font-weight: 600;
+        color: #0f172a;
+    }
+    .debug-section .st-expander {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
     }
 </style>
 """, unsafe_allow_html=True)
+
+
+def _build_status_chip_html(label: str, value: str, state: str = "info", subtitle: Optional[str] = None) -> str:
+    subtitle_html = f"<span class='metric-subtle'>{subtitle}</span>" if subtitle else ""
+    return (
+        f"<div class='status-chip {state}'>"
+        f"<span class='chip-dot'></span>"
+        f"<div><strong>{label}</strong><br/><span>{value}</span>{subtitle_html}</div>"
+        f"</div>"
+    )
+
+
+def _build_metric_tile_html(title: str, value: str, subtitle: Optional[str] = None) -> str:
+    subtitle_html = f"<div class='metric-subtle'>{subtitle}</div>" if subtitle else ""
+    return (
+        f"<div class='metric-tile'>"
+        f"<h5>{title}</h5>"
+        f"<div class='metric-value'>{value}</div>"
+        f"{subtitle_html}"
+        f"</div>"
+    )
+
+
+def _render_strategy_settings_popover(form_key: str = "strategy_settings_form") -> None:
+    st.caption("Adjust live trading parameters. Changes apply to the next signal.")
+    config_source: Dict[str, Any] = config if isinstance(config, dict) else {}
+    if st.session_state.get('live_runner') is not None:
+        config_source = st.session_state.live_runner.config
+
+    strategy_cfg = config_source.get('strategy', {}) or {}
+    pm_cfg = config_source.get('position_management', {}) or {}
+    risk_cfg = config_source.get('risk_management', {}) or {}
+
+    current_sl_points = strategy_cfg.get('sl', 30)
+    current_order_lots = config_source.get('broker', {}).get('default_lots', 2)
+    current_lot_size = config_source.get('lot_size', 75)
+    current_trail_points = pm_cfg.get('trail_points', 10)
+    current_atm_offset = strategy_cfg.get('atm_offset', 0)
+    current_daily_loss_limit_pct = risk_cfg.get('daily_loss_limit_pct', 5.0)
+
+    if st.session_state.get('live_runner') is not None:
+        runner = st.session_state.live_runner
+        current_sl_points = getattr(runner, 'sl_points', current_sl_points)
+        current_order_lots = getattr(runner, 'order_lots', current_order_lots)
+        current_lot_size = getattr(runner, 'lot_size', current_lot_size)
+        runner_pm_cfg = runner.config.get('position_management', {}) or {}
+        current_trail_points = runner_pm_cfg.get('trail_points', current_trail_points)
+        current_atm_offset = runner.config.get('strategy', {}).get('atm_offset', current_atm_offset)
+        current_daily_loss_limit_pct = getattr(runner, 'daily_loss_limit_pct', current_daily_loss_limit_pct)
+
+    with st.form(form_key, clear_on_submit=False):
+        settings_cols = st.columns(2)
+        with settings_cols[0]:
+            sl_points_input = st.number_input(
+                "Stop Loss (points)",
+                min_value=10,
+                max_value=100,
+                value=int(current_sl_points),
+                step=5,
+                help="Applies to option premium. Example: 30 points → SL at entry - 30.",
+            )
+            trail_points_input = st.number_input(
+                "Trailing SL step (points)",
+                min_value=5,
+                max_value=50,
+                value=int(current_trail_points),
+                step=5,
+                help="Trailing increment applied once price moves favourably by the chosen step.",
+            )
+        with settings_cols[1]:
+            atm_offset_input = st.number_input(
+                "Strike bias (points)",
+                min_value=-300,
+                max_value=300,
+                value=int(current_atm_offset),
+                step=50,
+                help="Shifts strike selection away from ATM. Positive = OTM (calls), negative = ITM.",
+            )
+            sl_lots_input = st.number_input(
+                "Order quantity (lots)",
+                min_value=1,
+                max_value=10,
+                value=int(current_order_lots),
+                step=1,
+                help="Number of lots to trade per signal.",
+            )
+
+        st.caption("Risk management overrides")
+        risk_cols = st.columns(2)
+        with risk_cols[0]:
+            daily_loss_limit_pct_input = st.number_input(
+                "Daily loss limit (%)",
+                min_value=1.0,
+                max_value=15.0,
+                value=float(current_daily_loss_limit_pct),
+                step=0.5,
+                format="%.1f",
+                help="Trading halts if daily P&L drops below -X% of initial capital.",
+            )
+        with risk_cols[1]:
+            lot_size_input = st.number_input(
+                "Lot size (contracts)",
+                min_value=25,
+                max_value=100,
+                value=int(current_lot_size),
+                step=25,
+                help="Lot size for position sizing calculations.",
+            )
+
+        submitted = st.form_submit_button("💾 Save strategy configuration", use_container_width=True)
+
+    if submitted:
+        try:
+            if st.session_state.get('live_runner') is not None:
+                st.session_state.live_runner.update_strategy_config(
+                    sl_points=int(sl_points_input),
+                    atm_offset=int(atm_offset_input),
+                    order_lots=int(sl_lots_input),
+                    trail_points=int(trail_points_input),
+                    daily_loss_limit_pct=float(daily_loss_limit_pct_input),
+                    lot_size=int(lot_size_input),
+                )
+            st.success("✅ Strategy settings saved.")
+        except Exception as e:
+            st.error(f"❌ Error updating config: {e}")
+
+
+def _render_active_trade_metric_row(buy_value: str, tp_value: str, sl_value: str, trail_value: str) -> None:
+    cols = st.columns(4, gap="small")
+    cols[0].metric("Buying Price", buy_value)
+    cols[1].metric("Take Profit", tp_value)
+    cols[2].metric("Stop Loss", sl_value)
+    cols[3].metric("Trailing SL", trail_value)
 
 # Load configuration
 def load_config():
@@ -805,8 +1112,6 @@ else:
 # Initialize session state
 if 'algo_running' not in st.session_state:
     st.session_state.algo_running = _runtime_state.get("algo_running", False)
-if 'show_strategy_settings' not in st.session_state:
-    st.session_state.show_strategy_settings = False
 if 'strategy_settings_feedback' not in st.session_state:
     st.session_state.strategy_settings_feedback = None
 if 'market_refresh_feedback' not in st.session_state:
@@ -1409,257 +1714,321 @@ if tab == "Dashboard":
                 except Exception as opt_exc:
                     logger.debug(f"Fallback option LTP fetch failed: {opt_exc}")
     
-    with st.container():
-        st.markdown('<div class="dashboard-hero">', unsafe_allow_html=True)
-        hero_left, hero_right = st.columns([1.4, 1], gap="medium")
-        
-        with hero_left:
-            status_cols = st.columns(3, gap="small")
-            status_cols[0].metric("🔌 Algo", "🟢 Running" if engine_status else "🔴 Stopped")
-            broker_value = "🟢 Connected" if broker_connected else "🔴 Not Connected"
-            broker_suffix = f" · {broker_type}" if broker_connected else ""
-            status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
-            status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
-            if streamer_health:
-                tick_status_icon = "🟢" if streamer_health.get("connected") else "🔴"
-                last_tick_age = streamer_health.get("last_tick_age_sec")
-                if last_tick_age is not None:
-                    status_cols[2].caption(f"{tick_status_icon} Tick stream age: {last_tick_age:.1f}s")
-                else:
-                    status_cols[2].caption(f"{tick_status_icon} Tick stream connected")
-            
-            # Add execution armed status indicator
-            execution_armed_status = st.session_state.get('execution_armed', False)
-            execution_icon = "🔓" if execution_armed_status else "🔒"
-            execution_text = "ARMED" if execution_armed_status else "DISARMED"
-            execution_color = "🟢" if execution_armed_status else "🟡"
-            status_cols[0].caption(f"{execution_icon} Execution: {execution_color} {execution_text}")
-            
-            control_cols = st.columns([1, 1, 1, 1], gap="small")
-            settings_col, arm_col, start_col, stop_col = control_cols
-            
-            with settings_col:
-                if st.button("⚙️ Strategy Settings", use_container_width=True, type="secondary"):
-                    st.session_state.show_strategy_settings = not st.session_state.show_strategy_settings
-            
-            with arm_col:
-                # Use session state to track execution arming
-                if 'execution_armed' not in st.session_state:
-                    st.session_state.execution_armed = False
-                
-                arm_disabled = st.session_state.live_runner is None or not st.session_state.algo_running
-                if st.session_state.execution_armed:
-                    # Show Disarm button (red/warning)
-                    if st.button("🛑 Disarm Exec", use_container_width=True, type="secondary", disabled=arm_disabled, help="Disable live trade execution (safety lock)"):
-                        st.session_state.execution_armed = False
-                        # Also set on live_runner instance if available
-                        if st.session_state.live_runner is not None:
-                            st.session_state.live_runner.execution_armed = False
-                            logger.info("Live execution DISARMED on live_runner instance")
-                        st.session_state.strategy_settings_feedback = (
-                            "warning",
-                            "🛑 Live execution DISARMED - trades will be simulated only"
-                        )
-                        logger.info("Live execution DISARMED via UI")
-                        st.rerun()
-                else:
-                    # Show Arm button (green/primary)
-                    if st.button("🔓 Arm Exec", use_container_width=True, type="primary", disabled=arm_disabled, help="Enable live trade execution (required for real trades)"):
-                        st.session_state.execution_armed = True
-                        # Also set on live_runner instance if available
-                        if st.session_state.live_runner is not None:
-                            st.session_state.live_runner.execution_armed = True
-                            logger.info("Live execution ARMED on live_runner instance")
-                        st.session_state.strategy_settings_feedback = (
-                            "success",
-                            "🔓 Live execution ARMED - real trades will be placed on next signal!"
-                        )
-                        logger.info("Live execution ARMED via UI")
-                        st.rerun()
-            
-            with start_col:
-                start_disabled = st.session_state.algo_running or st.session_state.live_runner is None
-                if st.button("▶️ Start", use_container_width=True, type="primary", disabled=start_disabled):
-                    if st.session_state.live_runner is None:
-                        st.session_state.strategy_settings_feedback = (
-                            "error",
-                            "❌ Live runner not initialized. Check broker configuration."
-                        )
-                    else:
-                        try:
-                            success = st.session_state.live_runner.start()
-                            if success:
-                                _set_algo_running_runtime(True)
-                                st.session_state.strategy_settings_feedback = (
-                                    "success",
-                                    "✅ Algorithm started – monitoring live market data."
-                                )
-                            else:
-                                st.session_state.strategy_settings_feedback = (
-                                    "error",
-                                    "❌ Failed to start algorithm. Check logs for details."
-                                )
-                        except Exception as e:
-                            st.session_state.strategy_settings_feedback = (
-                                "error",
-                                f"❌ Error starting algorithm: {e}"
-                            )
-                            logger.exception(e)
-                    st.rerun()
-            
-            with stop_col:
-                stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
-                if st.button("⏹️ Stop", use_container_width=True, type="secondary", disabled=stop_disabled):
-                    if st.session_state.live_runner is None:
-                        _set_algo_running_runtime(False)
-                        st.session_state.strategy_settings_feedback = (
-                            "warning",
-                            "⚠️ Algo state reset – live runner unavailable."
-                        )
-                    else:
-                        try:
-                            success = st.session_state.live_runner.stop()
-                            if success:
-                                _set_algo_running_runtime(False)
-                                st.session_state.strategy_settings_feedback = (
-                                    "warning",
-                                    "⏸️ Algorithm stopped."
-                                )
-                            else:
-                                st.session_state.strategy_settings_feedback = (
-                                    "error",
-                                    "❌ Failed to stop algorithm."
-                                )
-                        except Exception as e:
-                            st.session_state.strategy_settings_feedback = (
-                                "error",
-                                f"❌ Error stopping algorithm: {e}"
-                            )
-                            logger.exception(e)
-                    st.rerun()
-            
-            feedback = st.session_state.strategy_settings_feedback
-            if feedback:
-                level, message = feedback
-                if level == "success":
-                    st.success(message)
-                elif level == "warning":
-                    st.warning(message)
-                else:
-                    st.error(message)
-                st.session_state.strategy_settings_feedback = None
-        
-        with hero_right:
-            st.markdown("#### 🧠 Active Trade")
-            if active_trade:
-                badge = f"{active_trade['direction']} {active_trade['strike']}"
-                qty_label = f"{active_trade['quantity']} lot(s)" if active_trade['quantity'] else "—"
-                st.markdown(f"**{badge}** · {qty_label} · {active_trade['status']}")
-                trade_cols = st.columns(4, gap="small")
-                entry_display = f"₹{active_trade['entry']:.2f}" if active_trade['entry'] is not None else "—"
-                sl_display = f"₹{active_trade['sl']:.2f}" if active_trade['sl'] is not None else "—"
-                tp_display = f"₹{active_trade['tp']:.2f}" if active_trade['tp'] is not None else "—"
-                target_display = f"{active_trade['target_points']:.2f} pts" if active_trade['target_points'] is not None else "—"
-                trade_cols[0].metric("💸 Buy Price", entry_display)
-                trade_cols[1].metric("🛡️ Stop Loss", sl_display)
-                trade_cols[2].metric("🎯 Take Profit", tp_display)
-                trade_cols[3].metric("📈 Target", target_display)
-                if active_trade['order_id']:
-                    st.caption(f"Order ID: `{active_trade['order_id']}`")
+    algo_chip_state = "success" if engine_status else "danger"
+    broker_chip_state = "info" if broker_connected else "danger"
+    market_chip_state = "warning" if market_open else "danger"
+    status_chips = [
+        _build_status_chip_html(
+            "Algo",
+            "Running" if engine_status else "Stopped",
+            state=algo_chip_state,
+            subtitle="Execution armed" if st.session_state.get('execution_armed') else "Execution disarmed",
+        ),
+        _build_status_chip_html(
+            "Broker",
+            "Connected" if broker_connected else "Not Connected",
+            state=broker_chip_state,
+            subtitle=broker_type if broker_connected else "Re-auth required",
+        ),
+        _build_status_chip_html(
+            "Market",
+            "Open" if market_open else "Closed",
+            state=market_chip_state,
+            subtitle="Live session" if market_open else "Outside NSE hours",
+        ),
+    ]
+    st.markdown('<div class="status-ribbon">', unsafe_allow_html=True)
+    ribbon_cols = st.columns([3, 2], gap="large")
+    with ribbon_cols[0]:
+        st.markdown(f"<div class='status-chip-row'>{''.join(status_chips)}</div>", unsafe_allow_html=True)
+        if streamer_health:
+            tick_status_icon = "🟢" if streamer_health.get("connected") else "🔴"
+            last_tick_age = streamer_health.get("last_tick_age_sec")
+            if isinstance(last_tick_age, (int, float)):
+                st.caption(f"{tick_status_icon} Tick stream age: {last_tick_age:.1f}s")
             else:
-                st.info("No active trades at the moment.")
-        
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    metric_cols = st.columns(4, gap="small")
-    with metric_cols[0]:
-        active_signals = st.session_state.signal_handler.get_active_signals()
-        st.metric("📊 Signals Watching", len(active_signals))
-    with metric_cols[1]:
-        nifty_ltp = "—"
-        tick_streamer = st.session_state.get('tick_streamer')
-        if tick_streamer:
-            quote = tick_streamer.get_quote("NIFTY")
-            if quote and 'ltp' in quote:
-                nifty_ltp = f"{float(quote['ltp']):.2f}"
-        if nifty_ltp == "—":
-            try:
-                if st.session_state.market_data_provider is not None:
-                    ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
-                    if isinstance(ohlc, dict):
-                        ltp_val = ohlc.get('ltp') or ohlc.get('close')
-                        if ltp_val is not None:
-                            nifty_ltp = f"{float(ltp_val):.2f}"
-            except Exception:
-                pass
-        st.metric("📈 NIFTY LTP", nifty_ltp)
-    with metric_cols[2]:
-        realized_pnl = 0.0
-        csv_pnl_used = False
-        try:
-            from engine.pnl_service import compute_realized_pnl
-            from engine.db import init_database
-            from sqlalchemy.exc import OperationalError
-            init_database(create_all=True)
-            org_id = config.get('tenant', {}).get('org_id', 'demo-org')
-            user_id = config.get('tenant', {}).get('user_id', 'admin')
-            try:
-                pnl_snapshot = compute_realized_pnl(org_id, user_id)
-                realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
-            except OperationalError:
-                init_database(create_all=True)
-                pnl_snapshot = compute_realized_pnl(org_id, user_id)
-                realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
-        except Exception:
-            realized_pnl = 0.0
-        if realized_pnl == 0.0 and st.session_state.get('trade_logger') is not None:
-            try:
-                trades_df = st.session_state.trade_logger.get_all_trades()
-                if not trades_df.empty and 'status' in trades_df.columns:
-                    closed_df = trades_df[trades_df['status'] == 'closed'].copy()
-                    if not closed_df.empty:
-                        closed_df['pnl'] = pd.to_numeric(closed_df['pnl'], errors='coerce')
-                        fallback_val = closed_df['pnl'].sum(min_count=1)
-                        if pd.notna(fallback_val) and float(fallback_val) != 0.0:
-                            realized_pnl = float(fallback_val)
-                            csv_pnl_used = True
-            except Exception:
-                pass
-        pnl_prefix = "🟢" if realized_pnl >= 0 else "🔴"
-        st.metric("💰 Realized P&L", f"{pnl_prefix} ₹{realized_pnl:,.2f}")
-        if csv_pnl_used:
-            st.caption("Using CSV trade log for realized P&L (database snapshot empty).")
-        elif realized_pnl == 0 and active_trade:
-            st.caption("Closes update this metric; open trades remain unrealized.")
-    with metric_cols[3]:
-        if active_trade and active_trade_unrealized_value is not None:
-            prefix = "🟢" if active_trade_unrealized_value >= 0 else "🔴"
-            delta_pts = active_trade_unrealized_points or 0.0
-            st.metric(
-                "💹 Active P&L",
-                f"{prefix} ₹{active_trade_unrealized_value:,.2f}",
-                delta=f"{delta_pts:+.2f} pts vs entry",
+                st.caption(f"{tick_status_icon} Tick stream {'connected' if streamer_health.get('connected') else 'idle'}")
+    with ribbon_cols[1]:
+        ui_ctrl_col, backend_ctrl_col, manual_col = st.columns([1.1, 1.1, 0.5], gap="small")
+        with ui_ctrl_col:
+            ui_auto_toggle = st.toggle(
+                "UI Auto",
+                value=st.session_state.auto_refresh_enabled,
+                key="ui_auto_refresh_toggle",
+                help="Automatically rerun the Streamlit app on the chosen cadence.",
             )
-            caption_bits = []
-            if active_trade.get('order_id'):
-                caption_bits.append(f"Order `{active_trade['order_id']}`")
-            if active_trade_option_ltp is not None:
-                caption_bits.append(f"LTP ₹{active_trade_option_ltp:.2f}")
-            if active_snapshot_age is not None:
-                caption_bits.append(f"Snapshot {active_snapshot_age:.1f}s old")
-            if caption_bits:
-                st.caption(" · ".join(caption_bits))
-            if active_snapshot_age is not None and active_snapshot_age > 10:
-                st.caption("⚠️ Live P&L snapshot is stale (older than 10s). Check broker connectivity.")
-        elif active_trade:
-            st.metric("💹 Active P&L", "Fetching…")
-            st.caption("Awaiting option quote for live P&L.")
-        else:
-            st.metric("💹 Active P&L", "—")
-            st.caption("No open trades.")
-    
-    st.divider()
+            if ui_auto_toggle != st.session_state.auto_refresh_enabled:
+                st.session_state.auto_refresh_enabled = ui_auto_toggle
+                st.session_state.next_auto_refresh_ts = time.time() + st.session_state.auto_refresh_interval_sec
+            st.caption(f"{int(st.session_state.auto_refresh_interval_sec)}s interval")
+            with st.popover("⏱", help="Click to adjust UI auto-refresh interval."):
+                interval_value = st.number_input(
+                    "UI interval (sec)",
+                    min_value=5,
+                    max_value=180,
+                    step=5,
+                    value=int(st.session_state.auto_refresh_interval_sec),
+                )
+                if interval_value != st.session_state.auto_refresh_interval_sec:
+                    st.session_state.auto_refresh_interval_sec = interval_value
+                    st.session_state.next_auto_refresh_ts = time.time() + interval_value
+        with backend_ctrl_col:
+            backend_toggle = st.toggle(
+                "Backend",
+                value=st.session_state.background_refresh_enabled,
+                key="backend_refresh_toggle",
+                help="Background thread refreshes market data + broker tokens.",
+            )
+            st.session_state.background_refresh_enabled = backend_toggle
+            st.caption(f"{int(st.session_state.background_refresh_interval_sec)}s interval")
+            with st.popover("⚙", help="Click to adjust backend refresh cadence."):
+                new_bg_interval = st.number_input(
+                    "Backend interval (sec)",
+                    min_value=5,
+                    max_value=180,
+                    step=5,
+                    value=int(st.session_state.background_refresh_interval_sec),
+                )
+                if new_bg_interval != st.session_state.background_refresh_interval_sec:
+                    st.session_state.background_refresh_interval_sec = new_bg_interval
+        with manual_col:
+            if st.button("⟳", help="Manual refresh now", key="manual_refresh_button"):
+                success = _trigger_market_data_refresh("manual-header")
+                if success:
+                    st.session_state.market_refresh_feedback = ("success", "🔄 Manual refresh complete.")
+                else:
+                    st.session_state.market_refresh_feedback = ("error", "❌ Manual refresh failed.")
+                rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+                if rerun_fn:
+                    rerun_fn()
+    st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown('<div class="trading-panel">', unsafe_allow_html=True)
+    st.markdown("#### 🛡️ Trading Controls")
+    control_cols = st.columns([1.4, 1, 0.8], gap="large")
+    with control_cols[0]:
+        start_disabled = st.session_state.live_runner is None or st.session_state.algo_running
+        stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
+        if st.session_state.algo_running:
+            if st.button("⏹ Stop Algo", use_container_width=True, type="secondary", disabled=stop_disabled):
+                if st.session_state.live_runner is None:
+                    _set_algo_running_runtime(False)
+                    st.session_state.strategy_settings_feedback = (
+                        "warning",
+                        "⚠️ Algo state reset – live runner unavailable.",
+                    )
+                else:
+                    try:
+                        success = st.session_state.live_runner.stop()
+                        if success:
+                            _set_algo_running_runtime(False)
+                            st.session_state.strategy_settings_feedback = ("warning", "⏸️ Algorithm stopped.")
+                        else:
+                            st.session_state.strategy_settings_feedback = ("error", "❌ Failed to stop algorithm.")
+                    except Exception as e:
+                        st.session_state.strategy_settings_feedback = ("error", f"❌ Error stopping algorithm: {e}")
+                        logger.exception(e)
+                st.rerun()
+        else:
+            if st.button("▶ Start Algo", use_container_width=True, type="primary", disabled=start_disabled):
+                if st.session_state.live_runner is None:
+                    st.session_state.strategy_settings_feedback = (
+                        "error",
+                        "❌ Live runner not initialized. Check broker configuration.",
+                    )
+                else:
+                    try:
+                        success = st.session_state.live_runner.start()
+                        if success:
+                            _set_algo_running_runtime(True)
+                            st.session_state.strategy_settings_feedback = (
+                                "success",
+                                "✅ Algorithm started – monitoring live market data.",
+                            )
+                        else:
+                            st.session_state.strategy_settings_feedback = (
+                                "error",
+                                "❌ Failed to start algorithm. Check logs for details.",
+                            )
+                    except Exception as e:
+                        st.session_state.strategy_settings_feedback = ("error", f"❌ Error starting algorithm: {e}")
+                        logger.exception(e)
+                st.rerun()
+        if st.session_state.live_runner is None:
+            st.caption("Live runner not initialized.")
+        elif st.session_state.algo_running:
+            st.caption("Monitoring live market data.")
+        else:
+            st.caption("Algo idle – ready to start.")
+    with control_cols[1]:
+        if 'execution_armed' not in st.session_state:
+            st.session_state.execution_armed = False
+        exec_toggle = st.toggle(
+            "Arm execution",
+            value=st.session_state.execution_armed,
+            help="Disarm to prevent new orders while keeping analytics live.",
+        )
+        if exec_toggle != st.session_state.execution_armed:
+            st.session_state.execution_armed = exec_toggle
+            if st.session_state.live_runner is not None:
+                st.session_state.live_runner.execution_armed = exec_toggle
+            if exec_toggle:
+                st.session_state.strategy_settings_feedback = (
+                    "success",
+                    "🔓 Live execution ARMED - real trades will be placed on next signal!",
+                )
+            else:
+                st.session_state.strategy_settings_feedback = (
+                    "warning",
+                    "🛑 Live execution DISARMED - trades will be simulated only",
+                )
+            st.rerun()
+        badge_class = "badge-green" if st.session_state.execution_armed else "badge-red"
+        badge_label = "Armed" if st.session_state.execution_armed else "Disarmed"
+        st.markdown(f"<span class='badge {badge_class}'>{badge_label}</span>", unsafe_allow_html=True)
+        st.caption("Safety guard for broker execution.")
+    with control_cols[2]:
+        st.caption("Strategy controls")
+        with st.popover("⚙ Modify Settings", help="Open strategy configuration popover."):
+            _render_strategy_settings_popover()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    feedback = st.session_state.strategy_settings_feedback
+    if feedback:
+        level, message = feedback
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        else:
+            st.error(message)
+        st.session_state.strategy_settings_feedback = None
+
+    active_signals = st.session_state.signal_handler.get_active_signals()
+    nifty_ltp_value = None
+    nifty_source = "Tick stream"
+    tick_streamer = st.session_state.get('tick_streamer')
+    if tick_streamer:
+        quote = tick_streamer.get_quote("NIFTY")
+        if quote and 'ltp' in quote:
+            try:
+                nifty_ltp_value = float(quote['ltp'])
+            except (TypeError, ValueError):
+                nifty_ltp_value = None
+    if nifty_ltp_value is None:
+        try:
+            if st.session_state.market_data_provider is not None:
+                ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                if isinstance(ohlc, dict):
+                    ltp_val = ohlc.get('ltp') or ohlc.get('close')
+                    if ltp_val is not None:
+                        nifty_ltp_value = float(ltp_val)
+                        nifty_source = "Market data provider"
+        except Exception:
+            pass
+    nifty_ltp_display = f"₹{nifty_ltp_value:,.2f}" if nifty_ltp_value is not None else "—"
+
+    realized_pnl = 0.0
+    csv_pnl_used = False
+    try:
+        from engine.pnl_service import compute_realized_pnl
+        from engine.db import init_database
+        from sqlalchemy.exc import OperationalError
+        init_database(create_all=True)
+        org_id = config.get('tenant', {}).get('org_id', 'demo-org')
+        user_id = config.get('tenant', {}).get('user_id', 'admin')
+        try:
+            pnl_snapshot = compute_realized_pnl(org_id, user_id)
+            realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
+        except OperationalError:
+            init_database(create_all=True)
+            pnl_snapshot = compute_realized_pnl(org_id, user_id)
+            realized_pnl = pnl_snapshot.get('realized_pnl', 0.0)
+    except Exception:
+        realized_pnl = 0.0
+    if realized_pnl == 0.0 and st.session_state.get('trade_logger') is not None:
+        try:
+            trades_df = st.session_state.trade_logger.get_all_trades()
+            if not trades_df.empty and 'status' in trades_df.columns:
+                closed_df = trades_df[trades_df['status'] == 'closed'].copy()
+                if not closed_df.empty:
+                    closed_df['pnl'] = pd.to_numeric(closed_df['pnl'], errors='coerce')
+                    fallback_val = closed_df['pnl'].sum(min_count=1)
+                    if pd.notna(fallback_val) and float(fallback_val) != 0.0:
+                        realized_pnl = float(fallback_val)
+                        csv_pnl_used = True
+        except Exception:
+            pass
+    pnl_prefix = "🟢" if realized_pnl >= 0 else "🔴"
+    realized_pnl_value = f"{pnl_prefix} ₹{realized_pnl:,.2f}"
+    realized_pnl_subtitle = "CSV trade log" if csv_pnl_used else "Broker snapshot"
+    if realized_pnl == 0 and active_trade:
+        realized_pnl_subtitle = "Awaiting trade close"
+
+    if active_trade and active_trade_unrealized_value is not None:
+        prefix = "🟢" if active_trade_unrealized_value >= 0 else "🔴"
+        delta_pts = active_trade_unrealized_points or 0.0
+        active_pnl_value = f"{prefix} ₹{active_trade_unrealized_value:,.2f}"
+        active_pnl_subtitle = f"{delta_pts:+.2f} pts vs entry"
+    elif active_trade:
+        active_pnl_value = "Fetching…"
+        active_pnl_subtitle = "Awaiting option quote"
+    else:
+        active_pnl_value = "—"
+        active_pnl_subtitle = "No open trades"
+
+    st.markdown('<div class="hero-grid">', unsafe_allow_html=True)
+    hero_left, hero_right = st.columns([1.15, 0.85], gap="large")
+    pm_config: Dict[str, Any] = {}
+    if st.session_state.get('live_runner') is not None:
+        pm_config = st.session_state.live_runner.config.get('position_management', {}) or {}
+    elif isinstance(config, dict):
+        pm_config = config.get('position_management', {}) or {}
+    default_trail_points = pm_config.get('trail_points')
+    default_trailing_display = (
+        f"{default_trail_points} pts step" if default_trail_points is not None else "—"
+    )
+
+    with hero_left:
+        st.markdown("### ⚡ Active Trade")
+        if active_trade:
+            badge = f"{active_trade['direction']} {active_trade['strike']}"
+            qty_label = f"{active_trade['quantity']} lot(s)" if active_trade['quantity'] else "—"
+            status_text = active_trade.get('status', 'Open')
+            symbol_display = active_trade.get('tradingsymbol') or badge
+            st.markdown(f"**{symbol_display}** · {qty_label} · {status_text}")
+            entry_display = f"₹{active_trade['entry']:.2f}" if active_trade['entry'] is not None else "—"
+            sl_display = f"₹{active_trade['sl']:.2f}" if active_trade['sl'] is not None else "—"
+            tp_display = f"₹{active_trade['tp']:.2f}" if active_trade['tp'] is not None else "—"
+            trailing_display = default_trailing_display
+            _render_active_trade_metric_row(entry_display, tp_display, sl_display, trailing_display)
+            if active_trade_option_ltp is not None:
+                st.caption(f"Current price ₹{active_trade_option_ltp:.2f}")
+            if active_trade_unrealized_value is not None:
+                st.caption(
+                    f"Active P&L: ₹{active_trade_unrealized_value:,.2f} "
+                    f"({active_trade_unrealized_points or 0.0:+.2f} pts)"
+                )
+            if active_trade.get('order_id'):
+                st.caption(f"Order ID: `{active_trade['order_id']}`")
+            if active_snapshot_age is not None:
+                st.caption(f"Snapshot age: {active_snapshot_age:.1f}s")
+        else:
+            _render_active_trade_metric_row("—", "—", "—", default_trailing_display)
+            st.info("No active trades at the moment.")
+    with hero_right:
+        st.markdown("### 📊 Mission Metrics")
+        metric_tiles = [
+            _build_metric_tile_html("Signal Watching", str(len(active_signals)), "Inside Bar scanner"),
+            _build_metric_tile_html("NIFTY LTP", nifty_ltp_display, nifty_source),
+            _build_metric_tile_html("Realized P&L", realized_pnl_value, realized_pnl_subtitle),
+            _build_metric_tile_html("Active P&L", active_pnl_value, active_pnl_subtitle),
+        ]
+        st.markdown(f"<div class='metric-grid'>{''.join(metric_tiles)}</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.divider()
+    
     # In-app alert: toast when a new trade is logged
     try:
         if 'last_trade_count' not in st.session_state:
@@ -1673,175 +2042,20 @@ if tab == "Dashboard":
     except Exception:
         pass
 
-    # Auto-refresh + interval controls
-    auto_col, interval_col = st.columns([2, 1], gap="small")
-    with auto_col:
-        auto = st.checkbox(
-            "🔄 Enable auto-refresh",
-            value=st.session_state.auto_refresh_enabled,
-            help="Automatically refresh the dashboard (blocking refresh, useful for live monitoring)."
-        )
-        st.session_state.auto_refresh_enabled = auto
-        if auto:
-            st.caption("✅ Auto-refresh enabled - UI will rerun on the chosen cadence.")
-        else:
-            st.caption("⏸️ Auto-refresh paused. Use manual refresh or background refresh to stay updated.")
-    with interval_col:
-        new_interval = st.number_input(
-            "Auto interval (sec)",
-            min_value=5,
-            max_value=180,
-            value=int(st.session_state.auto_refresh_interval_sec),
-            step=5,
-            help="How frequently the dashboard reruns to fetch the latest data."
-        )
-        if new_interval != st.session_state.auto_refresh_interval_sec:
-            st.session_state.auto_refresh_interval_sec = new_interval
-            st.session_state.next_auto_refresh_ts = time.time() + new_interval
-
-    bg_col, bg_interval_col = st.columns([2, 1], gap="small")
-    with bg_col:
-        bg_enabled = st.checkbox(
-            "🧵 Enable background refresh (non-blocking)",
-            value=st.session_state.background_refresh_enabled,
-            help="Refresh market data and broker tokens in a background thread without rerunning the UI."
-        )
-        st.session_state.background_refresh_enabled = bg_enabled
-        if bg_enabled:
-            st.caption("🧵 Background refresh active — data updates silently even when auto-refresh is paused.")
-        else:
-            st.caption("🚫 Background refresh disabled — no background threads will run.")
-    with bg_interval_col:
-        new_bg_interval = st.number_input(
-            "Background interval (sec)",
-            min_value=5,
-            max_value=180,
-            value=int(st.session_state.background_refresh_interval_sec),
-            step=5,
-            help="Minimum time between background refresh cycles."
-        )
-        if new_bg_interval != st.session_state.background_refresh_interval_sec:
-            st.session_state.background_refresh_interval_sec = new_bg_interval
-    
-    if st.session_state.show_strategy_settings:
-        st.divider()
-        st.caption("Adjust live trading parameters. Changes apply to the next signal.")
-        
-        config_source = config if isinstance(config, dict) else {}
-        if st.session_state.live_runner is not None:
-            config_source = st.session_state.live_runner.config
-        
-        strategy_cfg = config_source.get('strategy', {})
-        pm_cfg = config_source.get('position_management', {})
-        risk_cfg = config_source.get('risk_management', {})
-        
-        current_sl_points = strategy_cfg.get('sl', 30)
-        current_order_lots = config_source.get('broker', {}).get('default_lots', 2)
-        current_lot_size = config_source.get('lot_size', 75)
-        current_trail_points = pm_cfg.get('trail_points', 10)
-        current_atm_offset = strategy_cfg.get('atm_offset', 0)
-        current_daily_loss_limit_pct = risk_cfg.get('daily_loss_limit_pct', 5.0)
-        
-        if st.session_state.live_runner is not None:
-            current_sl_points = getattr(st.session_state.live_runner, 'sl_points', current_sl_points)
-            current_order_lots = getattr(st.session_state.live_runner, 'order_lots', current_order_lots)
-            current_lot_size = getattr(st.session_state.live_runner, 'lot_size', current_lot_size)
-            live_runner_pm_cfg = st.session_state.live_runner.config.get('position_management', {})
-            current_trail_points = live_runner_pm_cfg.get('trail_points', current_trail_points)
-            current_atm_offset = st.session_state.live_runner.config.get('strategy', {}).get('atm_offset', current_atm_offset)
-            current_daily_loss_limit_pct = getattr(
-                st.session_state.live_runner,
-                'daily_loss_limit_pct',
-                current_daily_loss_limit_pct
-            )
-        
-        with st.form("strategy_settings_form", clear_on_submit=False):
-            settings_cols = st.columns(2)
-            with settings_cols[0]:
-                sl_points_input = st.number_input(
-                    "Stop Loss (points)",
-                    min_value=10,
-                    max_value=100,
-                    value=int(current_sl_points),
-                    step=5,
-                    help="Applies to option premium. Example: 30 points → SL at entry - 30."
-                )
-                trail_points_input = st.number_input(
-                    "Trailing SL step (points)",
-                    min_value=5,
-                    max_value=50,
-                    value=int(current_trail_points),
-                    step=5,
-                    help="Trailing increment applied once price moves favourably by the chosen step."
-                )
-            with settings_cols[1]:
-                atm_offset_input = st.number_input(
-                    "Strike bias (points)",
-                    min_value=-300,
-                    max_value=300,
-                    value=int(current_atm_offset),
-                    step=50,
-                    help="Shifts strike selection away from ATM. Positive = OTM (calls), negative = ITM."
-                )
-                sl_lots_input = st.number_input(
-                    "Order quantity (lots)",
-                    min_value=1,
-                    max_value=10,
-                    value=int(current_order_lots),
-                    step=1,
-                    help="Number of lots to trade per signal."
-                )
-            
-            st.divider()
-            st.caption("Risk management overrides")
-            
-            risk_cols = st.columns(2)
-            with risk_cols[0]:
-                daily_loss_limit_pct_input = st.number_input(
-                    "Daily loss limit (%)",
-                    min_value=1.0,
-                    max_value=15.0,
-                    value=float(current_daily_loss_limit_pct),
-                    step=0.5,
-                    format="%.1f",
-                    help="Trading halts if daily P&L drops below -X% of initial capital."
-                )
-            with risk_cols[1]:
-                lot_size_input = st.number_input(
-                    "Lot size (contracts)",
-                    min_value=25,
-                    max_value=100,
-                    value=int(current_lot_size),
-                    step=25,
-                    help="Lot size for position sizing calculations."
-                )
-            
-            submitted = st.form_submit_button("💾 Save strategy configuration", use_container_width=True)
-            if submitted:
-                try:
-                    st.session_state.show_strategy_settings = False
-                    if st.session_state.live_runner is not None:
-                        st.session_state.live_runner.update_strategy_config(
-                            sl_points=int(sl_points_input),
-                            atm_offset=int(atm_offset_input),
-                            order_lots=int(sl_lots_input),
-                            trail_points=int(trail_points_input),
-                            daily_loss_limit_pct=float(daily_loss_limit_pct_input),
-                            lot_size=int(lot_size_input)
-                        )
-                    st.success("✅ Strategy settings saved.")
-                except Exception as e:
-                    st.error(f"❌ Error updating config: {e}")
-
     st.divider()
-    st.subheader("🧩 Inside Bar Snapshot")
+    st.markdown("### 🧩 Inside Bar Snapshot")
     
     inside_bar_time_label = "—"
     mother_time_label = "—"
-    range_label = "—"
     breakout_label = "Waiting"
     compression_label = ""
     inside_bar_available = False
+    range_high_value = None
+    range_low_value = None
+    
+    mother_section_values = [("Open", "—"), ("High", "—"), ("Low", "—"), ("Close", "—")]
+    inside_section_values = [("Open", "—"), ("High", "—"), ("Low", "—"), ("Close", "—")]
+    range_section_values = [("Range Low", "—"), ("Range High", "—"), ("Width", "—"), ("Breakout", breakout_label)]
     
     ist = pytz.timezone("Asia/Kolkata")
     
@@ -1914,7 +2128,20 @@ if tab == "Dashboard":
                 mother_time_label = _format_ist(mother_row['Date'])
                 range_high = float(mother_row['High'])
                 range_low = float(mother_row['Low'])
-                range_label = f"{range_low:.2f} → {range_high:.2f}"
+                range_high_value = range_high
+                range_low_value = range_low
+                mother_section_values = [
+                    ("Open", _fmt_number(mother_row.get('Open'))),
+                    ("High", _fmt_number(mother_row.get('High'))),
+                    ("Low", _fmt_number(mother_row.get('Low'))),
+                    ("Close", _fmt_number(mother_row.get('Close'))),
+                ]
+                inside_section_values = [
+                    ("Open", _fmt_number(inside_row.get('Open'))),
+                    ("High", _fmt_number(inside_row.get('High'))),
+                    ("Low", _fmt_number(inside_row.get('Low'))),
+                    ("Close", _fmt_number(inside_row.get('Close'))),
+                ]
                 
                 compression_length = len([idx for idx in inside_indices if idx >= mother_idx])
                 compression_label = f"{compression_length} bar(s) inside range"
@@ -1954,21 +2181,38 @@ if tab == "Dashboard":
                         # Clear any previous missed-trade banner once a fresh breakout is detected
                         st.session_state.last_missed_trade = None
                 
+                range_width = range_high - range_low
+                range_section_values = [
+                    ("Range Low", _fmt_number(range_low)),
+                    ("Range High", _fmt_number(range_high)),
+                    ("Width", f"{range_width:.2f} pts"),
+                    ("Breakout", breakout_label),
+                ]
                 inside_bar_available = True
     
-    inside_cols = st.columns(4)
-    with inside_cols[0]:
-        st.metric("Inside bar time", inside_bar_time_label)
-    with inside_cols[1]:
-        st.metric("Mother candle time", mother_time_label)
-    with inside_cols[2]:
-        st.metric("Mother range (L → H)", range_label)
-    with inside_cols[3]:
-        st.metric("Breakout status", breakout_label)
+    def _build_snapshot_section(title: str, subtitle: str, values: list, theme: str) -> str:
+        subtitle_html = f"<span class='metric-subtle'>{subtitle}</span>" if subtitle and subtitle != "—" else ""
+        cells_html = "".join(
+            f"<div class='snapshot-cell'><label>{label}</label><span>{value}</span></div>"
+            for label, value in values
+        )
+        return (
+            f"<div class='snapshot-section {theme}'>"
+            f"<div class='snapshot-title'>{title}{subtitle_html}</div>"
+            f"<div class='snapshot-grid'>{cells_html}</div>"
+            f"</div>"
+        )
     
-    if inside_bar_available and compression_label:
-        st.caption(f"Compression depth: {compression_label}")
-    elif not inside_bar_available:
+    if inside_bar_available:
+        snapshot_html = "".join([
+            _build_snapshot_section("Mother Candle", mother_time_label, mother_section_values, "mother"),
+            _build_snapshot_section("Inside Candle", inside_bar_time_label, inside_section_values, "inside"),
+            _build_snapshot_section("Range Diagnostics", breakout_label, range_section_values, "range"),
+        ])
+        st.markdown(f"<div class='snapshot-card'>{snapshot_html}</div>", unsafe_allow_html=True)
+        if compression_label:
+            st.caption(f"Compression depth: {compression_label}")
+    else:
         st.info("No active inside bar identified in the latest 1-hour data window.")
     
     missed_trade_info = st.session_state.get("last_missed_trade")
@@ -2017,6 +2261,34 @@ if tab == "Dashboard":
             f"(ATM offset {atm_offset})"
         )
     
+    strategy_cfg = config.get('strategy', {}) if isinstance(config, dict) else {}
+    filters_cfg = strategy_cfg.get('filters', {}) if isinstance(strategy_cfg, dict) else {}
+    risk_cfg = config.get('risk_management', {}) if isinstance(config, dict) else {}
+    timeframes_cfg = config.get('timeframes', {}) if isinstance(config, dict) else {}
+    detection_tf = str(timeframes_cfg.get('detection', '1h')).upper()
+    confirmation_tf = str(timeframes_cfg.get('confirmation', '15m')).upper()
+    live_runner = st.session_state.get('live_runner')
+    max_positions_cfg = risk_cfg.get('max_concurrent_positions', 2)
+    max_positions = getattr(live_runner, 'max_concurrent_positions', max_positions_cfg)
+    config_chip_entries = [
+        ("Risk-Reward", f"1:{strategy_cfg.get('rr', '—')}"),
+        ("Stop Loss", f"{strategy_cfg.get('sl', '—')} pts"),
+        ("ATM Offset", str(strategy_cfg.get('atm_offset', 0))),
+        ("Lot Size", str(config.get('lot_size', '—'))),
+        ("Volume Spike", "Enabled" if filters_cfg.get('volume_spike') else "Disabled"),
+        ("Avoid Open Range", "Enabled" if filters_cfg.get('avoid_open_range') else "Disabled"),
+        ("Max Positions", str(max_positions)),
+        ("Timeframes", f"{detection_tf} → {confirmation_tf}"),
+    ]
+    chips_html = "".join(
+        f"<div class='config-chip'><span>{label}</span><strong>{value}</strong></div>"
+        for label, value in config_chip_entries
+    )
+    st.markdown("### ⚙️ Strategy Configuration")
+    st.markdown(f"<div class='config-strip'>{chips_html}</div>", unsafe_allow_html=True)
+    
+    footer_last_updated = None
+    footer_last_reason = None
     # Live data status
     if st.session_state.algo_running and st.session_state.live_runner is not None:
         st.divider()
@@ -2235,6 +2507,8 @@ if tab == "Dashboard":
 
         display_time = None
         display_reason = None
+        stamp = None
+        label = None
         if runner_fetch_time and isinstance(runner_fetch_time, datetime):
             if (not isinstance(last_refresh_display, datetime)) or (runner_fetch_time > last_refresh_display):
                 display_time = runner_fetch_time
@@ -2248,6 +2522,8 @@ if tab == "Dashboard":
             stamp = display_time.strftime("%d-%b %I:%M:%S %p")
             label = display_reason or "auto"
             st.caption(f"🕒 Last refresh: {stamp} ({label})")
+            footer_last_updated = stamp
+            footer_last_reason = label
         if missed_trade_info:
             st.error(
                 f"🚨 Missed breakout ({missed_trade_info.get('direction', '—')}) — "
@@ -2290,24 +2566,6 @@ if tab == "Dashboard":
             else:
                 st.caption("Auto refresh disabled — use the manual refresh button.")
         
-        # Manual refresh button
-        if st.button("🔄 Refresh Market Data Now"):
-            success = _trigger_market_data_refresh("manual")
-            if success:
-                timestamp = st.session_state.last_refresh_time.strftime("%d-%b %I:%M:%S %p")
-                st.session_state.market_refresh_feedback = (
-                    "success",
-                    f"✅ Market data refreshed at {timestamp}."
-                )
-            else:
-                error_msg = st.session_state.last_refresh_error or "Unknown error"
-                st.session_state.market_refresh_feedback = (
-                    "error",
-                    f"❌ Failed to refresh market data: {error_msg}"
-                )
-            st.rerun()
-    
-    st.divider()
     with st.expander("📐 Option Greeks (NIFTY – next Tuesday expiry)", expanded=False):
         current_offset = 0
         if st.session_state.get('live_runner') is not None:
@@ -2374,235 +2632,272 @@ if tab == "Dashboard":
             st.warning(f"Greeks error: {e}")
 
     st.divider()
-
-    # Strategy Debug Information Section
-    st.divider()
-    st.subheader("🔍 Strategy Debug - Inside Bar Detection")
+    st.markdown("### 🛠️ Strategy Debug")
     
-    # Try to run a quick strategy check to show current status
-    if st.session_state.market_data_provider is not None and st.session_state.live_runner is not None:
-        try:
-            # Get latest market data
-            data_1h = st.session_state.market_data_provider.get_1h_data(
-                window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_1h', 48)
-            )
-            data_15m = st.session_state.market_data_provider.get_15m_data(
-                window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
-            )
-            
-            raw_data_1h = data_1h.copy() if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
-            raw_data_15m = data_15m.copy() if isinstance(data_15m, pd.DataFrame) else pd.DataFrame()
-
-            data_1h = align_dataframe_to_ist(data_1h)
-            data_15m = align_dataframe_to_ist(data_15m)
-
-            debug_df = data_1h if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
-
-            # Debug Snapshot UI temporarily disabled (2025-11-07)
-
-            if not data_1h.empty and not data_15m.empty:
-                # Show data availability
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("1H Candles Available", len(data_1h))
-                with col2:
-                    st.metric("15m Candles Available", len(data_15m))
-                
-                # Detect Inside Bars and show results
-                inside_bars = detect_inside_bar(data_1h)
-                
-                # Create a set for quick lookup
-                inside_bar_set = set(inside_bars)
-                
-                # Show recent candles with Inside Bar status
-                st.write("**Recent 1H Candles Check (Last 10 - Most Recent First):**")
-                recent_count = min(10, len(data_1h))
-                
-                # Get last N candles and reverse to show most recent first
-                recent_data = data_1h.tail(recent_count)
-                
-                # Create a more readable display - iterate backwards (most recent first)
-                display_data = []
-                for i in range(len(recent_data) - 1, -1, -1):  # Start from most recent (last row)
-                    # i is position in recent_data (0-based from tail)
-                    # Original DataFrame index = len(data_1h) - recent_count + i
-                    original_idx = len(data_1h) - recent_count + i
-                    
-                    # Format time in IST (assuming Date is already in IST after conversion)
-                    time_val = recent_data.iloc[i]['Date'] if 'Date' in recent_data.columns else f"Row_{original_idx}"
-                    if isinstance(time_val, pd.Timestamp) or hasattr(time_val, 'strftime'):
-                        try:
-                            time_str = format_ist_timestamp(time_val)
-                        except Exception:
+    def _render_inside_bar_debug_section() -> None:
+        if st.session_state.market_data_provider is not None and st.session_state.live_runner is not None:
+            try:
+                data_1h = st.session_state.market_data_provider.get_1h_data(
+                    window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_1h', 48)
+                )
+                data_15m = st.session_state.market_data_provider.get_15m_data(
+                    window_hours=st.session_state.live_runner.config.get('market_data', {}).get('data_window_hours_15m', 12)
+                )
+                raw_data_1h = data_1h.copy() if isinstance(data_1h, pd.DataFrame) else pd.DataFrame()
+                raw_data_15m = data_15m.copy() if isinstance(data_15m, pd.DataFrame) else pd.DataFrame()
+                data_1h = align_dataframe_to_ist(data_1h)
+                data_15m = align_dataframe_to_ist(data_15m)
+                if not data_1h.empty and not data_15m.empty:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("1H Candles Available", len(data_1h))
+                    with col2:
+                        st.metric("15m Candles Available", len(data_15m))
+                    inside_bars = detect_inside_bar(data_1h)
+                    inside_bar_set = set(inside_bars)
+                    st.write("**Recent 1H Candles Check (Last 10 - Most Recent First):**")
+                    recent_count = min(10, len(data_1h))
+                    recent_data = data_1h.tail(recent_count)
+                    display_data = []
+                    for i in range(len(recent_data) - 1, -1, -1):
+                        original_idx = len(data_1h) - recent_count + i
+                        time_val = recent_data.iloc[i]['Date'] if 'Date' in recent_data.columns else f"Row_{original_idx}"
+                        if isinstance(time_val, pd.Timestamp) or hasattr(time_val, 'strftime'):
+                            try:
+                                time_str = format_ist_timestamp(time_val)
+                            except Exception:
+                                time_str = str(time_val)
+                        else:
                             time_str = str(time_val)
-                    else:
-                        time_str = str(time_val)
-                    
-                    row_data = {
-                        'Row': original_idx,
-                        'Time (IST)': time_str,
-                        'High': f"{recent_data.iloc[i]['High']:.2f}",
-                        'Low': f"{recent_data.iloc[i]['Low']:.2f}",
-                        'Close': f"{recent_data.iloc[i]['Close']:.2f}",
-                    }
-                    
-                    # Check if this is an inside bar (using original DataFrame index)
-                    # Note: Inside bar detection requires index >= 2 (needs at least previous candle)
-                    is_inside = original_idx in inside_bar_set and original_idx >= 2
-                    if is_inside:
-                        row_data['Status'] = '✅ Inside Bar'
-                        # Get reference candle info (previous candle at original_idx - 1)
-                        if original_idx > 0:
-                            ref_high = data_1h['High'].iloc[original_idx - 1]
-                            ref_low = data_1h['Low'].iloc[original_idx - 1]
-                            current_high = recent_data.iloc[i]['High']
-                            current_low = recent_data.iloc[i]['Low']
-                            # Verify inside bar logic
-                            row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
-                            row_data['Inside Check'] = f"✓ High {current_high:.2f} < {ref_high:.2f} ✓ Low {current_low:.2f} > {ref_low:.2f}"
-                        else:
-                            row_data['Reference Range'] = 'N/A'
-                            row_data['Inside Check'] = 'N/A'
-                    else:
-                        row_data['Status'] = '❌ Not Inside'
-                        # Still show reference range for context
-                        if original_idx > 0:
-                            ref_high = data_1h['High'].iloc[original_idx - 1]
-                            ref_low = data_1h['Low'].iloc[original_idx - 1]
-                            current_high = recent_data.iloc[i]['High']
-                            current_low = recent_data.iloc[i]['Low']
-                            # Show detailed reason why it's not inside
-                            if current_high >= ref_high and current_low <= ref_low:
+                        row_data = {
+                            'Row': original_idx,
+                            'Time (IST)': time_str,
+                            'High': f"{recent_data.iloc[i]['High']:.2f}",
+                            'Low': f"{recent_data.iloc[i]['Low']:.2f}",
+                            'Close': f"{recent_data.iloc[i]['Close']:.2f}",
+                        }
+                        is_inside = original_idx in inside_bar_set and original_idx >= 2
+                        if is_inside:
+                            row_data['Status'] = '✅ Inside Bar'
+                            if original_idx > 0:
+                                ref_high = data_1h['High'].iloc[original_idx - 1]
+                                ref_low = data_1h['Low'].iloc[original_idx - 1]
+                                current_high = recent_data.iloc[i]['High']
+                                current_low = recent_data.iloc[i]['Low']
                                 row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
-                                row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} ✗ Low {current_low:.2f} <= {ref_low:.2f}"
-                            elif current_high >= ref_high:
-                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
-                                row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} (must be < {ref_high:.2f})"
-                            elif current_low <= ref_low:
-                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
-                                row_data['Inside Check'] = f"✗ Low {current_low:.2f} <= {ref_low:.2f} (must be > {ref_low:.2f})"
+                                row_data['Inside Check'] = f"✓ High {current_high:.2f} < {ref_high:.2f} ✓ Low {current_low:.2f} > {ref_low:.2f}"
                             else:
-                                # This shouldn't happen if logic is correct, but log it
-                                row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
-                                row_data['Inside Check'] = "✓ High ✓ Low (unexpected - check logic)"
+                                row_data['Reference Range'] = 'N/A'
+                                row_data['Inside Check'] = 'N/A'
                         else:
-                            row_data['Reference Range'] = '—'
-                            row_data['Inside Check'] = 'No reference'
-                    
-                    display_data.append(row_data)
-                
-                # Display DataFrame with most recent first
-                display_df = pd.DataFrame(display_data)
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-                
-                if inside_bars:
-                    latest_idx = inside_bars[-1]
-                    mother_idx = find_mother_index(data_1h, latest_idx)
-                    if mother_idx is None:
-                        st.warning("Unable to determine mother candle for the latest inside bar.")
+                            row_data['Status'] = '❌ Not Inside'
+                            if original_idx > 0:
+                                ref_high = data_1h['High'].iloc[original_idx - 1]
+                                ref_low = data_1h['Low'].iloc[original_idx - 1]
+                                current_high = recent_data.iloc[i]['High']
+                                current_low = recent_data.iloc[i]['Low']
+                                if current_high >= ref_high and current_low <= ref_low:
+                                    row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                    row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} ✗ Low {current_low:.2f} <= {ref_low:.2f}"
+                                elif current_high >= ref_high:
+                                    row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                    row_data['Inside Check'] = f"✗ High {current_high:.2f} >= {ref_high:.2f} (must be < {ref_high:.2f})"
+                                elif current_low <= ref_low:
+                                    row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                    row_data['Inside Check'] = f"✗ Low {current_low:.2f} <= {ref_low:.2f} (must be > {ref_low:.2f})"
+                                else:
+                                    row_data['Reference Range'] = f"{ref_low:.2f} - {ref_high:.2f}"
+                                    row_data['Inside Check'] = "✓ High ✓ Low (unexpected - check logic)"
+                            else:
+                                row_data['Reference Range'] = '—'
+                                row_data['Inside Check'] = 'No reference'
+                        display_data.append(row_data)
+                    display_df = pd.DataFrame(display_data)
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                    if inside_bars:
+                        latest_idx = inside_bars[-1]
+                        mother_idx = find_mother_index(data_1h, latest_idx)
+                        if mother_idx is None:
+                            st.warning("Unable to determine mother candle for the latest inside bar.")
+                        else:
+                            range_high = data_1h['High'].iloc[mother_idx]
+                            range_low = data_1h['Low'].iloc[mother_idx]
+                            inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
+                            ref_time = data_1h['Date'].iloc[mother_idx] if 'Date' in data_1h.columns else f"Index_{mother_idx}"
+                            inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
+                            ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
+                            st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
+                            st.write("**Most Recent Inside Bar Details:**")
+                            details_col1, details_col2 = st.columns(2)
+                            with details_col1:
+                                st.write(f"📊 **Inside Bar Time:** {inside_bar_label}")
+                                st.write(f"📊 **Mother Candle:** {ref_time_label}")
+                                st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
+                            with details_col2:
+                                st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
+                                st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
+                                st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
+                            st.write("**Breakout Status:**")
+                            ui_breakout_direction = st.session_state.get("last_breakout_direction")
+                            direction = ui_breakout_direction
+                            if direction not in ("CE", "PE"):
+                                direction = confirm_breakout(
+                                    data_1h,
+                                    range_high,
+                                    range_low,
+                                    latest_idx,
+                                    mother_idx=mother_idx,
+                                    volume_threshold_multiplier=1.0,
+                                    symbol="NIFTY"
+                                )
+                            price_at_last_candle = data_1h['Close'].iloc[-1]
+                            within_range = range_low <= price_at_last_candle <= range_high
+                            if direction == "CE":
+                                st.success("✅ Breakout Confirmed: CE (Call Option)")
+                            elif direction == "PE":
+                                st.success("✅ Breakout Confirmed: PE (Put Option)")
+                            else:
+                                st.info("⏳ Waiting for breakout confirmation...")
+                            st.write(f"📊 Within range: {range_low:.2f} ≤ {price_at_last_candle:.2f} ≤ {range_high:.2f}")
+                            if not within_range:
+                                st.warning("⚠️ Price has moved out of the mother candle range, monitor for breakout confirmation.")
                     else:
-                        range_high = data_1h['High'].iloc[mother_idx]
-                        range_low = data_1h['Low'].iloc[mother_idx]
-                        inside_bar_time = data_1h['Date'].iloc[latest_idx] if 'Date' in data_1h.columns else f"Index_{latest_idx}"
-                        ref_time = data_1h['Date'].iloc[mother_idx] if 'Date' in data_1h.columns else f"Index_{mother_idx}"
-                        
-                        inside_bar_label = format_ist_timestamp(inside_bar_time) if isinstance(inside_bar_time, (pd.Timestamp, str)) else inside_bar_time
-                        ref_time_label = format_ist_timestamp(ref_time) if isinstance(ref_time, (pd.Timestamp, str)) else ref_time
-                        
-                        st.success(f"✅ Inside Bar Detected! ({len(inside_bars)} total) | **Most Recent:** {inside_bar_label}")
-
-                        st.write("**Most Recent Inside Bar Details:**")
-                        details_col1, details_col2 = st.columns(2)
-                        with details_col1:
-                            st.write(f"📊 **Inside Bar Time:** {inside_bar_label}")
-                            st.write(f"📊 **Mother Candle:** {ref_time_label}")
-                            st.write(f"📈 **Breakout Range:** {range_low:.2f} - {range_high:.2f}")
-                        with details_col2:
-                            st.write(f"🔢 **Inside Bar High:** {data_1h['High'].iloc[latest_idx]:.2f}")
-                            st.write(f"🔢 **Inside Bar Low:** {data_1h['Low'].iloc[latest_idx]:.2f}")
-                            st.write(f"📍 **All Inside Bar Indices:** {inside_bars}")
-                        
-                        # Check for breakout (using 1H data only)
-                        st.write("**Breakout Status:**")
-                        ui_breakout_direction = st.session_state.get("last_breakout_direction")
-                        direction = ui_breakout_direction
-                        if direction not in ("CE", "PE"):
-                            direction = confirm_breakout(
-                                data_1h,
-                                range_high,
-                                range_low,
-                                latest_idx,
-                                mother_idx=mother_idx,
-                                volume_threshold_multiplier=1.0,
-                                symbol="NIFTY"
-                            )
-                        price_at_last_candle = data_1h['Close'].iloc[-1]
-                        within_range = range_low <= price_at_last_candle <= range_high
-                        
-                        if direction == "CE":
-                            st.success("✅ Breakout Confirmed: CE (Call Option)")
-                        elif direction == "PE":
-                            st.success("✅ Breakout Confirmed: PE (Put Option)")
-                        else:
-                            st.info("⏳ Waiting for breakout confirmation...")
-                        
-                        st.write(f"📊 Within range: {range_low:.2f} ≤ {price_at_last_candle:.2f} ≤ {range_high:.2f}")
-
-                        if not within_range:
-                            st.warning("⚠️ Price has moved out of the mother candle range, monitor for breakout confirmation.")
+                        st.info("🔍 No Inside Bar patterns detected in current 1H data")
+                        st.caption("💡 Inside Bar requires: candle high < previous high AND candle low > previous low")
+                    st.caption("💡 This information updates when you refresh the page or auto-refresh is enabled")
                 else:
-                    st.info("🔍 No Inside Bar patterns detected in current 1H data")
-                    st.caption("💡 Inside Bar requires: candle high < previous high AND candle low > previous low")
-                st.caption("💡 This information updates when you refresh the page or auto-refresh is enabled")
+                    st.warning("⚠️ Insufficient market data. Please wait for data to load.")
+            except Exception as e:
+                st.error(f"❌ Error checking strategy status: {e}")
+                logger.exception(e)
+        else:
+            st.info("ℹ️ Market data provider or live runner not available")
+    
+    def _render_range_persistence_section(
+        low_value: Optional[float],
+        high_value: Optional[float],
+        latest_price: Optional[float],
+        compression_text: str,
+        mother_label: str,
+        inside_label: str,
+    ) -> None:
+        if low_value is None or high_value is None:
+            st.info("No active inside bar range to analyze.")
+            return
+        metric_cols = st.columns(3)
+        with metric_cols[0]:
+            st.metric("Range Low", f"{low_value:.2f}")
+        with metric_cols[1]:
+            st.metric("Range High", f"{high_value:.2f}")
+        with metric_cols[2]:
+            if latest_price is not None:
+                st.metric("Latest Close", f"{latest_price:.2f}")
             else:
-                st.warning("⚠️ Insufficient market data. Please wait for data to load.")
-        except Exception as e:
-            st.error(f"❌ Error checking strategy status: {e}")
-            logger.exception(e)
-    else:
-        st.info("ℹ️ Market data provider or live runner not available")
+                st.metric("Latest Close", "—")
+        st.write(f"Mother candle captured at **{mother_label}**, inside candle at **{inside_label}**.")
+        if compression_text:
+            st.write(f"Compression depth: **{compression_text}**")
+        spread = high_value - low_value
+        st.write(f"Range width: **{spread:.2f} pts**")
+        if latest_price is not None:
+            if low_value <= latest_price <= high_value:
+                st.success("Price remains within the mother range.")
+            else:
+                st.warning("Price has left the mother range — watch for fresh setups.")
+    
+    def _render_breakout_events_section() -> None:
+        events = []
+        last_alert = st.session_state.get("last_breakout_alert_timestamp")
+        last_direction = st.session_state.get("last_breakout_direction")
+        if last_alert and last_direction:
+            events.append({
+                "timestamp": last_alert,
+                "label": f"Breakout {last_direction}",
+                "type": "breakout",
+                "direction": last_direction,
+            })
+        missed_trade_info = st.session_state.get("last_missed_trade")
+        if missed_trade_info:
+            events.append({
+                "timestamp": missed_trade_info.get("timestamp"),
+                "label": f"Missed {missed_trade_info.get('direction', '—')}",
+                "type": "missed",
+                "details": missed_trade_info,
+                "direction": missed_trade_info.get("direction"),
+            })
+        if not events:
+            st.info("No breakout events recorded in this session.")
+            return
+        def _fmt_event_time(value: Optional[str]) -> str:
+            if not value:
+                return "—"
+            try:
+                dt_value = datetime.fromisoformat(value)
+                return dt_value.strftime("%d-%b %I:%M:%S %p")
+            except Exception:
+                return str(value)
+        for event in events:
+            direction = event.get("direction")
+            badge_class = "badge-green" if direction == "CE" else "badge-red"
+            ts_label = _fmt_event_time(event.get("timestamp"))
+            st.markdown(
+                f"<div class='metric-tile'><h5>{event['label']}</h5>"
+                f"<div class='metric-value'>{ts_label}</div>"
+                f"<span class='badge {badge_class}'>{direction or '—'}</span></div>",
+                unsafe_allow_html=True,
+            )
+            if event.get("type") == "missed" and event.get("details"):
+                details = event["details"]
+                st.caption(
+                    f"Missed breakout at {details.get('signal_time', '—')} · "
+                    f"Range {details.get('range_low', '—')} → {details.get('range_high', '—')}"
+                )
+    
+    with st.expander("📄 Inside Bar Detection Debug", expanded=False):
+        _render_inside_bar_debug_section()
+    with st.expander("📊 Range Persistence Analysis", expanded=False):
+        _render_range_persistence_section(
+            range_low_value,
+            range_high_value,
+            latest_close_price,
+            compression_label,
+            mother_time_label,
+            inside_bar_time_label,
+        )
+    with st.expander("⚡ Breakout Events Log", expanded=False):
+        _render_breakout_events_section()
     
     st.divider()
+    footer_cols = st.columns([1.2, 1, 0.6], gap="large")
+    with footer_cols[0]:
+        st.markdown("[📄 View Trade Logs](logs/trades.csv)")
+    with footer_cols[1]:
+        footer_label = footer_last_updated or "Not refreshed yet"
+        footer_reason = footer_last_reason or "manual"
+        st.markdown(f"Last updated: **{footer_label}** ({footer_reason})")
+    with footer_cols[2]:
+        if st.button("🔄 Manual Refresh", key="footer_manual_refresh"):
+            success = _trigger_market_data_refresh("manual-footer")
+            if success:
+                timestamp = st.session_state.last_refresh_time.strftime("%d-%b %I:%M:%S %p")
+                st.session_state.market_refresh_feedback = (
+                    "success",
+                    f"✅ Market data refreshed at {timestamp}.",
+                )
+            else:
+                error_msg = st.session_state.last_refresh_error or "Unknown error"
+                st.session_state.market_refresh_feedback = (
+                    "error",
+                    f"❌ Failed to refresh market data: {error_msg}",
+                )
+            st.rerun()
     
-    # Active Trades Section
-    st.subheader("📊 Active Trades")
-    active_signals = st.session_state.signal_handler.get_active_signals()
-    
-    if active_signals:
-        trades_df = pd.DataFrame(active_signals)
-        st.dataframe(trades_df, use_container_width=True, height=300)
-    else:
-        st.info("ℹ️ No active trades")
-    
-    # System Information
-    st.divider()
-    st.subheader("ℹ️ System Information")
-    
-    # Load strategy config
-    import yaml as yaml_lib
-    with open('config/config.yaml', 'r') as f:
-        strategy_config = yaml_lib.safe_load(f)
-    
-    info_col1, info_col2 = st.columns(2)
-    
-    with info_col1:
-        st.write("**Strategy Parameters:**")
-        st.write(f"- Lot Size: {strategy_config.get('lot_size', 'N/A')}")
-        st.write(f"- Stop Loss: {strategy_config.get('strategy', {}).get('sl', 'N/A')} points")
-        st.write(f"- Risk-Reward: {strategy_config.get('strategy', {}).get('rr', 'N/A')}")
-    
-    with info_col2:
-        st.write("**Filters:**")
-        filters = strategy_config.get('strategy', {}).get('filters', {})
-        st.write(f"- Volume Spike: {'✅' if filters.get('volume_spike') else '❌'}")
-        st.write(f"- Avoid Open Range: {'✅' if filters.get('avoid_open_range') else '❌'}")
-
     # Perform background API refresh if enabled (non-blocking)
     if st.session_state.background_refresh_enabled:
         start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)
 
     # Auto-refresh fallback (blocking rerun)
-    if auto:
+    if st.session_state.auto_refresh_enabled:
         if st.session_state.last_refresh_time is not None:
             time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
             if time_since_last > 15:
