@@ -302,15 +302,34 @@ class LiveTickStreamer:
                 exchange_buckets.setdefault(exchange_code, []).append(token)
 
         for exchange_code, bucket in exchange_buckets.items():
-            payload = {
-                "correlationID": f"ticks-{int(time.time()*1000)}",
-                "action": 1,
-                "mode": 1,  # LTP mode
-                "tokenList": [{"exchangeType": exchange_code, "tokens": bucket}],
-            }
             try:
-                self._ws.subscribe(payload)
-                logger.debug(f"Subscribed to tokens {bucket} (exchange {exchange_code})")
+                # SmartWebSocketV2 (>= Nov 2025) signature: subscribe(mode, token_list)
+                self._ws.subscribe(
+                    1,
+                    [{"exchangeType": exchange_code, "tokens": bucket}],
+                )
+                logger.debug(
+                    "Subscribed to tokens %s (exchange %s) via positional API",
+                    bucket,
+                    exchange_code,
+                )
+            except TypeError:
+                # Fallback for older SDKs that still accept the payload dict
+                payload = {
+                    "correlationID": f"ticks-{int(time.time()*1000)}",
+                    "action": 1,
+                    "mode": 1,
+                    "tokenList": [{"exchangeType": exchange_code, "tokens": bucket}],
+                }
+                try:
+                    self._ws.subscribe(payload)
+                    logger.debug(
+                        "Subscribed to tokens %s (exchange %s) via legacy payload",
+                        bucket,
+                        exchange_code,
+                    )
+                except Exception as exc:
+                    logger.warning(f"Tick subscribe failed: {exc}")
             except Exception as exc:
                 logger.warning(f"Tick subscribe failed: {exc}")
 
