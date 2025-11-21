@@ -483,6 +483,32 @@ st.markdown("""
         background: #dbeafe;
         color: #1d4ed8;
     }
+    .trade-box-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+    .trade-box {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 0.85rem;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+    }
+    .trade-box label {
+        display: block;
+        font-size: 0.75rem;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.25rem;
+    }
+    .trade-box span {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #0f172a;
+    }
     .footer-bar {
         margin-top: 1.5rem;
         display: flex;
@@ -503,6 +529,42 @@ st.markdown("""
     .debug-section .st-expander {
         border: 1px solid #e2e8f0;
         border-radius: 12px;
+    }
+    .status-ribbon [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap;
+        gap: 0.75rem;
+    }
+    .status-ribbon [data-testid="column"] {
+        min-width: 160px;
+    }
+    @media (max-width: 1200px) {
+        .hero-grid {
+            grid-template-columns: 1fr;
+        }
+        .footer-bar {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+    }
+    @media (max-width: 900px) {
+        .status-ribbon {
+            flex-direction: column;
+        }
+        .status-chip-row {
+            justify-content: flex-start;
+        }
+    }
+    @media (max-width: 640px) {
+        .metric-grid {
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        }
+        .trade-box-grid {
+            grid-template-columns: 1fr;
+        }
+        .status-chip {
+            width: 100%;
+            justify-content: space-between;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -634,11 +696,17 @@ def _render_strategy_settings_popover(form_key: str = "strategy_settings_form") 
 
 
 def _render_active_trade_metric_row(buy_value: str, tp_value: str, sl_value: str, trail_value: str) -> None:
-    cols = st.columns(4, gap="small")
-    cols[0].metric("Buying Price", buy_value)
-    cols[1].metric("Take Profit", tp_value)
-    cols[2].metric("Stop Loss", sl_value)
-    cols[3].metric("Trailing SL", trail_value)
+    boxes = [
+        ("Buying Price", buy_value),
+        ("Take Profit", tp_value),
+        ("Stop Loss", sl_value),
+        ("Trailing SL", trail_value),
+    ]
+    tiles = "".join(
+        f"<div class='trade-box'><label>{label}</label><span>{value}</span></div>"
+        for label, value in boxes
+    )
+    st.markdown(f"<div class='trade-box-grid'>{tiles}</div>", unsafe_allow_html=True)
 
 # Load configuration
 def load_config():
@@ -1512,6 +1580,7 @@ current_main_tab = tab
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
     st.header("📈 Live Algo Status")
+    st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
     
     engine_status = st.session_state.algo_running
     broker_connected = st.session_state.broker is not None
@@ -2892,6 +2961,8 @@ if tab == "Dashboard":
                 )
             st.rerun()
     
+    st.markdown('</div>', unsafe_allow_html=True)
+
     # Perform background API refresh if enabled (non-blocking)
     if st.session_state.background_refresh_enabled:
         start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)

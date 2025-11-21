@@ -59,8 +59,9 @@ The Streamlit dashboard now follows a minimalist, status-first layout optimized 
 
 ## Implementation Notes
 
-- CSS classes live directly in `dashboard/ui_frontend.py` (e.g., `.status-ribbon`, `.trading-panel`, `.hero-grid`, `.snapshot-card`, `.config-strip`, `.footer-bar`).  
+- CSS classes live directly in `dashboard/ui_frontend.py` (e.g., `.dashboard-shell`, `.status-ribbon`, `.trading-panel`, `.hero-grid`, `.snapshot-card`, `.config-strip`, `.footer-bar`).  
 - HTML snippets are injected via `st.markdown(..., unsafe_allow_html=True)` to achieve the chip/grid structure while keeping interactive widgets inside Streamlit components.  
 - Strategy settings and the refresh intervals use `st.popover`, which keeps the controls compact until a user clicks the icon/button.  
+- Responsive tweaks: media queries collapse the hero grid, trade-box grid, and status ribbon chips on tablet/mobile widths so the layout remains readable. The Active Trade metric boxes render even when no trade is open (values show `—`) to maintain layout stability.  
 - Any future layout changes should update this document plus the CSS block to maintain design parity.
 
