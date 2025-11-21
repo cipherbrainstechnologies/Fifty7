@@ -367,8 +367,14 @@ class TradeLogger:
         if df.empty:
             return
         
+        # Normalize order_id column to strings for reliable matching
+        df['order_id'] = df['order_id'].astype(str).str.strip()
+        if 'post_outcome' in df.columns:
+            df['post_outcome'] = df['post_outcome'].astype(str)
+        target_order_id = str(order_id).strip()
+
         # Find trade by order_id
-        mask = df['order_id'] == order_id
+        mask = df['order_id'] == target_order_id
         if not mask.any():
             return
         
