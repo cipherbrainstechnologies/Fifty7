@@ -5,7 +5,7 @@ Position monitoring and risk management (SL/TP, trailing, profit booking)
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from datetime import datetime
 from logzero import logger
 
@@ -47,6 +47,7 @@ class PositionMonitor:
         broker_managed: bool = False,
         bracket_stop_points: Optional[float] = None,
         bracket_target_points: Optional[float] = None,
+        ltp_provider: Optional[Callable[[Optional[str], Optional[Dict[str, Any]]], Optional[Dict[str, Any]]]] = None,
     ):
         self.broker = broker
         self.symbol_token = symbol_token
@@ -67,6 +68,7 @@ class PositionMonitor:
         self.broker_managed = broker_managed
         self.bracket_stop_points = bracket_stop_points
         self.bracket_target_points = bracket_target_points
+        self.ltp_provider = ltp_provider
 
         # Derived levels
         self.stop_loss = self.entry_price - self.rules.sl_points
@@ -131,20 +133,21 @@ class PositionMonitor:
             self._stop_event.wait(interval_sec)
 
     def _tick(self):
-        # Fetch LTP via market quote API (LTP mode)
-        params = {
-            "mode": "LTP",
-            "exchangeTokens": {self.exchange: [self.symbol_token]},
-        }
-        quote = self.broker.get_market_quote(params)
-        if not isinstance(quote, dict) or not quote.get("data"):
-            logger.warning("PositionMonitor: quote fetch failed or empty")
-            return
+        ltp = self._fetch_ltp_via_provider()
+        if ltp is None:
+            params = {
+                "mode": "LTP",
+                "exchangeTokens": {self.exchange: [self.symbol_token]},
+            }
+            quote = self.broker.get_market_quote(params)
+            if not isinstance(quote, dict) or not quote.get("data"):
+                logger.warning("PositionMonitor: quote fetch failed or empty")
+                return
 
-        fetched = quote.get("data", {}).get("fetched", [])
-        if not fetched:
-            return
-        ltp = float(fetched[0].get("ltp"))
+            fetched = quote.get("data", {}).get("fetched", [])
+            if not fetched:
+                return
+            ltp = float(fetched[0].get("ltp"))
         self.last_ltp = ltp
         self.last_quote_time = datetime.now()
 
@@ -185,6 +188,30 @@ class PositionMonitor:
                     self._finalize_broker_exit("stop_loss", qty_to_close, ltp)
                 else:
                     self._exit_sl(qty_to_close)
+
+    def _fetch_ltp_via_provider(self) -> Optional[float]:
+        if not self.ltp_provider:
+            return None
+        try:
+            quote = self.ltp_provider(
+                self.tradingsymbol,
+                {
+                    "symbol": self.symbol,
+                    "tradingsymbol": self.tradingsymbol,
+                },
+            )
+            if not quote:
+                return None
+            ltp = quote.get("ltp")
+            if ltp is None:
+                return None
+            ltp_val = float(ltp)
+            self.last_ltp = ltp_val
+            self.last_quote_time = datetime.now()
+            return ltp_val
+        except Exception as exc:
+            logger.debug(f"PositionMonitor provider fetch failed: {exc}")
+            return None
 
     def _emit_position_event(self, event: str, qty_lots: int, exit_price: float, level: Optional[str] = None):
         """

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from logzero import logger
 
@@ -54,6 +54,8 @@ class LiveTickStreamer:
         self._quotes: Dict[str, Dict] = {}
 
         self._default_symbols = default_symbols or []
+        self._last_tick_ts: Optional[float] = None
+        self._last_error: Optional[str] = None
 
         if not self.enabled:
             logger.warning("LiveTickStreamer disabled (SmartWebSocketV2 not available or broker creds missing)")
@@ -67,6 +69,7 @@ class LiveTickStreamer:
             self._stop_event.clear()
             self._thread = threading.Thread(target=self._run, name="SmartAPI-Ticks", daemon=True)
             self._thread.start()
+            logger.info("LiveTickStreamer start requested (default subscriptions=%d)", len(self._default_symbols))
 
     def stop(self):
         self._stop_event.set()
@@ -120,11 +123,38 @@ class LiveTickStreamer:
                     return self._quotes.get(token)
         return None
 
+    def get_quote_with_age(self, tradingsymbol: str) -> Optional[Dict]:
+        quote = self.get_quote(tradingsymbol)
+        if not quote:
+            return None
+        received_at = quote.get("received_at")
+        if isinstance(received_at, (int, float)):
+            quote = dict(quote)
+            quote["age_seconds"] = max(0.0, time.time() - float(received_at))
+        else:
+            quote = dict(quote)
+            quote["age_seconds"] = None
+        return quote
+
     def get_ltp(self, tradingsymbol: str, default: Optional[float] = None) -> Optional[float]:
         quote = self.get_quote(tradingsymbol)
         if quote and "ltp" in quote:
             return quote["ltp"]
         return default
+
+    def get_status(self) -> Dict[str, Any]:
+        now = time.time()
+        with self._lock:
+            last_tick = self._last_tick_ts
+            return {
+                "enabled": self.enabled,
+                "connected": self._connected,
+                "subscriptions": len(self._subscriptions),
+                "quotes_cached": len(self._quotes),
+                "last_tick_at": last_tick,
+                "last_tick_age_sec": (now - last_tick) if last_tick else None,
+                "last_error": self._last_error,
+            }
 
     # Internal helpers
 
@@ -134,6 +164,7 @@ class LiveTickStreamer:
                 self._connect()
             except Exception as exc:
                 logger.warning(f"Tick streamer connection error: {exc}")
+                self._last_error = str(exc)
             finally:
                 self._connected = False
                 if not self._stop_event.is_set():
@@ -180,9 +211,11 @@ class LiveTickStreamer:
                     exchange=symbol.get("exchange", "NSE"),
                     token=symbol.get("token"),
                 )
+            logger.info("Connecting SmartAPI websocket (subscriptions=%d)", len(self._subscriptions))
             ws.connect()
         except Exception as exc:
             logger.warning(f"Tick streamer connect failed: {exc}")
+            self._last_error = str(exc)
             try:
                 ws.close_connection()
             except Exception:
@@ -214,6 +247,7 @@ class LiveTickStreamer:
     def _on_error(self, wsapp, error):
         logger.warning(f"SmartAPI websocket error: {error}")
         self._connected = False
+        self._last_error = str(error)
 
     def _on_data(self, wsapp, message):
         try:
@@ -249,9 +283,11 @@ class LiveTickStreamer:
                 self._quotes[token] = {
                     "ltp": ltp,
                     "timestamp": row.get("exchangeTimestamp") or row.get("timestamp") or time.time(),
+                    "received_at": time.time(),
                     "tradingsymbol": ts,
                     "token": token,
                 }
+                self._last_tick_ts = time.time()
 
     def _send_subscribe(self, tokens: List[str]):
         if not tokens or not self._ws:

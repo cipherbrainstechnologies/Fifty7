@@ -2,9 +2,10 @@
 Live Strategy Runner for real-time market monitoring and trade execution
 """
 
+import copy
 import threading
 import time
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from datetime import datetime, timedelta, time as dt_time, timezone as dt_timezone
 from pytz import timezone
 from logzero import logger
@@ -115,6 +116,20 @@ class LiveStrategyRunner:
         # FIX for Issue #7: Position limits
         self.max_concurrent_positions = config.get('position_management', {}).get('max_concurrent_positions', 
                                                                                    config.get('sizing', {}).get('max_concurrent_positions', 2))
+
+        # Active P&L tracker state
+        self.pnl_tracker_interval = max(2, int(config.get("market_data", {}).get("pnl_refresh_seconds", 5)))
+        self.quote_stale_seconds = max(1, int(config.get("market_data", {}).get("pnl_quote_stale_seconds", 5)))
+        self._active_pnl_lock = threading.Lock()
+        self._active_pnl_snapshot: Dict[str, Any] = {
+            "trades": [],
+            "total_unrealized_value": 0.0,
+            "total_unrealized_points": 0.0,
+            "last_updated": None,
+            "streamer": None,
+        }
+        self._pnl_tracker_thread: Optional[threading.Thread] = None
+        self._pnl_tracker_stop = threading.Event()
         
         logger.info(f"LiveStrategyRunner initialized (polling interval: {self.polling_interval}s)")
     
@@ -136,6 +151,7 @@ class LiveStrategyRunner:
             # Create and start thread
             self._thread = threading.Thread(target=self._run_loop, daemon=True)
             self._thread.start()
+            self._start_pnl_tracker()
             
             logger.info("LiveStrategyRunner started")
             return True
@@ -159,6 +175,7 @@ class LiveStrategyRunner:
         try:
             self._running = False
             self._stop_event.set()
+            self._stop_pnl_tracker()
             
             # Wait for thread to finish (with timeout)
             if self._thread and self._thread.is_alive():
@@ -174,6 +191,218 @@ class LiveStrategyRunner:
     def is_running(self) -> bool:
         """Check if runner is currently running."""
         return self._running
+
+    # ------------------------------------------------------------------
+    # Active P&L tracker helpers
+    # ------------------------------------------------------------------
+
+    def _start_pnl_tracker(self) -> None:
+        if self._pnl_tracker_thread and self._pnl_tracker_thread.is_alive():
+            return
+        self._pnl_tracker_stop.clear()
+        self._pnl_tracker_thread = threading.Thread(
+            target=self._pnl_tracker_loop,
+            name="ActivePnLTracker",
+            daemon=True,
+        )
+        self._pnl_tracker_thread.start()
+        logger.info("Active P&L tracker started (interval=%ss)", self.pnl_tracker_interval)
+
+    def _stop_pnl_tracker(self) -> None:
+        self._pnl_tracker_stop.set()
+        if self._pnl_tracker_thread and self._pnl_tracker_thread.is_alive():
+            self._pnl_tracker_thread.join(timeout=3.0)
+        self._pnl_tracker_thread = None
+
+    def _pnl_tracker_loop(self) -> None:
+        while not self._pnl_tracker_stop.is_set():
+            if not self._running:
+                # Wait briefly while runner is paused/stopped
+                self._pnl_tracker_stop.wait(1.0)
+                continue
+            try:
+                snapshot = self._compute_active_pnl_snapshot()
+                with self._active_pnl_lock:
+                    self._active_pnl_snapshot = snapshot
+            except Exception as exc:
+                logger.exception(f"Active P&L tracker error: {exc}")
+            self._pnl_tracker_stop.wait(self.pnl_tracker_interval)
+
+    def _compute_active_pnl_snapshot(self) -> Dict[str, Any]:
+        now_utc = datetime.utcnow().replace(tzinfo=dt_timezone.utc)
+        snapshot: Dict[str, Any] = {
+            "trades": [],
+            "total_unrealized_value": 0.0,
+            "total_unrealized_points": 0.0,
+            "last_updated": now_utc.isoformat(),
+            "streamer": self.get_streamer_health(),
+        }
+        trades_df = self.trade_logger.get_open_trades() if self.trade_logger else None
+        if trades_df is None or trades_df.empty:
+            snapshot["open_trade_count"] = 0
+            return snapshot
+
+        df = trades_df.copy()
+        if 'timestamp' in df.columns:
+            df['__ts__'] = pd.to_datetime(df['timestamp'], errors='coerce')
+            df = df.sort_values('__ts__')
+
+        base_symbol_default = self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+
+        for _, row in df.iterrows():
+            entry_price = self._safe_float(row.get('entry'))
+            if entry_price is None:
+                continue
+            qty_lots = self._safe_int(row.get('quantity'), allow_float=True)
+            if qty_lots <= 0:
+                continue
+
+            tradingsymbol = canonicalize_tradingsymbol(row.get('tradingsymbol', ''))
+            strike_value = self._safe_int(row.get('strike'), allow_float=True) or None
+            direction = str(row.get('direction', '')).upper()
+            symbol = str(row.get('symbol') or base_symbol_default) or base_symbol_default
+            lot_units = qty_lots * self.lot_size
+
+            ltp, source, age = self._get_option_quote(
+                tradingsymbol=tradingsymbol,
+                symbol=symbol,
+                strike=strike_value,
+                direction=direction,
+                allow_rest=True,
+                ensure_subscription=True,
+            )
+
+            points = None
+            value = None
+            quote_ready = False
+            if ltp is not None:
+                quote_ready = True
+                points = ltp - entry_price
+                value = points * lot_units
+                snapshot["total_unrealized_value"] += value
+                snapshot["total_unrealized_points"] += points
+
+            snapshot["trades"].append({
+                "order_id": str(row.get('order_id', '')) or None,
+                "tradingsymbol": tradingsymbol,
+                "strike": strike_value,
+                "direction": direction,
+                "quantity_lots": qty_lots,
+                "entry": entry_price,
+                "ltp": ltp,
+                "unrealized_points": points,
+                "unrealized_value": value,
+                "quote_source": source,
+                "quote_age_sec": age,
+                "quote_ready": quote_ready,
+                "timestamp": row.get('timestamp', ''),
+            })
+
+        snapshot["open_trade_count"] = len(snapshot["trades"])
+        return snapshot
+
+    def get_active_pnl_snapshot(self) -> Dict[str, Any]:
+        with self._active_pnl_lock:
+            return copy.deepcopy(self._active_pnl_snapshot)
+
+    def get_streamer_health(self) -> Optional[Dict[str, Any]]:
+        if not self.tick_streamer:
+            return None
+        try:
+            return self.tick_streamer.get_status()
+        except Exception:
+            return None
+
+    def _get_option_quote(
+        self,
+        tradingsymbol: Optional[str],
+        symbol: Optional[str],
+        strike: Optional[int],
+        direction: Optional[str],
+        allow_rest: bool = True,
+        ensure_subscription: bool = True,
+    ) -> Tuple[Optional[float], str, Optional[float]]:
+        tradingsymbol = canonicalize_tradingsymbol(tradingsymbol or "")
+        base_symbol = symbol or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+        direction = (direction or "").upper()
+        age = None
+
+        if tradingsymbol and self.tick_streamer:
+            try:
+                if ensure_subscription:
+                    self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+                quote = self.tick_streamer.get_quote_with_age(tradingsymbol)
+                if quote and 'ltp' in quote:
+                    age = quote.get("age_seconds")
+                    if age is None or age <= self.quote_stale_seconds:
+                        return float(quote['ltp']), "tick", age
+            except Exception as exc:
+                logger.debug(f"Tick quote fetch failed for {tradingsymbol}: {exc}")
+
+        if allow_rest and strike is not None and direction and hasattr(self.broker, "get_option_price"):
+            try:
+                price = self.broker.get_option_price(
+                    symbol=base_symbol,
+                    strike=int(strike),
+                    direction=direction,
+                )
+                if price is not None:
+                    return float(price), "rest", 0.0
+            except Exception as exc:
+                logger.debug(f"Broker quote fetch failed for {base_symbol} {strike}{direction}: {exc}")
+
+        return None, "stale", age
+
+    def _build_ltp_provider(
+        self,
+        tradingsymbol: Optional[str],
+        symbol: Optional[str],
+        strike: Optional[int],
+        direction: Optional[str],
+    ):
+        base_symbol = symbol or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+        canonical_ts = canonicalize_tradingsymbol(tradingsymbol or "")
+        strike_val = strike
+        direction_val = (direction or "").upper()
+
+        def _provider(ts: Optional[str] = None, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+            tradingsymbol_override = canonicalize_tradingsymbol(ts or canonical_ts or (meta or {}).get("tradingsymbol", ""))
+            symbol_override = base_symbol
+            if meta and meta.get("symbol"):
+                symbol_override = meta.get("symbol")
+            ltp, source, age = self._get_option_quote(
+                tradingsymbol=tradingsymbol_override,
+                symbol=symbol_override,
+                strike=strike_val,
+                direction=direction_val,
+                allow_rest=True,
+                ensure_subscription=False,
+            )
+            if ltp is None:
+                return None
+            return {"ltp": ltp, "source": source, "age_seconds": age}
+
+        return _provider
+
+    @staticmethod
+    def _safe_float(value: Any) -> Optional[float]:
+        try:
+            if value in ("", None):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_int(value: Any, allow_float: bool = False) -> int:
+        try:
+            if value in ("", None):
+                return 0
+            if allow_float:
+                return int(round(float(value)))
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
     
     def _is_market_open(self) -> bool:
         """
@@ -983,6 +1212,7 @@ class LiveStrategyRunner:
                     broker_managed=self.enable_bracket_orders,
                     bracket_stop_points=stoploss_points if self.enable_bracket_orders else None,
                     bracket_target_points=squareoff_points if self.enable_bracket_orders else None,
+                    ltp_provider=self._build_ltp_provider(tradingsymbol, symbol, strike, direction),
                 )
                 if monitor.start():
                     self.active_monitors.append(monitor)
@@ -1345,8 +1575,7 @@ class LiveStrategyRunner:
             logger.debug(f"Unable to fetch trade book for reconciliation: {e}")
             return
 
-        if not trade_book:
-            return
+        trade_book = trade_book or []
 
         open_positions = self._get_open_position_map()
         tracked_signals = self._gather_open_trade_signals()
@@ -1414,7 +1643,7 @@ class LiveStrategyRunner:
                 self._finalize_manual_exit(order_id, signal, exit_price, required_units)
                 continue
 
-            position_qty = open_positions.get(tradingsymbol, required_units)
+            position_qty = int(open_positions.get(tradingsymbol, 0))
             if position_qty <= 0:
                 symbol_name = signal.get("symbol") or self.config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
                 live_price = None

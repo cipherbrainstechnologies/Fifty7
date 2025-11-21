@@ -8,7 +8,7 @@ import streamlit as st
 import yaml
 from yaml.loader import SafeLoader
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone as dt_timezone
 import os
 import sys
 import io
@@ -1228,10 +1228,23 @@ if tab == "Dashboard":
         except Exception:
             market_open = False
     
+    active_pnl_snapshot = None
+    streamer_health = None
+    if st.session_state.get('live_runner') is not None:
+        try:
+            active_pnl_snapshot = st.session_state.live_runner.get_active_pnl_snapshot()
+            streamer_health = active_pnl_snapshot.get("streamer") if isinstance(active_pnl_snapshot, dict) else None
+        except Exception as snapshot_err:
+            logger.debug(f"Active P&L snapshot unavailable: {snapshot_err}")
+            active_pnl_snapshot = None
+            streamer_health = None
+
     active_trade = None
     active_trade_unrealized_value = None
     active_trade_unrealized_points = None
     active_trade_option_ltp = None
+    active_trade_snapshot_entry = None
+    active_snapshot_age = None
     if st.session_state.get('trade_logger') is not None:
         try:
             open_trades = st.session_state.trade_logger.get_open_trades()
@@ -1292,50 +1305,109 @@ if tab == "Dashboard":
                     'order_id': latest_trade.get('order_id', ''),
                     'tradingsymbol': tradingsymbol,
                 }
-
-                # Attempt to fetch live option LTP for unrealized P&L
-                broker = st.session_state.get('broker')
-                lot_size = int(config.get('lot_size', 75) or 75)
-                total_units = lot_size * qty_lots
-                symbol_name = config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
-                tick_streamer = st.session_state.get('tick_streamer')
-                if tick_streamer and tradingsymbol:
-                    tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
-                    tick_quote = tick_streamer.get_quote(tradingsymbol)
-                    if tick_quote and 'ltp' in tick_quote and entry_price is not None:
-                        active_trade_option_ltp = float(tick_quote['ltp'])
-                        active_trade_unrealized_points = active_trade_option_ltp - entry_price
-                        active_trade_unrealized_value = active_trade_unrealized_points * total_units
-                        active_trade['option_ltp'] = active_trade_option_ltp
-                if (
-                    active_trade_option_ltp is None
-                    and broker
-                    and hasattr(broker, "get_option_price")
-                    and total_units > 0
-                    and entry_price is not None
-                    and active_trade['direction'] in ("CE", "PE")
-                ):
-                    strike_for_quote = active_trade.get('strike_value') or active_trade.get('strike')
-                    try:
-                        strike_for_quote = int(float(strike_for_quote))
-                    except (TypeError, ValueError):
-                        strike_for_quote = None
-                    if strike_for_quote is not None:
-                        try:
-                            opt_ltp = broker.get_option_price(
-                                symbol=symbol_name,
-                                strike=strike_for_quote,
-                                direction=active_trade['direction'],
-                            )
-                            if opt_ltp is not None:
-                                active_trade_option_ltp = float(opt_ltp)
-                                active_trade_unrealized_points = active_trade_option_ltp - entry_price
-                                active_trade_unrealized_value = active_trade_unrealized_points * total_units
-                                active_trade['option_ltp'] = active_trade_option_ltp
-                        except Exception as opt_exc:
-                            logger.debug(f"Option LTP fetch failed: {opt_exc}")
         except Exception as e:
             logger.debug(f"Active trade summary failed: {e}")
+
+    if active_pnl_snapshot and isinstance(active_pnl_snapshot, dict):
+        snapshot_trades = active_pnl_snapshot.get("trades") or []
+        if active_trade and active_trade.get('order_id'):
+            active_trade_snapshot_entry = next(
+                (t for t in snapshot_trades if t.get("order_id") == str(active_trade['order_id'])),
+                None,
+            )
+        if active_trade_snapshot_entry is None and snapshot_trades:
+            active_trade_snapshot_entry = snapshot_trades[-1]
+            if not active_trade:
+                # Build minimal active_trade structure from snapshot
+                active_trade = {
+                    'direction': active_trade_snapshot_entry.get('direction', ''),
+                    'strike': active_trade_snapshot_entry.get('strike', '—'),
+                    'strike_value': active_trade_snapshot_entry.get('strike'),
+                    'status': 'Open',
+                    'entry': active_trade_snapshot_entry.get('entry'),
+                    'sl': None,
+                    'tp': None,
+                    'target_points': None,
+                    'quantity': active_trade_snapshot_entry.get('quantity_lots', 0),
+                    'timestamp': active_trade_snapshot_entry.get('timestamp', ''),
+                    'order_id': active_trade_snapshot_entry.get('order_id', ''),
+                    'tradingsymbol': canonicalize_tradingsymbol(active_trade_snapshot_entry.get('tradingsymbol', '')),
+                }
+        if active_trade_snapshot_entry:
+            active_trade_option_ltp = active_trade_snapshot_entry.get("ltp")
+            active_trade_unrealized_points = active_trade_snapshot_entry.get("unrealized_points")
+            active_trade_unrealized_value = active_trade_snapshot_entry.get("unrealized_value")
+            if active_trade and active_trade_option_ltp is not None:
+                active_trade['option_ltp'] = active_trade_option_ltp
+            snapshot_last = active_pnl_snapshot.get("last_updated")
+            if snapshot_last:
+                try:
+                    snapshot_dt = datetime.fromisoformat(snapshot_last.replace("Z", "+00:00"))
+                    active_snapshot_age = max(
+                        0.0,
+                        (datetime.now(dt_timezone.utc) - snapshot_dt).total_seconds()
+                    )
+                except Exception:
+                    active_snapshot_age = None
+
+    if active_trade_snapshot_entry and active_trade:
+        st.session_state.auto_refresh_enabled = True
+        if st.session_state.auto_refresh_interval_sec != 5:
+            st.session_state.auto_refresh_interval_sec = 5
+        last_trigger = st.session_state.get('_active_pnl_rerun_ts', 0)
+        if time.time() - last_trigger >= 5:
+            st.session_state['_active_pnl_rerun_ts'] = time.time()
+            rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+            if rerun_fn:
+                rerun_fn()
+
+    # Fallback to direct quote fetch when snapshot is unavailable (e.g., runner not started)
+    if (
+        active_trade
+        and active_trade_unrealized_value is None
+        and active_trade.get('entry') is not None
+        and active_trade.get('quantity')
+    ):
+        lot_size = int(config.get('lot_size', 75) or 75)
+        total_units = lot_size * int(active_trade.get('quantity') or 0)
+        broker = st.session_state.get('broker')
+        symbol_name = config.get('market_data', {}).get('nifty_symbol', 'NIFTY')
+        tradingsymbol = active_trade.get('tradingsymbol')
+        tick_streamer = st.session_state.get('tick_streamer')
+        if tick_streamer and tradingsymbol:
+            tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+            tick_quote = tick_streamer.get_quote(tradingsymbol)
+            if tick_quote and 'ltp' in tick_quote:
+                try:
+                    active_trade_option_ltp = float(tick_quote['ltp'])
+                    active_trade_unrealized_points = active_trade_option_ltp - float(active_trade['entry'])
+                    active_trade_unrealized_value = active_trade_unrealized_points * total_units
+                except Exception:
+                    active_trade_option_ltp = None
+        if (
+            active_trade_unrealized_value is None
+            and broker
+            and hasattr(broker, "get_option_price")
+            and active_trade['direction'] in ("CE", "PE")
+        ):
+            strike_for_quote = active_trade.get('strike_value') or active_trade.get('strike')
+            try:
+                strike_for_quote = int(float(strike_for_quote))
+            except (TypeError, ValueError):
+                strike_for_quote = None
+            if strike_for_quote is not None:
+                try:
+                    opt_ltp = broker.get_option_price(
+                        symbol=symbol_name,
+                        strike=strike_for_quote,
+                        direction=active_trade['direction'],
+                    )
+                    if opt_ltp is not None:
+                        active_trade_option_ltp = float(opt_ltp)
+                        active_trade_unrealized_points = active_trade_option_ltp - float(active_trade['entry'])
+                        active_trade_unrealized_value = active_trade_unrealized_points * total_units
+                except Exception as opt_exc:
+                    logger.debug(f"Fallback option LTP fetch failed: {opt_exc}")
     
     with st.container():
         st.markdown('<div class="dashboard-hero">', unsafe_allow_html=True)
@@ -1348,6 +1420,13 @@ if tab == "Dashboard":
             broker_suffix = f" · {broker_type}" if broker_connected else ""
             status_cols[1].metric("🧑‍💼 Broker", f"{broker_value}{broker_suffix}")
             status_cols[2].metric("⏰ Market", "🟢 Open" if market_open else "🔴 Closed")
+            if streamer_health:
+                tick_status_icon = "🟢" if streamer_health.get("connected") else "🔴"
+                last_tick_age = streamer_health.get("last_tick_age_sec")
+                if last_tick_age is not None:
+                    status_cols[2].caption(f"{tick_status_icon} Tick stream age: {last_tick_age:.1f}s")
+                else:
+                    status_cols[2].caption(f"{tick_status_icon} Tick stream connected")
             
             # Add execution armed status indicator
             execution_armed_status = st.session_state.get('execution_armed', False)
@@ -1566,8 +1645,12 @@ if tab == "Dashboard":
                 caption_bits.append(f"Order `{active_trade['order_id']}`")
             if active_trade_option_ltp is not None:
                 caption_bits.append(f"LTP ₹{active_trade_option_ltp:.2f}")
+            if active_snapshot_age is not None:
+                caption_bits.append(f"Snapshot {active_snapshot_age:.1f}s old")
             if caption_bits:
                 st.caption(" · ".join(caption_bits))
+            if active_snapshot_age is not None and active_snapshot_age > 10:
+                st.caption("⚠️ Live P&L snapshot is stale (older than 10s). Check broker connectivity.")
         elif active_trade:
             st.metric("💹 Active P&L", "Fetching…")
             st.caption("Awaiting option quote for live P&L.")
