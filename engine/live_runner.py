@@ -1882,16 +1882,16 @@ class LiveStrategyRunner:
                 monitor.stop()
             except Exception as stop_error:
                 logger.exception(f"Error stopping monitor for manual exit {order_id}: {stop_error}")
-                finally:
-                    self.active_monitors = [
-                        m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
-                    ]
-                    
-                    # Update state store - remove monitor
-                    self.state_store.delete_state(f'trading.active_monitors.{order_id}')
-                    
-                    # Update active monitors list in state store
-                    self._update_active_monitors_state()
+            finally:
+                self.active_monitors = [
+                    m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
+                ]
+                
+                # Update state store - remove monitor
+                self.state_store.delete_state(f'trading.active_monitors.{order_id}')
+                
+                # Update active monitors list in state store
+                self._update_active_monitors_state()
 
         logger.info(
             f"Manual exit reconciled for order {order_id}: closed at ₹{exit_price:.2f}, "

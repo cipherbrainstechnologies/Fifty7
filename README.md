@@ -290,38 +290,43 @@ To implement a new broker:
 
 3. Add broker type to factory function `create_broker_interface()`
 
-## ☁️ Deployment to Render.com
+## ☁️ Deployment & Hosting
 
-### Step 1: Push to GitHub
+### Quick Start
 
-```bash
-git init
-git add .
-git commit -m "Initial commit"
-git remote add origin https://github.com/yourusername/nifty-options-trader.git
-git push -u origin main
-```
+**For detailed hosting instructions, see: [`docs/deployment/HOSTING_GUIDE.md`](docs/deployment/HOSTING_GUIDE.md)**
 
-### Step 2: Deploy on Render
+### Recommended Platforms
 
-1. Go to [Render.com](https://render.com)
-2. Create new **Web Service**
-3. Connect your GitHub repository
-4. Configure:
-   - **Runtime**: Python 3
-   - **Build Command**: `pip install -r requirements.txt`
-   - **Start Command**: `streamlit run dashboard/ui_frontend.py --server.port=$PORT --server.address=0.0.0.0`
-5. Add environment variables or use Render's secrets manager:
-   - Convert `.streamlit/secrets.toml` to environment variables if needed
-6. Deploy and bookmark your dashboard URL
+1. **Streamlit Cloud** (Easiest, Free) - [Quick Guide](docs/deployment/QUICK_REFERENCE.md#option-1-streamlit-cloud-5-minutes)
+2. **Render.com** (Production-ready, Free tier) - [Quick Guide](docs/deployment/QUICK_REFERENCE.md#option-2-rendercom-10-minutes)
+3. **Heroku** (Paid, Legacy) - See [Hosting Guide](docs/deployment/HOSTING_GUIDE.md#option-3-heroku)
+4. **VPS** (Full control) - See [Hosting Guide](docs/deployment/HOSTING_GUIDE.md#option-5-vps-digitalocean-linode-etc)
 
-### Alternative: Local Deployment
+### Quick Deployment (Streamlit Cloud)
 
-For local deployment, simply run:
+1. Push code to GitHub
+2. Go to https://share.streamlit.io/
+3. Click "New app" → Select repo → Deploy
+4. Add secrets in Settings → Secrets
+5. Done! ✅
+
+**For complete instructions, configuration requirements, and troubleshooting, see:**
+- 📖 **[Complete Hosting Guide](docs/deployment/HOSTING_GUIDE.md)** - Comprehensive guide for all platforms
+- ⚡ **[Quick Reference](docs/deployment/QUICK_REFERENCE.md)** - Fast deployment checklist
+- 🔧 **[Deployment Docs](docs/deployment/DEPLOYMENT.md)** - Original deployment documentation
+
+### Local Deployment
+
+For local testing and development:
 
 ```bash
 streamlit run dashboard/ui_frontend.py
 ```
+
+Or use the run scripts:
+- **Windows**: `.\run_local.bat`
+- **Linux/Mac**: `./run_local.sh`
 
 ## 📝 Configuration
 
