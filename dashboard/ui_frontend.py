@@ -4294,12 +4294,22 @@ elif tab == "Backtest":
             key="backtest_strategy_timeframe_select",
         )
     
-    estimated_strike_price = 24000
-    estimated_capital_required = lot_size * estimated_strike_price
+    # Estimate capital requirement using option premium (NOT strike price!)
+    # NIFTY options typically trade at ₹100-600 premium depending on volatility and strike selection
+    # Using a realistic estimate: ~₹400-500 for ATM options, or ~0.5-2% of spot price
+    # This matches the backtest engine's synthetic premium calculation
+    estimated_strike_price = 24000  # Typical NIFTY level for estimation
+    estimated_option_premium = max(100.0, 0.015 * estimated_strike_price)  # ~1.5% of spot, min ₹100
+    estimated_capital_required = lot_size * estimated_option_premium
+    
     if initial_capital < estimated_capital_required:
         st.warning(
             f"⚠️ Available capital (₹{initial_capital:,.0f}) is below an estimated requirement "
-            f"of ₹{estimated_capital_required:,.0f}."
+            f"of ₹{estimated_capital_required:,.0f} (based on ₹{estimated_option_premium:.0f} premium × {lot_size} qty)."
+        )
+        st.caption(
+            "💡 Note: This is an estimate. Actual capital required depends on option premium at entry, "
+            "which varies with market conditions and strike selection (ATM/ITM/OTM)."
         )
     
     st.divider()
