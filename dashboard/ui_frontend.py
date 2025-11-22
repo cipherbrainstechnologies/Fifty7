@@ -4106,6 +4106,7 @@ elif tab == "Backtest":
                 "Capital & Risk",
                 "Trailing SL",
                 "Equity Curve",
+                "Temporal Analysis",
                 "Trade Log",
             ]
         )
@@ -4166,37 +4167,322 @@ elif tab == "Backtest":
         with result_tabs[3]:
             st.markdown("### 📈 Equity Curve")
             equity_curve = results.get("equity_curve")
+            equity_curve_dates = results.get("equity_curve_dates", [])
+            
             if equity_curve:
-                equity_df = pd.DataFrame(
-                    {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                # View selector
+                view_mode = st.radio(
+                    "View Mode",
+                    ["By Trade #", "By Date", "By Month"],
+                    horizontal=True,
+                    key="equity_curve_view_mode"
                 )
-                fig = go.Figure(
-                    data=[
-                        go.Scatter(
-                            x=equity_df["Trade #"],
-                            y=equity_df["Capital"],
-                            mode="lines",
-                            line=dict(color="#1f77b4", width=2),
-                            fill="tozeroy",
+                
+                if view_mode == "By Trade #":
+                    # Original view by trade number
+                    equity_df = pd.DataFrame(
+                        {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                    )
+                    fig = go.Figure(
+                        data=[
+                            go.Scatter(
+                                x=equity_df["Trade #"],
+                                y=equity_df["Capital"],
+                                mode="lines",
+                                line=dict(color="#1f77b4", width=2),
+                                fill="tozeroy",
+                                name="Capital",
+                            )
+                        ]
+                    )
+                    fig.update_layout(
+                        title="Equity Curve by Trade Number",
+                        xaxis_title="Trade #",
+                        yaxis_title="Capital (₹)",
+                        height=420,
+                        hovermode="x unified",
+                        margin=dict(l=10, r=10, t=50, b=10),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                elif view_mode == "By Date" and equity_curve_dates:
+                    # Date-based view
+                    equity_df = pd.DataFrame(equity_curve_dates)
+                    equity_df['date'] = pd.to_datetime(equity_df['date'])
+                    equity_df = equity_df.sort_values('date')
+                    
+                    fig = go.Figure(
+                        data=[
+                            go.Scatter(
+                                x=equity_df["date"],
+                                y=equity_df["Capital"],
+                                mode="lines+markers",
+                                line=dict(color="#1f77b4", width=2),
+                                fill="tozeroy",
+                                name="Capital",
+                                hovertemplate="<b>Date:</b> %{x}<br><b>Capital:</b> ₹%{y:,.2f}<extra></extra>",
+                            )
+                        ]
+                    )
+                    fig.update_layout(
+                        title="Equity Curve by Date",
+                        xaxis_title="Date",
+                        yaxis_title="Capital (₹)",
+                        height=420,
+                        hovermode="x unified",
+                        margin=dict(l=10, r=10, t=50, b=10),
+                        xaxis=dict(
+                            type='date',
+                            tickformat='%Y-%m-%d'
                         )
-                    ]
-                )
-                fig.update_layout(
-                    height=420,
-                    hovermode="x unified",
-                    margin=dict(l=10, r=10, t=50, b=10),
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                elif view_mode == "By Month" and equity_curve_dates:
+                    # Month-based aggregated view
+                    equity_df = pd.DataFrame(equity_curve_dates)
+                    equity_df['date'] = pd.to_datetime(equity_df['date'])
+                    equity_df['month'] = equity_df['date'].dt.to_period('M').astype(str)
+                    
+                    # Get last value of each month
+                    monthly_equity = equity_df.groupby('month').last().reset_index()
+                    monthly_equity['month_date'] = pd.to_datetime(monthly_equity['month'])
+                    
+                    fig = go.Figure(
+                        data=[
+                            go.Scatter(
+                                x=monthly_equity["month_date"],
+                                y=monthly_equity["Capital"],
+                                mode="lines+markers",
+                                line=dict(color="#1f77b4", width=2),
+                                fill="tozeroy",
+                                name="Capital",
+                                hovertemplate="<b>Month:</b> %{x}<br><b>Capital:</b> ₹%{y:,.2f}<extra></extra>",
+                            )
+                        ]
+                    )
+                    fig.update_layout(
+                        title="Equity Curve by Month",
+                        xaxis_title="Month",
+                        yaxis_title="Capital (₹)",
+                        height=420,
+                        hovermode="x unified",
+                        margin=dict(l=10, r=10, t=50, b=10),
+                        xaxis=dict(
+                            type='date',
+                            tickformat='%Y-%m'
+                        )
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                else:
+                    st.info("Date-based views require equity_curve_dates data. Showing trade number view.")
+                    equity_df = pd.DataFrame(
+                        {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                    )
+                    fig = go.Figure(
+                        data=[
+                            go.Scatter(
+                                x=equity_df["Trade #"],
+                                y=equity_df["Capital"],
+                                mode="lines",
+                                line=dict(color="#1f77b4", width=2),
+                                fill="tozeroy",
+                            )
+                        ]
+                    )
+                    fig.update_layout(
+                        height=420,
+                        hovermode="x unified",
+                        margin=dict(l=10, r=10, t=50, b=10),
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                # Download button
+                if view_mode == "By Trade #":
+                    download_df = pd.DataFrame(
+                        {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                    )
+                elif view_mode == "By Date" and equity_curve_dates:
+                    download_df = pd.DataFrame(equity_curve_dates)
+                    download_df['date'] = pd.to_datetime(download_df['date'])
+                elif view_mode == "By Month" and equity_curve_dates:
+                    download_df = pd.DataFrame(equity_curve_dates)
+                    download_df['date'] = pd.to_datetime(download_df['date'])
+                    download_df['month'] = download_df['date'].dt.to_period('M').astype(str)
+                    download_df = download_df.groupby('month').last().reset_index()
+                else:
+                    download_df = pd.DataFrame(
+                        {"Trade #": range(len(equity_curve)), "Capital": equity_curve}
+                    )
+                
                 st.download_button(
                     "⬇️ Download Equity Curve CSV",
-                    equity_df.to_csv(index=False).encode("utf-8"),
-                    file_name="backtest_equity_curve.csv",
+                    download_df.to_csv(index=False).encode("utf-8"),
+                    file_name=f"backtest_equity_curve_{view_mode.lower().replace(' ', '_')}.csv",
                     mime="text/csv",
                 )
             else:
                 st.info("No equity curve data returned from this run.")
         
         with result_tabs[4]:
+            # Import analysis functions
+            try:
+                from engine.backtest_analysis import (
+                    analyze_monthly_performance,
+                    analyze_quarterly_performance,
+                    detect_seasonal_patterns,
+                    analyze_by_direction,
+                    calculate_risk_metrics,
+                    analyze_trade_distribution
+                )
+                
+                st.markdown("### 📅 Temporal Analysis")
+                trades = results.get("trades", [])
+                
+                if trades:
+                    # Calculate all analyses
+                    monthly_stats = analyze_monthly_performance(trades)
+                    quarterly_stats = analyze_quarterly_performance(trades)
+                    seasonal_patterns = detect_seasonal_patterns(trades)
+                    direction_analysis = analyze_by_direction(trades)
+                    risk_metrics = calculate_risk_metrics(trades, results.get("equity_curve", []))
+                    trade_dist = analyze_trade_distribution(trades)
+                    
+                    # Seasonal Insights Section
+                    st.markdown("#### Seasonal Insights")
+                    insight_cols = st.columns(3)
+                    
+                    with insight_cols[0]:
+                        if seasonal_patterns.get('best_months'):
+                            st.success(f"**Best Months**\n\n{', '.join(seasonal_patterns['best_months'])}")
+                        else:
+                            st.info("**Best Months**\n\nInsufficient data")
+                    
+                    with insight_cols[1]:
+                        if seasonal_patterns.get('worst_months'):
+                            st.warning(f"**Worst Months**\n\n{', '.join(seasonal_patterns['worst_months'])}")
+                        else:
+                            st.info("**Worst Months**\n\nInsufficient data")
+                    
+                    with insight_cols[2]:
+                        if seasonal_patterns.get('ideal_months'):
+                            st.success(f"**Ideal for Trading**\n\n{', '.join(seasonal_patterns['ideal_months'])}")
+                        else:
+                            st.info("**Ideal Months**\n\nInsufficient data")
+                    
+                    if seasonal_patterns.get('avoid_months'):
+                        st.error(f"⚠️ **Months to Avoid:** {', '.join(seasonal_patterns['avoid_months'])} (Negative returns + low win rate)")
+                    
+                    st.divider()
+                    
+                    # Monthly Performance Table
+                    st.markdown("#### 📊 Monthly Performance")
+                    if monthly_stats:
+                        monthly_data = []
+                        for month_key, stats in sorted(monthly_stats.items()):
+                            monthly_data.append({
+                                'Month': month_key,
+                                'Trades': stats['trades'],
+                                'Win Rate': f"{stats['win_rate']:.1f}%",
+                                'Total P&L': f"₹{stats['total_pnl']:,.2f}",
+                                'Avg P&L': f"₹{stats['avg_pnl']:,.2f}",
+                                'Winning Trades': stats['winning_trades'],
+                                'Losing Trades': stats['losing_trades'],
+                                'Status': '✅ Good' if stats['total_pnl'] > 0 and stats['win_rate'] >= 50 else '⚠️ Poor' if stats['total_pnl'] < 0 else '⚪ Neutral'
+                            })
+                        
+                        monthly_df = pd.DataFrame(monthly_data)
+                        st.dataframe(monthly_df, use_container_width=True, hide_index=True)
+                        
+                        # Export button for monthly data
+                        st.download_button(
+                            "⬇️ Download Monthly Performance CSV",
+                            monthly_df.to_csv(index=False).encode("utf-8"),
+                            file_name="backtest_monthly_performance.csv",
+                            mime="text/csv",
+                        )
+                        
+                        # Monthly P&L Bar Chart
+                        st.markdown("#### 📈 Monthly P&L Chart")
+                        chart_data = pd.DataFrame([
+                            {'Month': k, 'Total P&L': v['total_pnl']} 
+                            for k, v in sorted(monthly_stats.items())
+                        ])
+                        fig = px.bar(
+                            chart_data,
+                            x='Month',
+                            y='Total P&L',
+                            title="Total P&L by Month",
+                            color='Total P&L',
+                            color_continuous_scale=['red', 'green'] if chart_data['Total P&L'].min() < 0 else ['green'],
+                        )
+                        fig.update_layout(height=400)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.info("No monthly data available.")
+                    
+                    st.divider()
+                    
+                    # Quarterly Summary
+                    st.markdown("#### 📅 Quarterly Summary")
+                    if quarterly_stats:
+                        quarter_cols = st.columns(4)
+                        for idx, (quarter, stats) in enumerate(sorted(quarterly_stats.items())[:4]):
+                            with quarter_cols[idx % 4]:
+                                st.metric(
+                                    quarter,
+                                    f"₹{stats['total_pnl']:,.2f}",
+                                    f"{stats['win_rate']:.1f}% WR"
+                                )
+                    else:
+                        st.info("Insufficient data for quarterly analysis.")
+                    
+                    st.divider()
+                    
+                    # Direction Analysis
+                    st.markdown("#### 🎯 Direction Analysis (CE vs PE)")
+                    if direction_analysis.get('CE') or direction_analysis.get('PE'):
+                        dir_cols = st.columns(2)
+                        with dir_cols[0]:
+                            ce_stats = direction_analysis.get('CE', {})
+                            st.metric(
+                                "Call Options (CE)",
+                                f"₹{ce_stats.get('total_pnl', 0):,.2f}",
+                                f"{ce_stats.get('win_rate', 0):.1f}% WR, {ce_stats.get('trades', 0)} trades"
+                            )
+                        with dir_cols[1]:
+                            pe_stats = direction_analysis.get('PE', {})
+                            st.metric(
+                                "Put Options (PE)",
+                                f"₹{pe_stats.get('total_pnl', 0):,.2f}",
+                                f"{pe_stats.get('win_rate', 0):.1f}% WR, {pe_stats.get('trades', 0)} trades"
+                            )
+                    else:
+                        st.info("No direction data available.")
+                    
+                    st.divider()
+                    
+                    # Risk Metrics
+                    st.markdown("#### ⚖️ Risk-Adjusted Metrics")
+                    risk_cols = st.columns(3)
+                    with risk_cols[0]:
+                        st.metric("Sharpe Ratio", f"{risk_metrics.get('sharpe_ratio', 0):.2f}")
+                    with risk_cols[1]:
+                        st.metric("Sortino Ratio", f"{risk_metrics.get('sortino_ratio', 0):.2f}")
+                    with risk_cols[2]:
+                        st.metric("Calmar Ratio", f"{risk_metrics.get('calmar_ratio', 0):.2f}")
+                    
+                    st.caption("Sharpe: Risk-adjusted return | Sortino: Downside risk-adjusted | Calmar: Return/Max Drawdown")
+                    
+                else:
+                    st.info("No trades available for temporal analysis.")
+                    
+            except ImportError as e:
+                st.error(f"Analysis module not available: {e}")
+                st.info("Please ensure engine/backtest_analysis.py exists.")
+        
+        with result_tabs[5]:
             st.markdown("### 📋 Trade Log")
             trades = results.get("trades")
             if trades:

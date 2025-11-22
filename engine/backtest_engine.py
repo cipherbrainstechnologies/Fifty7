@@ -102,6 +102,7 @@ class BacktestEngine:
         self.config = config or {}
         self.trades: List[Dict] = []
         self.equity_curve: List[float] = []
+        self.equity_curve_dates: List[Dict] = []  # Store equity curve with timestamps
         
         # ========== CAPITAL TRACKING (backtest-only analysis) ==========
         self.capital_exhausted = False
@@ -163,6 +164,9 @@ class BacktestEngine:
         """
         self.trades = []
         self.equity_curve = [initial_capital]
+        # Initialize equity curve with dates - use first timestamp from data or current time
+        initial_date = data_1h.index[0] if len(data_1h) > 0 and hasattr(data_1h.index[0], 'to_pydatetime') else pd.Timestamp.now()
+        self.equity_curve_dates = [{'date': initial_date, 'capital': initial_capital, 'trade_num': 0}]
         current_capital = initial_capital
 
         # --- config defaults ---
@@ -531,6 +535,12 @@ class BacktestEngine:
 
             current_capital += pnl
             self.equity_curve.append(current_capital)
+            # Store equity curve with timestamp for temporal analysis
+            self.equity_curve_dates.append({
+                'date': entry_ts,
+                'capital': current_capital,
+                'trade_num': len(self.trades)
+            })
             
             # ========== CHECK IF CAPITAL EXHAUSTED ==========
             if current_capital <= 0 and not self.capital_exhausted:
@@ -1069,7 +1079,7 @@ class BacktestEngine:
                 'avg_win': 0.0, 'avg_loss': 0.0, 'max_drawdown': 0.0,
                 'max_winning_streak': 0, 'max_losing_streak': 0,
                 'initial_capital': initial_capital, 'final_capital': final_capital,
-                'return_pct': 0.0, 'equity_curve': self.equity_curve, 'trades': [],
+                'return_pct': 0.0, 'equity_curve': self.equity_curve, 'equity_curve_dates': self.equity_curve_dates, 'trades': [],
                 # ========== CAPITAL ANALYSIS (backtest-only) ==========
                 'capital_exhausted': False,
                 'capital_exhausted_at_trade': None,
@@ -1123,6 +1133,7 @@ class BacktestEngine:
             'initial_capital': initial_capital, 'final_capital': final_capital,
             'return_pct': ((final_capital - initial_capital) / initial_capital * 100.0) if initial_capital > 0 else 0.0,
             'equity_curve': self.equity_curve,
+            'equity_curve_dates': self.equity_curve_dates,  # Equity curve with timestamps
             'trades': self.trades,
             # ========== CAPITAL ANALYSIS (backtest-only) ==========
             'capital_exhausted': self.capital_exhausted,

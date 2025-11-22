@@ -11,12 +11,12 @@ strategy:
   atm_offset: 0        # Strike offset from ATM (0 = ATM, positive = OTM for calls)
   filters:
     volume_spike: true
-    avoid_open_range: true
+    avoid_open_range: false
   
 # Timeframe Configuration
 timeframes:
   detection: "1h"     # Inside Bar detection timeframe
-  confirmation: "15m" # Breakout confirmation timeframe
+  confirmation: "1h" # Breakout confirmation timeframe
 
 # Broker Configuration (overridden by secrets.toml)
 broker:
