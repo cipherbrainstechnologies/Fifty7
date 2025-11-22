@@ -272,6 +272,28 @@ state_store = get_state_store()
 
 # Initialize state persistence if enabled
 config = load_config()
+
+# Merge config.yaml into config (for timeframes, strategy, etc.)
+try:
+    import yaml as yaml_lib
+    config_yaml_path = 'config/config.yaml'
+    if os.path.exists(config_yaml_path):
+        with open(config_yaml_path, 'r') as f:
+            yaml_config = yaml_lib.safe_load(f)
+            if yaml_config:
+                # Merge yaml config into secrets config (yaml takes precedence for non-secret values)
+                for key, value in yaml_config.items():
+                    if key not in config or not isinstance(config.get(key), dict):
+                        config[key] = value
+                    elif isinstance(value, dict):
+                        # Deep merge for nested dicts
+                        if key not in config:
+                            config[key] = {}
+                        config[key].update(value)
+                logger.debug("Merged config.yaml into config")
+except Exception as e:
+    logger.warning(f"Could not load config.yaml: {e}")
+
 state_config = config.get('state_store', {})
 if state_config.get('enabled', True):
     state_persistence = get_state_persistence(
@@ -949,8 +971,27 @@ def format_ist_timestamp(value) -> str:
 # FIREBASE AUTHENTICATION
 # ===================================================================
 
-# Load config
-config = load_config()
+# Config is already loaded and merged with config.yaml above
+# Only reload if config is not already set (shouldn't happen, but safety check)
+if 'config' not in globals() or not config:
+    config = load_config()
+    # Merge config.yaml if not already merged
+    try:
+        import yaml as yaml_lib
+        config_yaml_path = 'config/config.yaml'
+        if os.path.exists(config_yaml_path):
+            with open(config_yaml_path, 'r') as f:
+                yaml_config = yaml_lib.safe_load(f)
+                if yaml_config:
+                    for key, value in yaml_config.items():
+                        if key not in config or not isinstance(config.get(key), dict):
+                            config[key] = value
+                        elif isinstance(value, dict):
+                            if key not in config:
+                                config[key] = {}
+                            config[key].update(value)
+    except Exception as e:
+        logger.warning(f"Could not load config.yaml: {e}")
 
 # Initialize Firebase Authentication
 firebase_auth = None
@@ -1546,13 +1587,51 @@ st.session_state['_last_ui_render_time'] = current_ui_render_time
 
 if 'selected_main_tab' not in st.session_state:
     st.session_state.selected_main_tab = "Dashboard"
-current_main_tab = st.session_state.selected_main_tab
+if '_previous_tab' not in st.session_state:
+    st.session_state['_previous_tab'] = st.session_state.selected_main_tab
 
+# Sidebar menu with persistent selection (key handles persistence automatically)
+MENU_TABS = [
+    "Dashboard",
+    "Portfolio",
+    "P&L",
+    "Insights",
+    "Orders & Trades",
+    "Trade Journal",
+    "Backtest",
+    "Settings",
+]
+default_tab = st.session_state.get("selected_main_tab", MENU_TABS[0])
+if default_tab not in MENU_TABS:
+    default_tab = MENU_TABS[0]
+tab = st.sidebar.radio(
+    "📋 Menu",
+    MENU_TABS,
+    index=MENU_TABS.index(default_tab),
+    key="selected_main_tab",
+)
+current_main_tab = tab
+
+# Only auto-refresh when on Dashboard tab to prevent interrupting user actions on other tabs
 global_refresh_interval = st.session_state.get(
     'global_refresh_interval_sec',
     st.session_state.auto_refresh_interval_sec
 )
-if st.session_state.get('auto_refresh_enabled', True):
+# Track last user interaction to prevent auto-refresh during interactions
+if '_last_user_interaction' not in st.session_state:
+    st.session_state['_last_user_interaction'] = 0
+
+# Update interaction timestamp when tab changes (user actively selected a different tab)
+if st.session_state.get('_previous_tab') != current_main_tab:
+    st.session_state['_last_user_interaction'] = time.time()
+    st.session_state['_previous_tab'] = current_main_tab
+
+# Only auto-refresh if on Dashboard tab AND auto-refresh is enabled AND no recent user interaction
+# Check if user interacted in last 3 seconds (prevent refresh during dropdown/button clicks)
+time_since_last_interaction = time.time() - st.session_state.get('_last_user_interaction', 0)
+if (st.session_state.get('auto_refresh_enabled', True) and 
+    current_main_tab == "Dashboard" and
+    time_since_last_interaction > 3.0):  # Wait 3 seconds after user interaction
     now = time.time()
     if now - st.session_state['_last_ui_refresh_trigger'] >= global_refresh_interval:
         st.session_state['_last_ui_refresh_trigger'] = now
@@ -1589,9 +1668,14 @@ def _trigger_market_data_refresh(reason: str) -> bool:
         st.session_state.last_refresh_error = str(err)
         return False
 
-# Auto-refresh dashboard when algo is running
+# Auto-refresh dashboard when algo is running (ONLY on Dashboard tab)
+# Note: Tab selection is now processed above, so we can check current_main_tab
+# Also check if user recently interacted to prevent interrupting actions
+time_since_last_interaction = time.time() - st.session_state.get('_last_user_interaction', 0)
 auto_refresh_active = (
     st.session_state.auto_refresh_enabled
+    and current_main_tab == "Dashboard"  # Only auto-refresh on Dashboard tab
+    and time_since_last_interaction > 3.0  # Wait 3 seconds after user interaction
     and (
         st.session_state.get('live_runner') is not None
         or st.session_state.get('market_data_provider') is not None
@@ -1723,27 +1807,8 @@ def start_background_refresh_if_needed(interval_seconds=10):
                     # Thread completed, mark as not in progress
                     st.session_state.refresh_in_progress = False
 
-# Sidebar menu with persistent selection (key handles persistence automatically)
-MENU_TABS = [
-    "Dashboard",
-    "Portfolio",
-    "P&L",
-    "Insights",
-    "Orders & Trades",
-    "Trade Journal",
-    "Backtest",
-    "Settings",
-]
-default_tab = st.session_state.get("selected_main_tab", MENU_TABS[0])
-if default_tab not in MENU_TABS:
-    default_tab = MENU_TABS[0]
-tab = st.sidebar.radio(
-    "📋 Menu",
-    MENU_TABS,
-    index=MENU_TABS.index(default_tab),
-    key="selected_main_tab",
-)
-current_main_tab = tab
+# Tab selection is already processed earlier (before auto-refresh checks)
+# This ensures tab state is preserved when auto-refresh triggers
 
 # Logout button - DISABLED (authentication bypassed)
 # authenticator.logout("Logout", "sidebar")
@@ -3138,8 +3203,9 @@ if tab == "Dashboard":
     if st.session_state.background_refresh_enabled:
         start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)
 
-    # Auto-refresh fallback (blocking rerun)
-    if st.session_state.auto_refresh_enabled:
+    # Auto-refresh fallback (blocking rerun) - Only on Dashboard tab
+    # Note: This is already inside Dashboard tab block, so safe to check
+    if st.session_state.auto_refresh_enabled and current_main_tab == "Dashboard":
         if st.session_state.last_refresh_time is not None:
             time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
             if time_since_last > 15:
