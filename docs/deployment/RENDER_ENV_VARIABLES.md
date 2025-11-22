@@ -69,7 +69,34 @@ STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 - ❌ `STREAMLIT_SERVER_PORT` - Already set in start command (`--server.port=$PORT`)
 - ❌ `STREAMLIT_SERVER_ADDRESS` - Already set in start command (`--server.address=0.0.0.0`)
 
-#### Option C: With Firebase Auth (If Using Firebase)
+#### Option C: With SmartAPI Multiple Apps (Recommended for Production)
+
+If you have separate SmartAPI apps for trading, historical data, and websocket (recommended):
+
+```bash
+# Trading App (usually same as BROKER_API_KEY)
+SMARTAPI_TRADING_API_KEY=sz5neY7b
+SMARTAPI_TRADING_API_SECRET=8a5bd331-9445-4d0e-a975-24ef7c73162a
+
+# Historical App (for backtesting - separate quota)
+SMARTAPI_HISTORICAL_API_KEY=oV0N6xt7
+SMARTAPI_HISTORICAL_API_SECRET=4ab84310-301a-4114-be83-4b171e322e49
+
+# Publisher App (for websocket/real-time ticks)
+SMARTAPI_PUBLISHER_API_KEY=MIavKEDZ
+SMARTAPI_PUBLISHER_API_SECRET=899402fe-2641-4ffa-9683-545e60329642
+```
+
+**Benefits:**
+- Separate API quotas (historical data doesn't consume trading quota)
+- Better rate limiting
+- Improved reliability
+
+**Note:** These are optional. System will work with just broker credentials, but separate apps provide better quota management.
+
+**For detailed information, see:** [`SMARTAPI_APPS_CONFIGURATION.md`](SMARTAPI_APPS_CONFIGURATION.md)
+
+#### Option D: With Firebase Auth (If Using Firebase)
 
 If you're using Firebase authentication, also add:
 
@@ -189,6 +216,7 @@ STREAMLIT_BROWSER_GATHER_USAGE_STATS = false
 - **Complete Hosting Guide**: [`HOSTING_GUIDE.md`](HOSTING_GUIDE.md)
 - **Quick Reference**: [`QUICK_REFERENCE.md`](QUICK_REFERENCE.md)
 - **Streamlit Cloud Setup**: [`STREAMLIT_CLOUD_SETUP.md`](STREAMLIT_CLOUD_SETUP.md)
+- **SmartAPI Multiple Apps**: [`SMARTAPI_APPS_CONFIGURATION.md`](SMARTAPI_APPS_CONFIGURATION.md)
 
 ---
 
