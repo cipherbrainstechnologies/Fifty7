@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 # Ensure we're in the project root directory
-script_dir = Path(__file__).parent.absolute()
+script_dir = Path(__file__).parent.parent.parent.absolute()
 os.chdir(script_dir)
 
 # Fix Windows console encoding for Unicode characters
