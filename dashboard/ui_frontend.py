@@ -214,6 +214,11 @@ from engine.live_runner import LiveStrategyRunner
 from engine.firebase_auth import FirebaseAuth
 from engine.tenant_context import resolve_tenant
 from engine.symbol_utils import canonicalize_tradingsymbol
+from engine.event_bus import get_event_bus
+from engine.state_store import get_state_store
+from engine.state_persistence import get_state_persistence
+from engine.websocket_server import start_websocket_server, stop_websocket_server
+from engine.websocket_client import get_websocket_client
 from dashboard.auth_page import (
     render_login_page,
     load_persisted_firebase_session,
@@ -228,6 +233,132 @@ try:
     logger.info("Database initialized successfully")
 except Exception as e:
     logger.warning(f"Database initialization failed (non-critical): {e}")
+
+# Initialize Event Bus and State Store
+event_bus = get_event_bus()
+state_store = get_state_store()
+
+# Initialize state persistence if enabled
+config = load_config()
+state_config = config.get('state_store', {})
+if state_config.get('enabled', True):
+    state_persistence = get_state_persistence(
+        snapshot_dir=state_config.get('snapshot_dir', 'data/state'),
+        snapshot_interval_minutes=state_config.get('snapshot_interval_minutes', 5)
+    )
+    
+    # Restore state on startup if enabled
+    if state_config.get('restore_on_startup', True):
+        try:
+            if state_config.get('replay_events_on_restore', True):
+                event_log_file = config.get('event_bus', {}).get('event_log_file', 'logs/events.log')
+                state_persistence.restore_with_replay(event_log_file=event_log_file)
+            else:
+                state_persistence.restore_from_snapshot()
+            logger.info("State restored from snapshot")
+        except Exception as e:
+            logger.warning(f"State restore failed (non-critical): {e}")
+
+# Enable event persistence if configured
+event_bus_config = config.get('event_bus', {})
+if event_bus_config.get('enabled', True) and event_bus_config.get('persist_events', True):
+    event_bus.enable_persistence(event_bus_config.get('event_log_file', 'logs/events.log'))
+
+# Initialize periodic state snapshots
+if state_config.get('enabled', True) and 'state_snapshot_thread' not in st.session_state:
+    def periodic_snapshot():
+        """Background thread for periodic state snapshots."""
+        import time
+        interval = state_config.get('snapshot_interval_minutes', 5) * 60
+        while True:
+            time.sleep(interval)
+            try:
+                state_persistence.save_snapshot()
+            except Exception as e:
+                logger.warning(f"Periodic snapshot failed: {e}")
+    
+    snapshot_thread = threading.Thread(target=periodic_snapshot, daemon=True)
+    snapshot_thread.start()
+    st.session_state.state_snapshot_thread = snapshot_thread
+    logger.info("Periodic state snapshot thread started")
+
+# Initialize WebSocket server and client
+websocket_config = config.get('websocket', {})
+if websocket_config.get('enabled', True):
+    # Start WebSocket server
+    if 'websocket_server_started' not in st.session_state:
+        try:
+            ws_host = websocket_config.get('host', '127.0.0.1')
+            ws_port = websocket_config.get('port', 8765)
+            start_websocket_server(host=ws_host, port=ws_port)
+            st.session_state.websocket_server_started = True
+            logger.info(f"WebSocket server started on ws://{ws_host}:{ws_port}/ws")
+        except Exception as e:
+            logger.warning(f"Failed to start WebSocket server: {e}")
+    
+    # Initialize WebSocket client
+    if 'websocket_client_initialized' not in st.session_state:
+        try:
+            ws_uri = websocket_config.get('uri', f"ws://127.0.0.1:{websocket_config.get('port', 8765)}/ws")
+            ws_client = get_websocket_client(uri=ws_uri)
+            
+            # Subscribe to WebSocket messages
+            def on_websocket_event(message):
+                """Handle event messages from WebSocket."""
+                event_type = message.get('event_type')
+                data = message.get('data', {})
+                
+                # Update session state to trigger UI refresh
+                if 'websocket_events' not in st.session_state:
+                    st.session_state.websocket_events = []
+                st.session_state.websocket_events.append({
+                    'type': event_type,
+                    'data': data,
+                    'timestamp': message.get('timestamp'),
+                })
+                # Keep only recent events
+                if len(st.session_state.websocket_events) > 100:
+                    st.session_state.websocket_events.pop(0)
+                
+                # Trigger UI update for critical events
+                critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached']
+                if event_type in critical_events:
+                    st.session_state.last_critical_event = datetime.now()
+            
+            def on_state_update(message):
+                """Handle state update messages from WebSocket."""
+                path = message.get('path')
+                new_value = message.get('new_value')
+                
+                # Update session state
+                if 'websocket_state_updates' not in st.session_state:
+                    st.session_state.websocket_state_updates = {}
+                st.session_state.websocket_state_updates[path] = {
+                    'value': new_value,
+                    'timestamp': message.get('timestamp'),
+                }
+            
+            def on_state_snapshot(message):
+                """Handle state snapshot from WebSocket."""
+                snapshot = message.get('data', {})
+                if 'state' in snapshot:
+                    # Store snapshot in session state
+                    st.session_state.websocket_state_snapshot = snapshot
+                    logger.info("Received state snapshot from WebSocket server")
+            
+            ws_client.subscribe('event', on_websocket_event)
+            ws_client.subscribe('state_update', on_state_update)
+            ws_client.subscribe('state_snapshot', on_state_snapshot)
+            
+            # Start client
+            if ws_client.start():
+                st.session_state.websocket_client_initialized = True
+                st.session_state.websocket_client = ws_client
+                logger.info("WebSocket client initialized and connected")
+            else:
+                logger.warning("Failed to start WebSocket client")
+        except Exception as e:
+            logger.warning(f"Failed to initialize WebSocket client: {e}")
 
 # Cloud data sources
 try:
@@ -1059,6 +1190,43 @@ if firebase_auth:
         name = user_email.split('@')[0] if '@' in user_email else user_email
         username = user_email
         auth_status = True
+        
+        # Initialize event subscriptions for UI updates
+        if 'event_subscriptions_initialized' not in st.session_state:
+            def on_trade_executed(event):
+                """Handle trade_executed event."""
+                data = event.get('data', {})
+                st.session_state.setdefault('recent_trades', []).append(data)
+                # Trigger UI refresh
+                if 'last_event_time' not in st.session_state:
+                    st.session_state.last_event_time = datetime.now()
+                else:
+                    st.session_state.last_event_time = datetime.now()
+            
+            def on_position_updated(event):
+                """Handle position_updated event."""
+                data = event.get('data', {})
+                # Update active P&L in session state
+                if 'active_pnl_updates' not in st.session_state:
+                    st.session_state.active_pnl_updates = []
+                st.session_state.active_pnl_updates.append(data)
+                st.session_state.last_event_time = datetime.now()
+            
+            def on_signal_detected(event):
+                """Handle signal_detected event."""
+                data = event.get('data', {})
+                st.session_state.setdefault('recent_signals', []).append(data)
+                st.session_state.last_event_time = datetime.now()
+            
+            # Subscribe to events
+            event_bus.subscribe('trade_executed', on_trade_executed)
+            event_bus.subscribe('position_updated', on_position_updated)
+            event_bus.subscribe('signal_detected', on_signal_detected)
+            event_bus.subscribe('position_closed', on_position_updated)
+            event_bus.subscribe('daily_loss_breached', lambda e: st.session_state.update({'daily_loss_breached': True}))
+            
+            st.session_state.event_subscriptions_initialized = True
+            logger.info("Event subscriptions initialized")
         
         # Add logout button in sidebar
         with st.sidebar:

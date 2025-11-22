@@ -61,6 +61,33 @@ market_data:
   data_window_hours_15m: 12  # Window for 15-minute candles
   use_direct_intervals: true  # Prefer direct interval fetching (ONE_HOUR, FIFTEEN_MINUTE) over resampling
   api_delay_minutes: 5  # Request data up to N minutes ago to avoid API delays
+  pnl_refresh_seconds: 5  # Active P&L refresh interval
+  pnl_quote_stale_seconds: 5  # Quote staleness threshold
+
+# Event Bus Configuration
+event_bus:
+  enabled: true
+  persist_events: true  # Persist events to log file for audit trail
+  event_log_file: "logs/events.log"
+  max_history: 1000  # Maximum events to keep in memory
+
+# State Store Configuration
+state_store:
+  enabled: true
+  snapshot_dir: "data/state"
+  snapshot_interval_minutes: 5  # Interval between state snapshots
+  max_snapshots: 100  # Maximum number of snapshots to keep
+  restore_on_startup: true  # Restore state from snapshot on startup
+  replay_events_on_restore: true  # Replay events since last snapshot
+
+# WebSocket Configuration
+websocket:
+  enabled: true  # Enable WebSocket server for real-time push updates
+  host: "127.0.0.1"  # WebSocket server host
+  port: 8765  # WebSocket server port
+  uri: "ws://127.0.0.1:8765/ws"  # WebSocket client URI
+  reconnect_interval: 5  # Seconds to wait before reconnecting
+  ping_interval: 30  # Seconds between ping messages
 
 # Backtesting Data Sources Configuration
 backtesting:

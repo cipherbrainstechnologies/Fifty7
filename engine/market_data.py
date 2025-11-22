@@ -10,6 +10,9 @@ import time
 from logzero import logger
 import pytz
 import pyotp
+from .state_store import get_state_store
+from .event_bus import get_event_bus
+from .state_integration import store_dataframe_state, restore_dataframe_state, emit_state_change_event
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -80,7 +83,61 @@ class MarketDataProvider:
         self._last_request_time = 0
         self._min_request_interval = 1.0  # 1 second between requests
         
+        # State Store integration
+        self.state_store = get_state_store()
+        self.event_bus = get_event_bus()
+        
+        # Restore market data state if available
+        self._restore_market_data_state()
+        
         logger.info("MarketDataProvider initialized")
+    
+    def _restore_market_data_state(self):
+        """Restore market data state from StateStore."""
+        try:
+            restored_1h = restore_dataframe_state('market_data.data_1h')
+            restored_15m = restore_dataframe_state('market_data.data_15m')
+            
+            if not restored_1h.empty:
+                self._data_1h = restored_1h
+                logger.info(f"Restored 1H data: {len(restored_1h)} candles")
+            
+            if not restored_15m.empty:
+                self._data_15m = restored_15m
+                logger.info(f"Restored 15m data: {len(restored_15m)} candles")
+        except Exception as e:
+            logger.warning(f"Failed to restore market data state: {e}")
+    
+    def _update_market_data_state(self):
+        """Update market data state in StateStore."""
+        try:
+            # Store current dataframes
+            store_dataframe_state(
+                'market_data.data_1h',
+                self._data_1h,
+                metadata={'last_updated': datetime.utcnow().isoformat(), 'row_count': len(self._data_1h)}
+            )
+            store_dataframe_state(
+                'market_data.data_15m',
+                self._data_15m,
+                metadata={'last_updated': datetime.utcnow().isoformat(), 'row_count': len(self._data_15m)}
+            )
+            
+            # Update last fetch metadata
+            self.state_store.update_state(
+                'market_data.last_fetch_meta',
+                self._last_fetch_meta,
+                metadata={'last_updated': datetime.utcnow().isoformat()}
+            )
+            
+            # Emit market data updated event
+            self.event_bus.publish('market_data_updated', {
+                '1h_candles': len(self._data_1h),
+                '15m_candles': len(self._data_15m),
+                'timestamp': datetime.utcnow().isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to update market data state: {e}")
     
     def _generate_historical_session(self) -> bool:
         """
@@ -1070,6 +1127,7 @@ class MarketDataProvider:
 
             if hist_data_direct is not None and not hist_data_direct.empty:
                 self._data_1h = hist_data_direct
+                self._update_market_data_state()
                 # Trim to requested window (keep most recent)
                 if len(self._data_1h) > window_hours:
                     self._data_1h = self._data_1h.tail(window_hours).copy()
@@ -1336,6 +1394,7 @@ class MarketDataProvider:
                     self._data_15m = pd.concat([self._data_15m, new_row], ignore_index=True)
                     self._data_15m = self._data_15m.drop_duplicates(subset=['Date'], keep='last')
                     self._data_15m = self._data_15m.sort_values('Date').reset_index(drop=True)
+                    self._update_market_data_state()
         
         # Get all candles and filter to complete ones only (unless include_latest=True for live mode)
         max_candles = (window_hours * 60) // 15
@@ -1414,6 +1473,7 @@ class MarketDataProvider:
                 # Re-aggregate from historical data
                 self._data_15m = self._aggregate_to_15m(hist_data)
                 self._data_1h = self._aggregate_to_1h(hist_data)
+                self._update_market_data_state()
                 
                 # Note: Historical data aggregation may include the current incomplete candle
                 # This will be filtered out when get_15m_data() or get_1h_data() is called
@@ -1432,6 +1492,7 @@ class MarketDataProvider:
                     }])
                     self._data_15m = pd.concat([self._data_15m, new_row_15m], ignore_index=True)
                     self._data_15m = self._data_15m.drop_duplicates(subset=['Date'], keep='last')
+                    self._update_market_data_state()
                 else:
                     # Update existing incomplete candle
                     last_idx = len(self._data_15m) - 1
@@ -1439,6 +1500,7 @@ class MarketDataProvider:
                     self._data_15m.loc[last_idx, 'Low'] = min(self._data_15m.loc[last_idx, 'Low'], ohlc.get('low', 0))
                     self._data_15m.loc[last_idx, 'Close'] = ohlc.get('ltp', ohlc.get('close', 0))
                     self._data_15m.loc[last_idx, 'Volume'] = ohlc.get('tradeVolume', 0)
+                    self._update_market_data_state()
                 
                 last_1h_date = None
                 if not self._data_1h.empty:
@@ -1462,6 +1524,7 @@ class MarketDataProvider:
                     }])
                     self._data_1h = pd.concat([self._data_1h, new_row_1h], ignore_index=True)
                     self._data_1h = self._data_1h.drop_duplicates(subset=['Date'], keep='last')
+                    self._update_market_data_state()
                 else:
                     # Update existing incomplete candle
                     last_idx = len(self._data_1h) - 1
@@ -1469,6 +1532,7 @@ class MarketDataProvider:
                     self._data_1h.loc[last_idx, 'Low'] = min(self._data_1h.loc[last_idx, 'Low'], ohlc.get('low', 0))
                     self._data_1h.loc[last_idx, 'Close'] = ohlc.get('ltp', ohlc.get('close', 0))
                     self._data_1h.loc[last_idx, 'Volume'] = ohlc.get('tradeVolume', 0)
+                    self._update_market_data_state()
             
             logger.info("Market data refreshed successfully")
     

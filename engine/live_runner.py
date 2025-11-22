@@ -20,6 +20,8 @@ from engine.broker_connector import BrokerInterface
 from engine.trade_logger import TradeLogger
 from engine.position_monitor import PositionMonitor, PositionRules
 from engine.symbol_utils import canonicalize_tradingsymbol, tradingsymbols_equal
+from engine.event_bus import get_event_bus
+from engine.state_store import get_state_store
 
 
 class LiveStrategyRunner:
@@ -56,6 +58,10 @@ class LiveStrategyRunner:
         self.org_id, self.user_id = resolve_tenant(config)
         self.strategy_id = config.get('strategy', {}).get('type', 'inside_bar')
         self.broker_name = config.get('broker', {}).get('type', 'angel')
+        
+        # Initialize Event Bus and State Store
+        self.event_bus = get_event_bus()
+        self.state_store = get_state_store()
         broker_cfg = config.get('broker', {})
         self.enable_bracket_orders = broker_cfg.get('enable_bracket_orders', False)
         self.bracket_variety = broker_cfg.get('bracket_variety', 'ROBO')
@@ -108,8 +114,18 @@ class LiveStrategyRunner:
         
         # FIX for Issue #8: Daily loss limit
         self.daily_loss_limit_pct = config.get('risk_management', {}).get('daily_loss_limit_pct', 5.0)  # 5% default
-        self.daily_pnl = 0.0  # Track daily P&L
-        self.daily_pnl_date = datetime.now().date()  # Track which day we're on
+        
+        # Restore daily P&L from state store if available
+        stored_daily_pnl = self.state_store.get_state('trading.daily_pnl')
+        stored_daily_pnl_date = self.state_store.get_state('trading.daily_pnl_date')
+        today = datetime.now().date()
+        
+        if stored_daily_pnl_date and stored_daily_pnl_date == str(today):
+            self.daily_pnl = stored_daily_pnl or 0.0
+            self.daily_pnl_date = today
+        else:
+            self.daily_pnl = 0.0
+            self.daily_pnl_date = today
         self._orders_to_signals: Dict[str, Dict] = {}
         self._bootstrap_open_trades()
         
@@ -153,6 +169,18 @@ class LiveStrategyRunner:
             self._thread.start()
             self._start_pnl_tracker()
             
+            # Emit runner_started event
+            self.event_bus.publish('runner_started', {
+                'timestamp': datetime.now().isoformat(),
+            })
+            
+            # Update state store
+            self.state_store.update_state(
+                'trading.runner_status',
+                'running',
+                metadata={'source': 'live_runner', 'action': 'started'}
+            )
+            
             logger.info("LiveStrategyRunner started")
             return True
             
@@ -180,6 +208,18 @@ class LiveStrategyRunner:
             # Wait for thread to finish (with timeout)
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=5.0)
+            
+            # Emit runner_stopped event
+            self.event_bus.publish('runner_stopped', {
+                'timestamp': datetime.now().isoformat(),
+            })
+            
+            # Update state store
+            self.state_store.update_state(
+                'trading.runner_status',
+                'stopped',
+                metadata={'source': 'live_runner', 'action': 'stopped'}
+            )
             
             logger.info("LiveStrategyRunner stopped")
             return True
@@ -613,6 +653,18 @@ class LiveStrategyRunner:
             logger.info(f"New trading day - resetting daily P&L (previous: ₹{self.daily_pnl:.2f})")
             self.daily_pnl = 0.0
             self.daily_pnl_date = today
+            
+            # Update state store
+            self.state_store.update_state(
+                'trading.daily_pnl',
+                0.0,
+                metadata={'source': 'live_runner', 'date': str(today), 'action': 'reset'}
+            )
+            self.state_store.update_state(
+                'trading.daily_pnl_date',
+                str(today),
+                metadata={'source': 'live_runner'}
+            )
         
         # Get initial capital (from config or use default)
         initial_capital = self.config.get('initial_capital', 100000.0)
@@ -637,6 +689,18 @@ class LiveStrategyRunner:
         """
         self.daily_pnl += pnl
         logger.info(f"Daily P&L updated: ₹{self.daily_pnl:,.2f}")
+        
+        # Update state store
+        self.state_store.update_state(
+            'trading.daily_pnl',
+            self.daily_pnl,
+            metadata={'source': 'live_runner', 'date': str(self.daily_pnl_date)}
+        )
+        self.state_store.update_state(
+            'trading.daily_pnl_date',
+            str(self.daily_pnl_date),
+            metadata={'source': 'live_runner'}
+        )
     
     def update_strategy_config(
         self,
@@ -940,6 +1004,19 @@ class LiveStrategyRunner:
                 self.last_signal_time = datetime.now()
                 logger.info(f"Signal detected: {signal}")
                 
+                # Emit signal_detected event
+                self.event_bus.publish('signal_detected', {
+                    'signal': signal,
+                    'timestamp': self.last_signal_time.isoformat(),
+                })
+                
+                # Update state store
+                self.state_store.update_state(
+                    'trading.last_signal',
+                    signal,
+                    metadata={'source': 'live_runner', 'action': 'signal_detected'}
+                )
+                
                 # FIX for Issue #4: Check for duplicate signals
                 if self._check_signal_duplicate(signal):
                     logger.warning("Duplicate signal detected - skipping execution")
@@ -948,6 +1025,21 @@ class LiveStrategyRunner:
                 # FIX for Issue #8: Check daily loss limit
                 if not self._check_daily_loss_limit():
                     logger.error("Daily loss limit hit - stopping trading for today")
+                    
+                    # Emit daily_loss_breached event
+                    self.event_bus.publish('daily_loss_breached', {
+                        'daily_pnl': self.daily_pnl,
+                        'daily_loss_limit_pct': self.daily_loss_limit_pct,
+                        'timestamp': datetime.now().isoformat(),
+                    })
+                    
+                    # Update state store
+                    self.state_store.update_state(
+                        'trading.daily_loss_breached',
+                        True,
+                        metadata={'source': 'live_runner', 'daily_pnl': self.daily_pnl}
+                    )
+                    
                     # Optionally stop the runner
                     # self.stop()
                     return
@@ -1106,6 +1198,38 @@ class LiveStrategyRunner:
             
             order_id = order_result.get('order_id')
             logger.info(f"Order placed successfully: {order_id}")
+            
+            # Emit trade_executed event
+            self.event_bus.publish('trade_executed', {
+                'order_id': order_id,
+                'symbol': symbol,
+                'tradingsymbol': tradingsymbol,
+                'strike': strike,
+                'direction': direction,
+                'entry_price': entry_price,
+                'quantity_lots': self.order_lots,
+                'quantity_units': self.order_lots * self.lot_size,
+                'sl': signal.get('sl'),
+                'tp': signal.get('tp'),
+                'signal': signal,
+            })
+            
+            # Update state store
+            self.state_store.update_state(
+                f'trading.positions.{order_id}',
+                {
+                    'order_id': order_id,
+                    'symbol': symbol,
+                    'tradingsymbol': tradingsymbol,
+                    'strike': strike,
+                    'direction': direction,
+                    'entry_price': entry_price,
+                    'quantity_lots': self.order_lots,
+                    'status': 'open',
+                    'entry_time': datetime.now().isoformat(),
+                },
+                metadata={'source': 'live_runner', 'action': 'trade_executed'}
+            )
 
             order_data = order_result.get('order_data') or {}
             tradingsymbol = (
@@ -1216,6 +1340,22 @@ class LiveStrategyRunner:
                 )
                 if monitor.start():
                     self.active_monitors.append(monitor)
+                    
+                    # Update state store with active monitor
+                    self.state_store.update_state(
+                        f'trading.active_monitors.{order_id}',
+                        {
+                            'order_id': order_id,
+                            'symbol': symbol,
+                            'strike': strike,
+                            'direction': direction,
+                            'entry_price': entry_price,
+                            'status': 'active',
+                            'started_at': datetime.now().isoformat(),
+                        },
+                        metadata={'source': 'live_runner', 'action': 'monitor_started'}
+                    )
+                    
                     logger.info(f"Position monitor started for order {order_id}")
                 else:
                     logger.error(f"Failed to start PositionMonitor for order {order_id}")
@@ -1288,6 +1428,9 @@ class LiveStrategyRunner:
             return
 
         logger.info(f"Position update received: {update}")
+        
+        # Emit position_updated event
+        self.event_bus.publish('position_updated', update)
 
         pnl_value = update.get('pnl')
         if pnl_value is not None:
@@ -1303,6 +1446,22 @@ class LiveStrategyRunner:
         reason = update.get('reason') or update.get('event') or 'exit'
 
         if remaining_lots == 0:
+            # Emit position_closed event
+            self.event_bus.publish('position_closed', {
+                'order_id': order_id,
+                'exit_price': exit_price,
+                'total_pnl': total_pnl,
+                'reason': reason,
+                'update': update,
+            })
+            
+            # Update state store
+            self.state_store.update_state(
+                f'trading.positions.{order_id}.status',
+                'closed',
+                metadata={'source': 'live_runner', 'action': 'position_closed', 'exit_price': exit_price}
+            )
+            
             # Update trade journal with exit info
             tracked_signal = self._orders_to_signals.get(order_id)
             executed_lots = self.order_lots
@@ -1351,6 +1510,9 @@ class LiveStrategyRunner:
                     self.active_monitors = [
                         m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
                     ]
+                    # Update state store
+                    self.state_store.delete_state(f'trading.active_monitors.{order_id}')
+                    self._update_active_monitors_state()
 
             # Re-evaluate daily loss limit post exit
             if not self._check_daily_loss_limit():
@@ -1720,10 +1882,16 @@ class LiveStrategyRunner:
                 monitor.stop()
             except Exception as stop_error:
                 logger.exception(f"Error stopping monitor for manual exit {order_id}: {stop_error}")
-            finally:
-                self.active_monitors = [
-                    m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
-                ]
+                finally:
+                    self.active_monitors = [
+                        m for m in self.active_monitors if getattr(m, 'order_id', None) != order_id
+                    ]
+                    
+                    # Update state store - remove monitor
+                    self.state_store.delete_state(f'trading.active_monitors.{order_id}')
+                    
+                    # Update active monitors list in state store
+                    self._update_active_monitors_state()
 
         logger.info(
             f"Manual exit reconciled for order {order_id}: closed at ₹{exit_price:.2f}, "
@@ -1812,6 +1980,25 @@ class LiveStrategyRunner:
             except Exception:
                 continue
         return None
+    
+    def _update_active_monitors_state(self):
+        """Update active monitors state in StateStore."""
+        monitors_state = {
+            m.order_id: {
+                'order_id': m.order_id,
+                'symbol': getattr(m, 'symbol', ''),
+                'strike': getattr(m, 'strike', 0),
+                'direction': getattr(m, 'direction', ''),
+                'status': 'active' if not getattr(m, 'closed', False) else 'closed',
+            }
+            for m in self.active_monitors
+            if hasattr(m, 'order_id') and m.order_id
+        }
+        self.state_store.update_state(
+            'trading.active_monitors',
+            monitors_state,
+            metadata={'source': 'live_runner', 'count': len(self.active_monitors)}
+        )
     
     def get_status(self) -> Dict:
         """

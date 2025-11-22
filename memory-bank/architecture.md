@@ -12,6 +12,9 @@ The NIFTY Options Algo Trading System is a secure, cloud-ready algorithmic tradi
 - **trade_logger.py**: Comprehensive trade logging to CSV format
 - **broker_connector.py**: Abstract broker interface supporting multiple broker APIs (Angel One, Fyers)
 - **backtest_engine.py**: Historical backtesting framework with trade simulation, now supporting configurable strategy timeframes (1H or 4H) via resampled spot data
+- **event_bus.py**: Centralized event bus for decoupled communication (publish-subscribe pattern)
+- **state_store.py**: Centralized state management (single source of truth)
+- **state_persistence.py**: State snapshots and event log replay for crash recovery
 
 ### 2. Dashboard (`dashboard/`)
 - **ui_frontend.py**: Main Streamlit application with authentication and a backtesting timeframe selector (1H vs 4H) that pipes directly into the backtest engine
@@ -67,6 +70,36 @@ Reference: `docs/api/API-Documentation-File.md`
 4. **Order Execution**: Broker API integration places orders with SL/TP
 5. **Trade Logging**: All trades logged with entry/exit, PnL, and reasoning
 6. **Dashboard Monitoring**: Real-time dashboard provides control and visibility
+
+## Event-Driven Architecture
+
+The system uses an event-driven architecture for decoupled communication:
+
+- **Event Bus** (`engine/event_bus.py`): Centralized publish-subscribe system for events (trade_executed, position_updated, signal_detected, etc.)
+- **State Store** (`engine/state_store.py`): Single source of truth for application state with change notifications
+- **State Persistence** (`engine/state_persistence.py`): Periodic snapshots + event log replay for crash recovery
+- **Event Flow**: Components emit events → Event Bus distributes → Subscribers update UI/State
+
+### Key Events:
+- `trade_executed`: When a trade is placed
+- `position_updated`: When position P&L changes
+- `position_closed`: When a position is closed
+- `signal_detected`: When a trading signal is generated
+- `daily_loss_breached`: When daily loss limit is hit
+- `runner_started`/`runner_stopped`: Runner lifecycle events
+
+See `memory-bank/patterns/event_driven_architecture.md` for detailed documentation.
+
+### WebSocket Bridge
+
+The system includes a WebSocket bridge for true real-time push updates:
+
+- **WebSocket Server** (`engine/websocket_server.py`): FastAPI-based server for broadcasting events
+- **WebSocket Client** (`engine/websocket_client.py`): Streamlit client for receiving updates
+- **Real-time Push**: Critical updates (trade_executed, position_closed) pushed immediately
+- **State Synchronization**: State changes broadcast to all connected clients
+
+See `memory-bank/WEBSOCKET_IMPLEMENTATION.md` for complete documentation.
 
 ## Technology Stack
 

@@ -10,6 +10,7 @@ from datetime import datetime
 from logzero import logger
 
 from .symbol_utils import canonicalize_tradingsymbol
+from .event_bus import get_event_bus
 
 
 @dataclass
@@ -69,6 +70,7 @@ class PositionMonitor:
         self.bracket_stop_points = bracket_stop_points
         self.bracket_target_points = bracket_target_points
         self.ltp_provider = ltp_provider
+        self.event_bus = get_event_bus()
 
         # Derived levels
         self.stop_loss = self.entry_price - self.rules.sl_points
@@ -250,6 +252,9 @@ class PositionMonitor:
                 "remaining_qty_units": self.remaining_qty * self.lot_size,
                 "timestamp": datetime.now().isoformat(),
             }
+
+            # Emit position event via Event Bus
+            self.event_bus.publish('position_event', update_payload)
 
             if self.pnl_callback:
                 try:

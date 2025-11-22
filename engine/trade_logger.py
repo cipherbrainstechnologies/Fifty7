@@ -33,6 +33,7 @@ except ImportError:
     DB_AVAILABLE = False
 
 from .symbol_utils import canonicalize_tradingsymbol
+from .event_bus import get_event_bus
 
 
 class TradeLogger:
@@ -51,6 +52,7 @@ class TradeLogger:
         self._ensure_directory_exists()
         self._ensure_header_exists()
         self._canonicalize_existing_log()
+        self.event_bus = get_event_bus()
     
     def _ensure_directory_exists(self):
         """Ensure logs directory exists."""
@@ -172,6 +174,12 @@ class TradeLogger:
         except Exception:
             # DB persistence is best-effort; CSV remains source of truth if DB unavailable
             pass
+        
+        # Emit trade_logged event
+        self.event_bus.publish('trade_logged', {
+            'trade': row,
+            'original_trade': trade,
+        })
 
     def _maybe_write_trade_to_db(self, trade: Dict):
         """
@@ -386,6 +394,14 @@ class TradeLogger:
         
         # Write back to CSV
         df.to_csv(self.trades_file, index=False)
+        
+        # Emit trade_exit_updated event
+        self.event_bus.publish('trade_exit_updated', {
+            'order_id': order_id,
+            'exit_price': exit_price,
+            'pnl': pnl,
+            'outcome': outcome,
+        })
 
         # Persist SELL leg to database for realized P&L calculations
         metadata = metadata or {}

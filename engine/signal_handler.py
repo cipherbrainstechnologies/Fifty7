@@ -13,6 +13,8 @@ from engine.inside_bar_breakout_strategy import (
     get_active_signal
 )
 from engine.tenant_context import resolve_tenant
+from engine.state_store import get_state_store
+from engine.event_bus import get_event_bus
 from logzero import logger
 
 try:
@@ -60,6 +62,23 @@ class SignalHandler:
         self.signal_history = []
         self._active_signal_state = None  # Track active signal for new strategy
         self.org_id, self.user_id = resolve_tenant(config)
+        
+        # State Store integration
+        self.state_store = get_state_store()
+        self.event_bus = get_event_bus()
+        
+        # Restore signal state if available
+        self._restore_signal_state()
+    
+    def _restore_signal_state(self):
+        """Restore signal state from StateStore."""
+        try:
+            restored_signal = self.state_store.get_state('trading.active_signal')
+            if restored_signal:
+                self._active_signal_state = restored_signal
+                logger.info("Restored active signal state from StateStore")
+        except Exception as e:
+            logger.warning(f"Failed to restore signal state: {e}")
     
     def validate_signal(self, signal: Dict) -> bool:
         """
@@ -150,6 +169,13 @@ class SignalHandler:
         
         # Update internal signal state
         self._active_signal_state = active_signal
+        
+        # Update state store
+        self.state_store.update_state(
+            'trading.active_signal',
+            active_signal,
+            metadata={'source': 'signal_handler', 'timestamp': datetime.now(timezone.utc).isoformat()}
+        )
         
         # Check for breakout using the new strategy
         breakout_direction, latest_closed_candle, is_missed_trade = confirm_breakout_on_hour_close(
@@ -250,6 +276,26 @@ class SignalHandler:
         
         # Invalidate signal after breakout attempt (signal consumed)
         self._active_signal_state = None
+        
+        # Update state store - clear active signal
+        self.state_store.update_state(
+            'trading.active_signal',
+            None,
+            metadata={'source': 'signal_handler', 'action': 'signal_consumed'}
+        )
+        
+        # Update state store - add to signal history
+        signal_history = self.state_store.get_state('trading.signal_history') or []
+        signal_history.append(signal)
+        # Keep only recent signals (last 100)
+        if len(signal_history) > 100:
+            signal_history = signal_history[-100:]
+        self.state_store.update_state(
+            'trading.signal_history',
+            signal_history,
+            metadata={'source': 'signal_handler', 'action': 'signal_generated'}
+        )
+        
         _set_session_state('last_breakout_direction', breakout_direction)
         _set_session_state('last_missed_trade', None)
         ui_signal = signal.copy()
@@ -340,7 +386,7 @@ class SignalHandler:
         """
         signal['status'] = 'executed'
         signal['order_id'] = order_id
-        signal['executed_at'] = datetime.now().isoformat()
+        signal['executed_at'] = datetime.now(timezone.utc).isoformat()
         
         if signal not in self.active_signals:
             self.active_signals.append(signal)
@@ -356,6 +402,28 @@ class SignalHandler:
         """
         signal['status'] = 'closed'
         signal['exit_price'] = exit_price
+        signal['pnl'] = pnl
+        signal['closed_at'] = datetime.now(timezone.utc).isoformat()
+        
+        # Update state store
+        order_id = signal.get('order_id')
+        if order_id:
+            self.state_store.update_state(
+                f'trading.signals.{order_id}',
+                signal,
+                metadata={'source': 'signal_handler', 'action': 'signal_closed'}
+            )
+        signal['pnl'] = pnl
+        signal['closed_at'] = datetime.now(timezone.utc).isoformat()
+        
+        # Update state store
+        order_id = signal.get('order_id')
+        if order_id:
+            self.state_store.update_state(
+                f'trading.signals.{order_id}',
+                signal,
+                metadata={'source': 'signal_handler', 'action': 'signal_closed'}
+            )
         signal['pnl'] = pnl
         signal['closed_at'] = datetime.now().isoformat()
         
