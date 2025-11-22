@@ -226,6 +226,38 @@ from dashboard.auth_page import (
     clear_persisted_firebase_session,
 )
 
+# Load configuration function (must be defined before use)
+def load_config():
+    """
+    Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud).
+    Note: Not using @st.cache_data to avoid recursion issues with st.secrets.
+    Returns a dict with all config sections.
+    """
+    config = {}
+    
+    # First, try to load from secrets.toml file (for local development)
+    secrets_path = '.streamlit/secrets.toml'
+    if os.path.exists(secrets_path):
+        if tomllib is None:
+            logger.warning("TOML parser not available. Install with: pip install tomli")
+        else:
+            try:
+                with open(secrets_path, 'rb') as file:  # TOML requires binary mode
+                    config = tomllib.load(file)
+                logger.info("Loaded config from secrets.toml file")
+                return config
+            except Exception as e:
+                logger.error(f"Error loading secrets.toml: {e}")
+    
+    # For Streamlit Cloud, we'll access st.secrets directly when needed
+    # Don't convert to dict here to avoid recursion
+    # Mark that we're using Streamlit secrets
+    if hasattr(st, 'secrets'):
+        config['_from_streamlit_secrets'] = True
+        logger.info("Using Streamlit secrets (will access directly)")
+    
+    return config
+
 # Initialize database on startup
 try:
     from engine.db import init_database
@@ -839,47 +871,18 @@ def _render_active_trade_metric_row(buy_value: str, tp_value: str, sl_value: str
     )
     st.markdown(f"<div class='trade-box-grid'>{tiles}</div>", unsafe_allow_html=True)
 
-# Load configuration
-def load_config():
-    """
-    Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud).
-    Note: Not using @st.cache_data to avoid recursion issues with st.secrets.
-    Returns a dict with all config sections.
-    """
-    config = {}
-    
-    # First, try to load from secrets.toml file (for local development)
-    secrets_path = '.streamlit/secrets.toml'
-    if os.path.exists(secrets_path):
-        if tomllib is None:
-            logger.warning("TOML parser not available. Install with: pip install tomli")
-        else:
-            try:
-                with open(secrets_path, 'rb') as file:  # TOML requires binary mode
-                    config = tomllib.load(file)
-                logger.info("Loaded config from secrets.toml file")
-                return config
-            except Exception as e:
-                logger.error(f"Error loading secrets.toml: {e}")
-    
-    # For Streamlit Cloud, we'll access st.secrets directly when needed
-    # Don't convert to dict here to avoid recursion
-    # Mark that we're using Streamlit secrets
-    if hasattr(st, 'secrets'):
-        config['_from_streamlit_secrets'] = True
-        logger.info("Using Streamlit secrets (will access directly)")
-    
-    return config
-
 # Helper function to safely get config value from either source
 def get_config_value(section, key, default=None):
     """Safely get config value from secrets.toml or st.secrets"""
+    # Access global config variable
+    global config
+    
     # First check loaded config dict
-    if section in config and isinstance(config[section], dict):
+    if 'config' in globals() and section in config and isinstance(config[section], dict):
         return config[section].get(key, default)
     
     # If using Streamlit secrets, access directly
-    if config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
+    if 'config' in globals() and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
         try:
             section_obj = getattr(st.secrets, section, None)
             if section_obj:

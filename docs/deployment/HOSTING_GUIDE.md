@@ -249,22 +249,38 @@ git push origin main
 
 #### Step 5: Configure Environment Variables
 
-Go to **"Environment"** tab and add:
+Go to **"Environment"** tab in your Render service dashboard and add:
 
-**Required Variables:**
+**📖 For detailed step-by-step instructions, see: [`RENDER_ENV_VARIABLES.md`](RENDER_ENV_VARIABLES.md)**
 
+**Quick Summary:**
+
+**Required Variables (Must Add):**
 ```bash
-# Python Version (optional, Render auto-detects)
-PYTHON_VERSION=3.12.9
-
-# Streamlit Configuration
-STREAMLIT_SERVER_PORT=$PORT
-STREAMLIT_SERVER_ADDRESS=0.0.0.0
-STREAMLIT_SERVER_HEADLESS=true
-STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+# Broker Configuration (REQUIRED)
+BROKER_TYPE=angel
+BROKER_API_KEY=your_api_key
+BROKER_CLIENT_ID=your_client_id
+BROKER_USERNAME=your_client_id
+BROKER_PWD=your_trading_pin
+BROKER_TOKEN=your_totp_secret
 ```
 
-**Secrets (Add as Environment Variables):**
+**Optional Variables (Recommended but Not Required):**
+```bash
+# Streamlit Configuration (OPTIONAL)
+# Note: Port and address are already set in start command, so these are optional:
+STREAMLIT_SERVER_HEADLESS=true          # Recommended: Run without browser
+STREAMLIT_BROWSER_GATHER_USAGE_STATS=false  # Recommended: Disable telemetry
+```
+
+**Important Notes:**
+- ✅ **You MUST add broker credentials** - these are required for the app to work
+- ⚠️ `STREAMLIT_SERVER_PORT` and `STREAMLIT_SERVER_ADDRESS` are **NOT needed** - already set in start command
+- ℹ️ `STREAMLIT_SERVER_HEADLESS` and `STREAMLIT_BROWSER_GATHER_USAGE_STATS` are **optional but recommended**
+- 📝 See [`RENDER_ENV_VARIABLES.md`](RENDER_ENV_VARIABLES.md) for detailed instructions on where to get each value
+
+**Additional Secrets (If Using Firebase Auth):**
 
 For Firebase:
 ```bash
