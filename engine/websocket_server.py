@@ -364,52 +364,34 @@ def _get_websocket_host() -> str:
 
 def _get_websocket_port() -> int:
     """Get WebSocket server port based on environment."""
-    if _is_production():
-        # In production, Railway/Render only expose one port per service
-        # For now, we'll use a separate internal port
-        # NOTE: This requires Railway to expose a second port or use same port
-        # For Railway, consider using the same port as Streamlit or disable WebSocket server
-        port_env = os.getenv("WEBSOCKET_PORT")
-        if port_env:
-            try:
-                port = int(port_env)
-                if not (0 <= port <= 65535):
-                    logger.warning(f"WEBSOCKET_PORT out of range: {port}, using default")
-                    port_env = None
-                else:
-                    return port
-            except (ValueError, TypeError):
-                logger.warning(f"Invalid WEBSOCKET_PORT: {port_env}, using default")
-                port_env = None
-        
-        # Try to use PORT environment variable (Railway provides this)
-        main_port_env = os.getenv("PORT")
-        if main_port_env:
-            try:
-                main_port = int(main_port_env)
-                if 0 <= main_port <= 65535:
-                    # Use PORT + 1 (may not work - Railway limitation)
-                    candidate_port = main_port + 1
-                    if 0 <= candidate_port <= 65535:
-                        return candidate_port
-            except (ValueError, TypeError):
-                pass
-        
-        # Default fallback
-        logger.warning("Could not determine port from environment, using default 8765")
-        return 8765
+    # Railway provides PORT environment variable - use it directly
+    # For standalone websocket service, PORT is the correct value
+    port_env = os.getenv("PORT")
     
-    # Local development
-    port_env = os.getenv("WEBSOCKET_PORT", "8765")
+    if port_env:
+        # Production environment (Railway, Render, etc.)
+        try:
+            port = int(port_env)
+            if not (0 <= port <= 65535):
+                logger.warning(f"PORT out of range: {port}, using default 8000")
+                return 8000
+            return port
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid PORT: {port_env}, using default 8000")
+            return 8000
+    
+    # Local development fallback
+    # Check WEBSOCKET_PORT for local dev override
+    port_env = os.getenv("WEBSOCKET_PORT", "8000")
     try:
         port = int(port_env)
         if not (0 <= port <= 65535):
-            logger.warning(f"WEBSOCKET_PORT out of range: {port}, using 8765")
-            return 8765
+            logger.warning(f"WEBSOCKET_PORT out of range: {port}, using 8000")
+            return 8000
         return port
     except (ValueError, TypeError):
-        logger.warning(f"Invalid WEBSOCKET_PORT: {port_env}, using 8765")
-        return 8765
+        logger.warning(f"Invalid WEBSOCKET_PORT: {port_env}, using 8000")
+        return 8000
 
 
 def start_websocket_server(host: str = None, port: int = None):
@@ -436,14 +418,11 @@ def start_websocket_server(host: str = None, port: int = None):
     if not isinstance(host, str) or not host:
         raise ValueError(f"Host must be a non-empty string, got: {host}")
     
-    # Check if we should disable WebSocket in production due to port limitations
-    if _is_production() and not os.getenv("WEBSOCKET_PORT"):
-        logger.warning(
-            "WebSocket server requires a separate port. "
-            "On Railway, you may need to: "
-            "1) Set WEBSOCKET_PORT environment variable, or "
-            "2) Deploy WebSocket as a separate service, or "
-            "3) Disable WebSocket in production (set websocket.enabled=false in config)"
+    # In production, PORT is provided by Railway and we use it directly
+    if _is_production() and not os.getenv("PORT"):
+        logger.error(
+            "PORT environment variable is required in production. "
+            "Railway should provide this automatically."
         )
     
     if _websocket_server_thread and _websocket_server_thread.is_alive():
