@@ -161,32 +161,52 @@ class LiveStrategyRunner:
             return False
         
         try:
+            logger.info("Starting LiveStrategyRunner...")
             self._running = True
             self._stop_event.clear()
             
             # Create and start thread
+            logger.debug("Creating monitoring thread...")
             self._thread = threading.Thread(target=self._run_loop, daemon=True)
             self._thread.start()
-            self._start_pnl_tracker()
+            logger.debug("Monitoring thread started")
             
-            # Emit runner_started event
-            self.event_bus.publish('runner_started', {
-                'timestamp': datetime.now().isoformat(),
-            })
+            # Start P&L tracker
+            try:
+                logger.debug("Starting P&L tracker...")
+                self._start_pnl_tracker()
+                logger.debug("P&L tracker started")
+            except Exception as pnl_error:
+                logger.warning(f"Failed to start P&L tracker (non-critical): {pnl_error}")
             
-            # Update state store
-            self.state_store.update_state(
-                'trading.runner_status',
-                'running',
-                metadata={'source': 'live_runner', 'action': 'started'}
-            )
+            # Emit runner_started event (non-critical)
+            try:
+                self.event_bus.publish('runner_started', {
+                    'timestamp': datetime.now().isoformat(),
+                })
+                logger.debug("Runner started event published")
+            except Exception as event_error:
+                logger.warning(f"Failed to publish runner_started event (non-critical): {event_error}")
             
-            logger.info("LiveStrategyRunner started")
+            # Update state store (non-critical)
+            try:
+                self.state_store.update_state(
+                    'trading.runner_status',
+                    'running',
+                    metadata={'source': 'live_runner', 'action': 'started'}
+                )
+                logger.debug("State store updated")
+            except Exception as state_error:
+                logger.warning(f"Failed to update state store (non-critical): {state_error}")
+            
+            logger.info("LiveStrategyRunner started successfully")
             return True
             
         except Exception as e:
-            logger.exception(f"Error starting LiveStrategyRunner: {e}")
+            logger.exception(f"Critical error starting LiveStrategyRunner: {e}")
             self._running = False
+            # Reset thread if it was created
+            self._thread = None
             return False
     
     def stop(self) -> bool:

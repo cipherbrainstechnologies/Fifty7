@@ -1696,31 +1696,52 @@ if st.session_state.tick_streamer is None and st.session_state.broker is not Non
 if st.session_state.live_runner is None:
     # Load full config (with market_data section)
     import yaml as yaml_lib
-    with open('config/config.yaml', 'r') as f:
-        full_config = yaml_lib.safe_load(f)
+    try:
+        with open('config/config.yaml', 'r') as f:
+            full_config = yaml_lib.safe_load(f)
+    except Exception as config_error:
+        logger.warning(f"Failed to load config.yaml: {config_error}")
+        full_config = {}
     
-    if (st.session_state.broker is not None and 
-        st.session_state.market_data_provider is not None and
-        'signal_handler' in st.session_state and
-        'trade_logger' in st.session_state):
+    # Check all dependencies are present and not None
+    broker_ok = st.session_state.get('broker') is not None
+    market_data_ok = st.session_state.get('market_data_provider') is not None
+    signal_handler_ok = st.session_state.get('signal_handler') is not None
+    trade_logger_ok = st.session_state.get('trade_logger') is not None
+    
+    if broker_ok and market_data_ok and signal_handler_ok and trade_logger_ok:
         try:
             with _runtime_state["lock"]:
                 if _runtime_state.get("live_runner") is None:
+                    logger.info("Initializing LiveStrategyRunner...")
                     runner = LiveStrategyRunner(
                         market_data_provider=st.session_state.market_data_provider,
                         signal_handler=st.session_state.signal_handler,
                         broker=st.session_state.broker,
                         trade_logger=st.session_state.trade_logger,
                         config=full_config,
-                        tick_streamer=st.session_state.tick_streamer,
+                        tick_streamer=st.session_state.get('tick_streamer'),
                     )
                     _set_live_runner_runtime(runner)
+                    logger.info("LiveStrategyRunner initialized successfully")
                 else:
                     st.session_state.live_runner = _runtime_state.get("live_runner")
+                    logger.info("LiveStrategyRunner retrieved from runtime state")
         except Exception as e:
             _set_live_runner_runtime(None)
-            st.warning(f"Live runner initialization warning: {e}")
+            logger.exception(f"Live runner initialization failed: {e}")
+            # Don't show warning in UI - will be handled by button logic
     else:
+        missing = []
+        if not broker_ok:
+            missing.append("broker")
+        if not market_data_ok:
+            missing.append("market_data_provider")
+        if not signal_handler_ok:
+            missing.append("signal_handler")
+        if not trade_logger_ok:
+            missing.append("trade_logger")
+        logger.debug(f"Live runner not initialized - missing dependencies: {', '.join(missing)}")
         _set_live_runner_runtime(None)
 
 # Ensure auto-refresh session state defaults before usage
@@ -2335,10 +2356,58 @@ if tab == "Dashboard":
         else:
             if st.button("▶ Start Algo", use_container_width=True, type="primary", disabled=start_disabled):
                 if st.session_state.live_runner is None:
-                    st.session_state.strategy_settings_feedback = (
-                        "error",
-                        "❌ Live runner not initialized. Check broker configuration.",
-                    )
+                    # Diagnose why live runner is not initialized
+                    missing_deps = []
+                    if st.session_state.get('broker') is None:
+                        missing_deps.append("broker")
+                    if st.session_state.get('market_data_provider') is None:
+                        missing_deps.append("market_data_provider")
+                    if st.session_state.get('signal_handler') is None:
+                        missing_deps.append("signal_handler")
+                    if st.session_state.get('trade_logger') is None:
+                        missing_deps.append("trade_logger")
+                    
+                    if missing_deps:
+                        error_msg = f"❌ Live runner not initialized. Missing dependencies: {', '.join(missing_deps)}. Check broker configuration."
+                    else:
+                        error_msg = "❌ Live runner not initialized. Check broker configuration and try refreshing the page."
+                    
+                    logger.error(f"Live runner unavailable. Missing: {missing_deps}")
+                    st.session_state.strategy_settings_feedback = ("error", error_msg)
+                    
+                    # Try to re-initialize live runner
+                    try:
+                        import yaml as yaml_lib
+                        with open('config/config.yaml', 'r') as f:
+                            full_config = yaml_lib.safe_load(f)
+                        
+                        if (st.session_state.get('broker') is not None and 
+                            st.session_state.get('market_data_provider') is not None and
+                            st.session_state.get('signal_handler') is not None and
+                            st.session_state.get('trade_logger') is not None):
+                            logger.info("Attempting to re-initialize live runner...")
+                            from engine.live_runner import LiveStrategyRunner
+                            runner = LiveStrategyRunner(
+                                market_data_provider=st.session_state.market_data_provider,
+                                signal_handler=st.session_state.signal_handler,
+                                broker=st.session_state.broker,
+                                trade_logger=st.session_state.trade_logger,
+                                config=full_config,
+                                tick_streamer=st.session_state.get('tick_streamer'),
+                            )
+                            _set_live_runner_runtime(runner)
+                            st.session_state.live_runner = runner
+                            logger.info("Live runner re-initialized successfully")
+                            st.session_state.strategy_settings_feedback = (
+                                "success",
+                                "✅ Live runner initialized. Click 'Start Algo' again to begin.",
+                            )
+                    except Exception as init_error:
+                        logger.exception(f"Failed to re-initialize live runner: {init_error}")
+                        st.session_state.strategy_settings_feedback = (
+                            "error",
+                            f"❌ Failed to initialize live runner: {str(init_error)}",
+                        )
                 else:
                     try:
                         # Validate broker credentials before starting
@@ -2350,36 +2419,31 @@ if tab == "Dashboard":
                                     "error",
                                     f"❌ {error_msg}. Please check broker configuration in Railway environment variables.",
                                 )
+                                logger.error(f"Broker credentials validation failed: {error_msg}")
                                 st.rerun()
-                            else:
-                                success = st.session_state.live_runner.start()
-                                if success:
-                                    _set_algo_running_runtime(True)
-                                    st.session_state.strategy_settings_feedback = (
-                                        "success",
-                                        "✅ Algorithm started – monitoring live market data.",
-                                    )
-                                else:
-                                    st.session_state.strategy_settings_feedback = (
-                                        "error",
-                                        "❌ Failed to start algorithm. Check logs for details.",
-                                    )
+                        
+                        logger.info("Starting live algorithm...")
+                        success = st.session_state.live_runner.start()
+                        if success:
+                            _set_algo_running_runtime(True)
+                            st.session_state.strategy_settings_feedback = (
+                                "success",
+                                "✅ Algorithm started – monitoring live market data.",
+                            )
+                            logger.info("Algorithm started successfully")
                         else:
-                            success = st.session_state.live_runner.start()
-                            if success:
-                                _set_algo_running_runtime(True)
-                                st.session_state.strategy_settings_feedback = (
-                                    "success",
-                                    "✅ Algorithm started – monitoring live market data.",
-                                )
-                            else:
-                                st.session_state.strategy_settings_feedback = (
-                                    "error",
-                                    "❌ Failed to start algorithm. Check logs for details.",
-                                )
+                            st.session_state.strategy_settings_feedback = (
+                                "error",
+                                "❌ Failed to start algorithm. The runner may already be running or encountered an error. Check logs for details.",
+                            )
+                            logger.error("Algorithm start() returned False")
                     except Exception as e:
-                        st.session_state.strategy_settings_feedback = ("error", f"❌ Error starting algorithm: {e}")
-                        logger.exception(e)
+                        error_detail = str(e)
+                        st.session_state.strategy_settings_feedback = (
+                            "error",
+                            f"❌ Error starting algorithm: {error_detail}",
+                        )
+                        logger.exception(f"Exception while starting algorithm: {e}")
                 st.rerun()
         if st.session_state.live_runner is None:
             st.caption("Live runner not initialized.")
@@ -4435,6 +4499,9 @@ elif tab == "Backtest":
                     equity_df = pd.DataFrame(equity_curve_dates)
                     equity_df['date'] = pd.to_datetime(equity_df['date'])
                     equity_df = equity_df.sort_values('date')
+                    # Rename 'capital' to 'Capital' for consistency with other views
+                    if 'capital' in equity_df.columns:
+                        equity_df = equity_df.rename(columns={'capital': 'Capital'})
                     
                     fig = go.Figure(
                         data=[
@@ -4468,6 +4535,9 @@ elif tab == "Backtest":
                     equity_df = pd.DataFrame(equity_curve_dates)
                     equity_df['date'] = pd.to_datetime(equity_df['date'])
                     equity_df['month'] = equity_df['date'].dt.to_period('M').astype(str)
+                    # Rename 'capital' to 'Capital' for consistency with other views
+                    if 'capital' in equity_df.columns:
+                        equity_df = equity_df.rename(columns={'capital': 'Capital'})
                     
                     # Get last value of each month
                     monthly_equity = equity_df.groupby('month').last().reset_index()
