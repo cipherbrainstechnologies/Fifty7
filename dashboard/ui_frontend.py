@@ -1777,13 +1777,20 @@ MENU_TABS = [
 default_tab = st.session_state.get("selected_main_tab", MENU_TABS[0])
 if default_tab not in MENU_TABS:
     default_tab = MENU_TABS[0]
-tab = st.sidebar.radio(
-    "📋 Menu",
-    MENU_TABS,
-    index=MENU_TABS.index(default_tab),
-    key="selected_main_tab",
-)
-current_main_tab = tab
+try:
+    tab = st.sidebar.radio(
+        "📋 Menu",
+        MENU_TABS,
+        index=MENU_TABS.index(default_tab),
+        key="selected_main_tab",
+    )
+    current_main_tab = tab
+except Exception as e:
+    logger.error(f"Error rendering sidebar menu: {e}", exc_info=True)
+    tab = "Dashboard"
+    current_main_tab = tab
+    st.sidebar.error(f"⚠️ Menu error: {e}")
+    st.error(f"❌ Error loading menu. Using Dashboard tab.")
 
 # Only auto-refresh when on Dashboard tab to prevent interrupting user actions on other tabs
 global_refresh_interval = st.session_state.get(
@@ -1988,7 +1995,16 @@ def start_background_refresh_if_needed(interval_seconds=10):
 
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
+    logger.info(f"Dashboard tab selected: {tab}. Rendering dashboard content...")
+    # Always show header first to ensure something is displayed
     st.header("📈 Live Algo Status")
+    
+    # Debug: Show that we've reached dashboard rendering
+    if 'dashboard_render_count' not in st.session_state:
+        st.session_state.dashboard_render_count = 0
+    st.session_state.dashboard_render_count += 1
+    st.caption(f"Dashboard render count: {st.session_state.dashboard_render_count}")
+    
     st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
     
     engine_status = st.session_state.algo_running
@@ -2285,8 +2301,14 @@ if tab == "Dashboard":
     st.markdown("#### 🛡️ Trading Controls")
     control_cols = st.columns([1.4, 1, 0.8], gap="large")
     with control_cols[0]:
-        start_disabled = st.session_state.live_runner is None or st.session_state.algo_running
-        stop_disabled = (not st.session_state.algo_running) or st.session_state.live_runner is None
+        # Check if live_runner exists - if not, show warning and allow manual start attempt
+        live_runner_available = st.session_state.live_runner is not None
+        start_disabled = st.session_state.algo_running  # Only disable if already running
+        stop_disabled = (not st.session_state.algo_running) or not live_runner_available
+        
+        if not live_runner_available:
+            st.warning("⚠️ Live runner not initialized. Starting may not work. Check broker configuration.")
+        
         if st.session_state.algo_running:
             if st.button("⏹ Stop Algo", use_container_width=True, type="secondary", disabled=stop_disabled):
                 if st.session_state.live_runner is None:
