@@ -508,9 +508,12 @@ if websocket_enabled:
                         st.session_state.websocket_events.pop(0)
                     
                     # Trigger UI update for critical events
-                    critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached']
+                    critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached', 'position_updated', 'signal_detected']
                     if event_type in critical_events:
                         st.session_state.last_critical_event = datetime.now()
+                        # Trigger immediate UI refresh for critical events
+                        # Use a flag to trigger rerun on next script execution
+                        st.session_state._websocket_trigger_rerun = True
                 
                 def on_state_update(message):
                     """Handle state update messages from WebSocket."""
@@ -524,6 +527,8 @@ if websocket_enabled:
                         'value': new_value,
                         'timestamp': message.get('timestamp'),
                     }
+                    # Trigger UI refresh for state updates
+                    st.session_state._websocket_trigger_rerun = True
                 
                 def on_state_snapshot(message):
                     """Handle state snapshot from WebSocket."""
@@ -1829,6 +1834,11 @@ if st.session_state.get('_previous_tab') != current_main_tab:
     st.session_state['_last_user_interaction'] = time.time()
     st.session_state['_previous_tab'] = current_main_tab
 
+# Check for WebSocket-triggered rerun first (highest priority for live updates)
+if st.session_state.get('_websocket_trigger_rerun', False):
+    st.session_state._websocket_trigger_rerun = False
+    st.rerun()
+
 # Only auto-refresh if on Dashboard tab AND auto-refresh is enabled AND no recent user interaction
 # Check if user interacted in last 3 seconds (prevent refresh during dropdown/button clicks)
 time_since_last_interaction = time.time() - st.session_state.get('_last_user_interaction', 0)
@@ -1838,9 +1848,7 @@ if (st.session_state.get('auto_refresh_enabled', True) and
     now = time.time()
     if now - st.session_state['_last_ui_refresh_trigger'] >= global_refresh_interval:
         st.session_state['_last_ui_refresh_trigger'] = now
-        rerun_fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
-        if rerun_fn:
-            rerun_fn()
+        st.rerun()
 
 
 def _trigger_market_data_refresh(reason: str) -> bool:
@@ -3586,17 +3594,15 @@ if tab == "Dashboard":
         except Exception as e:
             logger.error(f"Background refresh error: {e}")
 
-    # Auto-refresh fallback (blocking rerun) - Only on Dashboard tab
-    # Note: This is already inside Dashboard tab block, so safe to check
-    if st.session_state.auto_refresh_enabled and current_main_tab == "Dashboard":
-        if st.session_state.last_refresh_time is not None:
-            time_since_last = (datetime.now() - st.session_state.last_refresh_time).total_seconds()
-            if time_since_last > 15:
-                time.sleep(10)
-                st.rerun()
-        else:
-            time.sleep(10)
-            st.rerun()
+    # Check if WebSocket triggered a rerun (non-blocking)
+    if st.session_state.get('_websocket_trigger_rerun', False):
+        st.session_state._websocket_trigger_rerun = False
+        st.rerun()
+    
+    # Auto-refresh fallback (non-blocking) - Only on Dashboard tab
+    # Note: Removed blocking time.sleep() calls that cause blur overlay
+    # The auto-refresh at the top of the script (line 1888-1899) handles this better
+    # This section is kept as a safety net but doesn't block
 
 # ============ TRADE JOURNAL TAB ============
 elif tab == "Portfolio":

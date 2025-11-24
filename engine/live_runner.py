@@ -373,6 +373,36 @@ class LiveStrategyRunner:
         except Exception:
             return None
 
+    def _get_index_ltp(self, symbol: str = "NIFTY") -> Tuple[Optional[float], str]:
+        """
+        Get current index LTP (e.g., NIFTY) from tick streamer or market data provider.
+        
+        Returns:
+            Tuple of (ltp_value, source) where source is "tick_streamer" or "market_data" or "unknown"
+        """
+        if self.tick_streamer:
+            try:
+                quote = self.tick_streamer.get_quote_with_age(symbol)
+                if quote and 'ltp' in quote:
+                    age = quote.get("age_seconds", 999)
+                    if age is not None and age <= 10.0:  # Use if fresh (< 10 seconds)
+                        return float(quote['ltp']), "tick_streamer"
+            except Exception as e:
+                logger.debug(f"Failed to get {symbol} LTP from tick streamer: {e}")
+        
+        # Fallback to market data provider
+        if self.market_data_provider:
+            try:
+                ohlc = self.market_data_provider.fetch_ohlc(mode="LTP")
+                if isinstance(ohlc, dict):
+                    ltp_val = ohlc.get('ltp') or ohlc.get('close')
+                    if ltp_val is not None:
+                        return float(ltp_val), "market_data"
+            except Exception as e:
+                logger.debug(f"Failed to get {symbol} LTP from market data provider: {e}")
+        
+        return None, "unknown"
+    
     def _get_option_quote(
         self,
         tradingsymbol: Optional[str],
@@ -1121,25 +1151,96 @@ class LiveStrategyRunner:
                 self._record_execution_skip(signal, entry_estimate, "Expiry validation failed")
                 return
             
-            # FIX for Issue #2: Fetch actual option price from broker
+            # Format expiry date for option symbol
             expiry_date_str = None
             if expiry:
-                # Format expiry date for broker API (DDMMMYY)
                 expiry_date_str = expiry.strftime('%d%b%y').upper()
             
-            entry_price = self.broker.get_option_price(
-                symbol=symbol,
-                strike=strike,
-                direction=direction,
-                expiry_date=expiry_date_str
-            )
+            # Format tradingsymbol for tick streamer subscription
+            tradingsymbol = None
+            if hasattr(self.broker, '_format_option_symbol'):
+                try:
+                    tradingsymbol = self.broker._format_option_symbol(
+                        symbol=symbol,
+                        strike=strike,
+                        direction=direction,
+                        expiry_date=expiry_date_str
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to format option symbol: {e}")
+            
+            # CRITICAL: Get real-time option LTP from tick streamer (tick-by-tick)
+            # Fallback to REST API only if tick streamer unavailable
+            entry_price = None
+            price_source = "unknown"
+            nifty_ltp = None
+            
+            # First, ensure we have NIFTY index LTP for validation (always available from tick streamer)
+            nifty_ltp, nifty_source = self._get_index_ltp(symbol)
+            if nifty_ltp:
+                logger.info(f"📊 NIFTY Index LTP: ₹{nifty_ltp:,.2f} (source: {nifty_source})")
+            else:
+                logger.warning(f"⚠️ NIFTY Index LTP not available - tick streamer may not be active")
+            
+            # Try to get option price from tick streamer first (real-time tick-by-tick)
+            # CRITICAL: For trade execution, we want the most current price possible
+            if tradingsymbol and self.tick_streamer:
+                try:
+                    # Subscribe to option tick stream (even if we don't get price immediately, 
+                    # it ensures real-time updates for position monitoring)
+                    self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+                    
+                    # Get real-time tick price (may not be immediately available if just subscribed)
+                    quote = self.tick_streamer.get_quote_with_age(tradingsymbol)
+                    if quote and 'ltp' in quote:
+                        age = quote.get("age_seconds", 999)
+                        if age is not None and age <= 10.0:  # Use if fresh (< 10 seconds)
+                            entry_price = float(quote['ltp'])
+                            price_source = "tick_streamer"
+                            logger.info(f"✅ Option LTP from tick streamer: ₹{entry_price:.2f} (age: {age:.2f}s) for {tradingsymbol}")
+                        else:
+                            logger.debug(f"Tick streamer quote stale (age: {age:.2f}s) - will try REST API")
+                    else:
+                        logger.debug(f"No tick streamer quote available yet for {tradingsymbol} - will try REST API")
+                except Exception as e:
+                    logger.warning(f"Tick streamer quote fetch failed: {e} - falling back to REST API")
+            
+            # Fallback: Use REST API if tick streamer unavailable or stale
+            if entry_price is None:
+                try:
+                    entry_price = self.broker.get_option_price(
+                        symbol=symbol,
+                        strike=strike,
+                        direction=direction,
+                        expiry_date=expiry_date_str
+                    )
+                    if entry_price is not None:
+                        price_source = "rest_api"
+                        logger.info(f"📡 Option LTP from REST API: ₹{entry_price:.2f} for {symbol} {strike}{direction}")
+                        # Subscribe to tick streamer for future real-time updates
+                        if tradingsymbol and self.tick_streamer:
+                            try:
+                                self.tick_streamer.subscribe_tradingsymbol(tradingsymbol, exchange="NFO")
+                                logger.info(f"✅ Subscribed {tradingsymbol} to tick streamer for real-time updates")
+                            except Exception as e:
+                                logger.warning(f"Failed to subscribe option to tick streamer: {e}")
+                except Exception as e:
+                    logger.error(f"REST API price fetch failed: {e}")
             
             if entry_price is None:
-                logger.error(f"Failed to fetch option price for {direction} {strike} - skipping trade")
+                logger.error(f"❌ Failed to fetch option price for {direction} {strike} from both tick streamer and REST API - skipping trade")
                 return
             
-            logger.info(f"Option price fetched: ₹{entry_price:.2f} (estimate was ₹{entry_estimate:.2f})")
+            # Log price source and NIFTY LTP for validation
+            logger.info(
+                f"💰 Option price fetched: ₹{entry_price:.2f} (source: {price_source}, "
+                f"estimate: ₹{entry_estimate:.2f}, NIFTY LTP: ₹{nifty_ltp:,.2f if nifty_ltp else 'N/A'})"
+            )
+            
+            # Store price source in signal for debugging
             signal['entry'] = entry_price
+            signal['entry_price_source'] = price_source
+            signal['nifty_ltp_at_entry'] = nifty_ltp
             # Recompute SL/TP based on actual entry for downstream consumers
             signal['sl'] = entry_price - self.sl_points
             signal['tp'] = entry_price + (self.sl_points * self.rr_ratio)
