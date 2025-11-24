@@ -1,1 +1,1 @@
-web: python start_streamlit.py
+web: python start_websocket.py

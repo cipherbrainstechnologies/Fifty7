@@ -1,6 +1,6 @@
 """
-Main Application Entry Point for NIFTY Options Trading System
-Coordinates engine and dashboard components
+Main Application Entry Point for NIFTY Options Trading System - WebSocket Service
+NOTE: This service only runs the WebSocket server. The Streamlit dashboard is deployed separately.
 """
 
 import os
@@ -39,10 +39,8 @@ def initialize_application():
     # Check required directories
     required_dirs = [
         'engine',
-        'dashboard',
         'config',
         'data/historical',
-        '.streamlit',
         'logs'
     ]
     
@@ -52,8 +50,7 @@ def initialize_application():
     
     # Check configuration files
     config_files = [
-        'config/config.yaml',
-        '.streamlit/secrets.toml'
+        'config/config.yaml'
     ]
     
     for config_file in config_files:
@@ -72,26 +69,24 @@ def initialize_application():
 
 def main():
     """
-    Main function - launches Streamlit dashboard.
+    Main function - initializes WebSocket service components.
     """
     try:
         # Initialize application
         initialize_application()
         
-        logger.info("Starting Streamlit dashboard...")
-        logger.info("Application ready. Access dashboard at the configured URL.")
+        logger.info("WebSocket Service initialized.")
+        logger.info("Application ready for WebSocket connections.")
         
-        # Note: In production, this would be run via:
-        # streamlit run dashboard/ui_frontend.py
-        # This main.py serves as the entry point for coordination
+        # Note: The WebSocket server should be started via start_websocket.py
+        # This main.py only performs system initialization
         
         print("\n" + "="*50)
-        print("NIFTY Options Trading System")
+        print("NIFTY Options Trading System - WebSocket Service")
         print("="*50)
-        print("\nTo start the dashboard, run:")
-        print("  streamlit run dashboard/ui_frontend.py")
-        print("\nOr for development:")
-        print("  python main.py")
+        print("\nTo start the WebSocket server, run:")
+        print("  python start_websocket.py")
+        print("\nThe Streamlit dashboard is deployed as a separate service.")
         print("="*50 + "\n")
         
     except Exception as e:
