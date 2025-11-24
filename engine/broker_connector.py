@@ -821,11 +821,27 @@ class AngelOneBroker(BrokerInterface):
             
             position_response = self.smart_api.position()
             
+            # Handle None response
+            if position_response is None:
+                logger.warning("Position API returned None response")
+                return []
+            
+            # Check if status indicates failure
             if position_response.get('status') == False:
                 logger.error(f"Failed to fetch positions: {position_response.get('message')}")
                 return []
             
-            positions = position_response.get('data', [])
+            # Get positions data, ensuring it's always a list
+            positions = position_response.get('data')
+            if positions is None:
+                logger.info("No positions data in response (positions is None)")
+                return []
+            
+            # Ensure positions is a list
+            if not isinstance(positions, list):
+                logger.warning(f"Positions data is not a list (type: {type(positions)}). Returning empty list.")
+                return []
+            
             logger.info(f"Retrieved {len(positions)} positions")
             
             return positions
@@ -1093,6 +1109,10 @@ class AngelOneBroker(BrokerInterface):
                 logger.error(f"Holdings API error: {data.get('message')}")
                 return []
             holdings = data.get('data', []) or []
+            # Ensure holdings is a list
+            if not isinstance(holdings, list):
+                logger.warning(f"Holdings data is not a list (type: {type(holdings)}). Returning empty list.")
+                return []
             logger.info(f"Fetched {len(holdings)} holdings")
             return holdings
         except Exception as e:
@@ -1137,6 +1157,10 @@ class AngelOneBroker(BrokerInterface):
                 logger.error(f"Positions API error: {data.get('message')}")
                 return []
             positions = data.get('data', []) or []
+            # Ensure positions is a list
+            if not isinstance(positions, list):
+                logger.warning(f"Positions book data is not a list (type: {type(positions)}). Returning empty list.")
+                return []
             logger.info(f"Fetched {len(positions)} positions (book)")
             return positions
         except Exception as e:
@@ -1159,6 +1183,10 @@ class AngelOneBroker(BrokerInterface):
                 logger.error(f"OrderBook API error: {data.get('message')}")
                 return []
             orders = data.get('data', []) or []
+            # Ensure orders is a list
+            if not isinstance(orders, list):
+                logger.warning(f"Order book data is not a list (type: {type(orders)}). Returning empty list.")
+                return []
             logger.info(f"Fetched {len(orders)} orders")
             return orders
         except Exception as e:
@@ -1181,6 +1209,10 @@ class AngelOneBroker(BrokerInterface):
                 logger.error(f"TradeBook API error: {data.get('message')}")
                 return []
             trades = data.get('data', []) or []
+            # Ensure trades is a list
+            if not isinstance(trades, list):
+                logger.warning(f"Trade book data is not a list (type: {type(trades)}). Returning empty list.")
+                return []
             logger.info(f"Fetched {len(trades)} trades")
             return trades
         except Exception as e:
