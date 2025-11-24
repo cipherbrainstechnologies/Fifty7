@@ -25,6 +25,28 @@ if __name__ == "__main__":
         print(f"ERROR: PORT must be an integer, got '{port_env}'")
         sys.exit(1)
     
+    # Verify Streamlit is installed
+    try:
+        import streamlit
+        print(f"Streamlit version: {streamlit.__version__}")
+    except ImportError:
+        print("ERROR: Streamlit is not installed!")
+        print("Attempting to install Streamlit...")
+        try:
+            import subprocess
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "streamlit>=1.28.0", "streamlit-authenticator>=0.2.3"],
+                check=True,
+                capture_output=True,
+                text=True
+            )
+            print("Streamlit installed successfully")
+            import streamlit  # Import again after installation
+        except Exception as e:
+            print(f"ERROR: Failed to install Streamlit: {e}")
+            print("Please ensure Streamlit is in requirements.txt and build completed successfully")
+            sys.exit(1)
+    
     # Set Streamlit environment variables
     os.environ["STREAMLIT_SERVER_PORT"] = str(port)
     os.environ["STREAMLIT_SERVER_ADDRESS"] = "0.0.0.0"
@@ -41,6 +63,7 @@ if __name__ == "__main__":
     
     print(f"Starting Streamlit on 0.0.0.0:{port}")
     print(f"PORT environment variable: {port_env}")
+    print(f"Python executable: {sys.executable}")
     
     # Start Streamlit (this will block)
     try:
@@ -48,4 +71,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nShutting down Streamlit...")
         sys.exit(0)
+    except Exception as e:
+        print(f"ERROR: Failed to start Streamlit: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
 
