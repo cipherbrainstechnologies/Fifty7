@@ -241,18 +241,27 @@ def load_config():
     
     if is_production:
         # Load broker config from environment variables
+        # Check both formats: BROKER_* (preferred) and lowercase (fallback for Railway)
         broker_config = {}
-        broker_config['type'] = os.getenv('BROKER_TYPE', 'angel')
-        broker_config['api_key'] = os.getenv('BROKER_API_KEY', '')
-        broker_config['client_id'] = os.getenv('BROKER_CLIENT_ID', '')
-        broker_config['username'] = os.getenv('BROKER_USERNAME', os.getenv('BROKER_CLIENT_ID', ''))
-        broker_config['pwd'] = os.getenv('BROKER_PWD', '')
-        broker_config['token'] = os.getenv('BROKER_TOKEN', '')
-        broker_config['api_secret'] = os.getenv('BROKER_API_SECRET', '')
+        broker_config['type'] = os.getenv('BROKER_TYPE') or os.getenv('type', 'angel')
+        broker_config['api_key'] = os.getenv('BROKER_API_KEY') or os.getenv('api_key', '')
+        broker_config['client_id'] = os.getenv('BROKER_CLIENT_ID') or os.getenv('client_id', '')
+        broker_config['username'] = (
+            os.getenv('BROKER_USERNAME') or 
+            os.getenv('username') or 
+            broker_config['client_id'] or 
+            os.getenv('BROKER_CLIENT_ID') or 
+            os.getenv('client_id', '')
+        )
+        broker_config['pwd'] = os.getenv('BROKER_PWD') or os.getenv('pwd', '')
+        broker_config['token'] = os.getenv('BROKER_TOKEN') or os.getenv('token', '')
+        broker_config['api_secret'] = os.getenv('BROKER_API_SECRET') or os.getenv('api_secret', '')
         
         if broker_config.get('api_key') or broker_config.get('token'):
             config['broker'] = broker_config
-            logger.info("Loaded broker config from environment variables")
+            logger.info(f"Loaded broker config from environment variables (type: {broker_config['type']}, has_api_key: {bool(broker_config.get('api_key'))}, has_token: {bool(broker_config.get('token'))})")
+        else:
+            logger.warning("No broker config found in environment variables. Broker functionality will not work.")
         
         # Load SmartAPI apps config from environment variables
         smartapi_apps = {}
@@ -282,10 +291,11 @@ def load_config():
             config['smartapi_apps'] = smartapi_apps
             logger.info("Loaded SmartAPI apps config from environment variables")
         
-        # If we got config from env vars, return early (don't check secrets.toml)
-        if config:
-            logger.info("Using configuration from environment variables (Railway/Render)")
-            return config
+        # Always return config in production (even if empty), so we know to use env vars
+        logger.info("Using configuration from environment variables (Railway/Render)")
+        if config.get('broker'):
+            logger.info(f"Broker config loaded: type={config['broker'].get('type')}, has_api_key={bool(config['broker'].get('api_key'))}, has_token={bool(config['broker'].get('token'))}")
+        return config
     
     # Priority 2: Try to load from secrets.toml file (for local development)
     secrets_path = '.streamlit/secrets.toml'
@@ -402,34 +412,35 @@ _is_production = (
 def _get_websocket_uri() -> str:
     """Get WebSocket URI based on environment."""
     if _is_production:
-        # In production, use WSS and Railway's public domain
-        railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
-        railway_service_url = os.getenv("RAILWAY_STATIC_URL")
-        
-        # Try to get public domain from environment or config
-        public_domain = (
-            railway_public_domain or 
-            railway_service_url or 
-            os.getenv("PUBLIC_URL") or
-            websocket_config.get('public_domain')
+        # In production, use WSS and Railway's WebSocket service domain
+        # Priority: WEBSOCKET_PUBLIC_DOMAIN > PUBLIC_URL > RAILWAY_PUBLIC_DOMAIN
+        websocket_domain = (
+            os.getenv("WEBSOCKET_PUBLIC_DOMAIN") or
+            websocket_config.get('public_domain') or
+            os.getenv("PUBLIC_URL") or  # This should point to WebSocket service
+            os.getenv("RAILWAY_PUBLIC_DOMAIN") or
+            os.getenv("RAILWAY_STATIC_URL")
         )
         
-        if public_domain:
+        if websocket_domain:
             # Remove protocol if present
-            public_domain = public_domain.replace("https://", "").replace("http://", "")
-            ws_port = os.getenv("WEBSOCKET_PORT", websocket_config.get('port', '8765'))
+            websocket_domain = websocket_domain.replace("https://", "").replace("http://", "")
+            # Remove trailing slash
+            websocket_domain = websocket_domain.rstrip('/')
             # Use wss:// for secure WebSocket in production
-            return f"wss://{public_domain}/ws"
+            return f"wss://{websocket_domain}/ws"
         
         # Fallback: Use config URI or construct from available info
         config_uri = websocket_config.get('uri')
-        if config_uri and config_uri.startswith('ws://'):
-            # Convert to wss:// for production
-            return config_uri.replace('ws://', 'wss://')
+        if config_uri:
+            if config_uri.startswith('ws://'):
+                # Convert to wss:// for production
+                return config_uri.replace('ws://', 'wss://')
+            return config_uri
         
         logger.warning(
             "Cannot determine WebSocket URI in production. "
-            "Set RAILWAY_PUBLIC_DOMAIN or PUBLIC_URL environment variable, "
+            "Set WEBSOCKET_PUBLIC_DOMAIN environment variable pointing to your WebSocket service, "
             "or configure websocket.public_domain in config.yaml"
         )
         return None
@@ -437,7 +448,14 @@ def _get_websocket_uri() -> str:
     # Local development: Use config or default
     return websocket_config.get('uri', f"ws://127.0.0.1:{websocket_config.get('port', 8765)}/ws")
 
-if websocket_config.get('enabled', True):
+# Check if WebSocket is enabled (from config or environment variable)
+websocket_enabled = websocket_config.get('enabled', True)
+# Also check environment variable (can override config)
+websocket_enabled_env = os.getenv("WEBSOCKET_ENABLED")
+if websocket_enabled_env:
+    websocket_enabled = websocket_enabled_env.lower() in ('true', '1', 'yes', 'on')
+
+if websocket_enabled:
     # Start WebSocket server (only if not production or if WEBSOCKET_PORT is set)
     if not _is_production or os.getenv("WEBSOCKET_PORT"):
         if 'websocket_server_started' not in st.session_state:
@@ -455,13 +473,20 @@ if websocket_config.get('enabled', True):
             "or deploy WebSocket as a separate Railway service."
         )
     
-    # Initialize WebSocket client
+    # Initialize WebSocket client (only if WebSocket service is available)
     if 'websocket_client_initialized' not in st.session_state:
         try:
             ws_uri = _get_websocket_uri()
             if not ws_uri:
-                logger.warning("WebSocket client disabled: Cannot determine WebSocket URI")
+                logger.warning("WebSocket client disabled: Cannot determine WebSocket URI. Set WEBSOCKET_PUBLIC_DOMAIN to your WebSocket service URL.")
             else:
+                # Warn if URI points to main app instead of WebSocket service
+                if 'web-production' in ws_uri or ws_uri.startswith('wss://web-'):
+                    logger.warning(
+                        f"⚠️ WebSocket URI points to main app ({ws_uri}). "
+                        "This will fail. Set WEBSOCKET_PUBLIC_DOMAIN to your WebSocket service URL "
+                        "(e.g., nifty-option-websocket-production.up.railway.app)"
+                    )
                 ws_client = get_websocket_client(uri=ws_uri)
                 
                 # Subscribe to WebSocket messages
