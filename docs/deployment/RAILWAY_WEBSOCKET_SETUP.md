@@ -62,7 +62,7 @@ Railway typically exposes **only ONE port per service**. You have three options:
 
 #### Step 1: Create WebSocket Service in Railway
 
-1. In Railway dashboard, click **"New"** → **"Empty Service"**
+1. In Railway dashboard, click **"New"** → **"Web Service"** ⚠️ **(Must be Web Service, not Empty Service!)**
 2. Name it: `nifty-options-websocket`
 3. Connect the same GitHub repository
 4. Configure:
@@ -74,33 +74,17 @@ Railway typically exposes **only ONE port per service**. You have three options:
 
    **Start Command:**
    ```bash
-   python -m engine.websocket_server --port $PORT --host 0.0.0.0
-   ```
-
-   **Or create a startup script** (`start_websocket.py`):
-   ```python
-   import os
-   from engine.websocket_server import start_websocket_server
-   
-   port = int(os.getenv("PORT", "8765"))
-   start_websocket_server(host="0.0.0.0", port=port)
-   
-   # Keep running
-   import time
-   while True:
-       time.sleep(1)
-   ```
-
-   **Start Command (alternative):**
-   ```bash
    python start_websocket.py
    ```
+   
+   **Important**: Railway automatically provides `PORT` environment variable for web services. Don't set it manually!
 
-5. **Set Environment Variables:**
+5. **Optional Environment Variables** (Railway provides PORT automatically):
    ```bash
-   PORT=$PORT  # Railway provides this automatically
-   WEBSOCKET_HOST=0.0.0.0
+   WEBSOCKET_HOST=0.0.0.0  # Optional, defaults to 0.0.0.0 in production
    ```
+   
+   **Do NOT set** `PORT` manually - Railway provides it automatically for web services!
 
 #### Step 2: Get WebSocket Service URL
 
@@ -259,6 +243,50 @@ Open browser console on your main app and check for:
 
 ## Troubleshooting
 
+### Issue: "PORT variable must be integer between 0 and 65535"
+
+**This error means**: Railway is validating the PORT environment variable before your code runs.
+
+**Solution 1: For WebSocket Service (Separate Service)**
+
+If you're deploying WebSocket as a **separate Railway service**:
+
+1. **Check Service Type**: Make sure you selected **"Web Service"** (not "Empty Service" or other type)
+   - Railway automatically provides `PORT` for web services
+   - Go to your service → Settings → Make sure service type is "Web Service"
+
+2. **Check Start Command**: Ensure your start command is correct:
+   ```bash
+   python start_websocket.py
+   ```
+   Or:
+   ```bash
+   python -m engine.websocket_server
+   ```
+
+3. **Don't Manually Set PORT**: Railway automatically provides `PORT` - don't set it manually
+   - Remove any manual `PORT=...` environment variables
+   - Railway injects `PORT` automatically for web services
+
+4. **Verify Service Settings**:
+   - Service Name: Your WebSocket service name
+   - Service Type: **Web Service** (important!)
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `python start_websocket.py`
+
+**Solution 2: If Running in Main Streamlit Service**
+
+If you're trying to run WebSocket in your **main Streamlit service**, this won't work because:
+- Railway only exposes ONE port per service
+- Your Streamlit app already uses `PORT`
+- You can't run both on the same port
+
+**Fix**: Either:
+- **Option A**: Disable WebSocket (add `WEBSOCKET_ENABLED=false`)
+- **Option B**: Deploy WebSocket as a separate Railway service (recommended)
+
+---
+
 ### Issue: "Cannot determine WebSocket URI"
 
 **Solution**: Set one of these environment variables:
@@ -278,8 +306,9 @@ Open browser console on your main app and check for:
 
 **Solution**:
 1. Check Railway logs for port binding errors
-2. Ensure `WEBSOCKET_PORT` is set if using separate service
-3. Verify `PORT` environment variable is available
+2. Ensure service type is "Web Service" (Railway provides PORT automatically)
+3. Verify start command is correct: `python start_websocket.py`
+4. Check that `PORT` is not manually set (Railway provides it automatically)
 
 ### Issue: WebSocket Connects But No Messages
 

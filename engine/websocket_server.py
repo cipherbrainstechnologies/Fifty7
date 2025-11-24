@@ -371,11 +371,45 @@ def _get_websocket_port() -> int:
         # For Railway, consider using the same port as Streamlit or disable WebSocket server
         port_env = os.getenv("WEBSOCKET_PORT")
         if port_env:
-            return int(port_env)
-        # Default: Use PORT + 1 (may not work - Railway limitation)
-        main_port = int(os.getenv("PORT", "8501"))
-        return main_port + 1  # This may not work on Railway
-    return int(os.getenv("WEBSOCKET_PORT", "8765"))
+            try:
+                port = int(port_env)
+                if not (0 <= port <= 65535):
+                    logger.warning(f"WEBSOCKET_PORT out of range: {port}, using default")
+                    port_env = None
+                else:
+                    return port
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid WEBSOCKET_PORT: {port_env}, using default")
+                port_env = None
+        
+        # Try to use PORT environment variable (Railway provides this)
+        main_port_env = os.getenv("PORT")
+        if main_port_env:
+            try:
+                main_port = int(main_port_env)
+                if 0 <= main_port <= 65535:
+                    # Use PORT + 1 (may not work - Railway limitation)
+                    candidate_port = main_port + 1
+                    if 0 <= candidate_port <= 65535:
+                        return candidate_port
+            except (ValueError, TypeError):
+                pass
+        
+        # Default fallback
+        logger.warning("Could not determine port from environment, using default 8765")
+        return 8765
+    
+    # Local development
+    port_env = os.getenv("WEBSOCKET_PORT", "8765")
+    try:
+        port = int(port_env)
+        if not (0 <= port <= 65535):
+            logger.warning(f"WEBSOCKET_PORT out of range: {port}, using 8765")
+            return 8765
+        return port
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid WEBSOCKET_PORT: {port_env}, using 8765")
+        return 8765
 
 
 def start_websocket_server(host: str = None, port: int = None):
@@ -393,6 +427,14 @@ def start_websocket_server(host: str = None, port: int = None):
         host = _get_websocket_host()
     if port is None:
         port = _get_websocket_port()
+    
+    # Validate port is within valid range
+    if not isinstance(port, int) or not (0 <= port <= 65535):
+        raise ValueError(f"Port must be an integer between 0 and 65535, got: {port}")
+    
+    # Validate host
+    if not isinstance(host, str) or not host:
+        raise ValueError(f"Host must be a non-empty string, got: {host}")
     
     # Check if we should disable WebSocket in production due to port limitations
     if _is_production() and not os.getenv("WEBSOCKET_PORT"):
