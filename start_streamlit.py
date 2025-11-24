@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Streamlit startup script for Railway deployment.
 Reads PORT from environment and starts Streamlit with proper configuration.

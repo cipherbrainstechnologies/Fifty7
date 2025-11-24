@@ -1,1 +1,1 @@
-web: python start_streamlit.py
+web: python3 start_streamlit.py
