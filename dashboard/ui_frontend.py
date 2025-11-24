@@ -1988,9 +1988,8 @@ def start_background_refresh_if_needed(interval_seconds=10):
 
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
-    try:
-        st.header("📈 Live Algo Status")
-        st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
+    st.header("📈 Live Algo Status")
+    st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
     
     engine_status = st.session_state.algo_running
     broker_connected = st.session_state.broker is not None
@@ -3371,11 +3370,7 @@ if tab == "Dashboard":
                 )
             st.rerun()
     
-        st.markdown('</div>', unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"❌ Error rendering Dashboard tab: {e}")
-        st.exception(e)
-        logger.error(f"Dashboard tab rendering error: {e}", exc_info=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
     # Perform background API refresh if enabled (non-blocking)
     if st.session_state.background_refresh_enabled:
