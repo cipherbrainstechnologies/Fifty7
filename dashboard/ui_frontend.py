@@ -2360,15 +2360,28 @@ if tab == "Dashboard":
                     )
                 else:
                     try:
+                        logger.info("Stopping live algorithm...")
                         success = st.session_state.live_runner.stop()
                         if success:
                             _set_algo_running_runtime(False)
                             st.session_state.strategy_settings_feedback = ("warning", "⏸️ Algorithm stopped.")
+                            logger.info("Algorithm stopped successfully")
                         else:
-                            st.session_state.strategy_settings_feedback = ("error", "❌ Failed to stop algorithm.")
+                            # Check if it's actually stopped
+                            if hasattr(st.session_state.live_runner, 'is_running'):
+                                if not st.session_state.live_runner.is_running():
+                                    logger.warning("Algorithm stop() returned False but is_running() is False - syncing state")
+                                    _set_algo_running_runtime(False)
+                                    st.session_state.strategy_settings_feedback = ("info", "ℹ️ Algorithm is already stopped. State synced.")
+                                else:
+                                    st.session_state.strategy_settings_feedback = ("error", "❌ Failed to stop algorithm. Check logs for details.")
+                                    logger.error("Algorithm stop() returned False but is still running")
+                            else:
+                                st.session_state.strategy_settings_feedback = ("error", "❌ Failed to stop algorithm. Check logs for details.")
+                                logger.error("Algorithm stop() returned False")
                     except Exception as e:
+                        logger.exception(f"Exception during algorithm stop: {e}")
                         st.session_state.strategy_settings_feedback = ("error", f"❌ Error stopping algorithm: {e}")
-                        logger.exception(e)
                 st.rerun()
         else:
             if st.button("▶ Start Algo", use_container_width=True, type="primary", disabled=start_disabled):
@@ -2449,20 +2462,36 @@ if tab == "Dashboard":
                                     st.rerun()
                             
                             logger.info("Starting live algorithm...")
-                            success = st.session_state.live_runner.start()
-                            if success:
-                                _set_algo_running_runtime(True)
-                                st.session_state.strategy_settings_feedback = (
-                                    "success",
-                                    "✅ Algorithm started – monitoring live market data.",
-                                )
-                                logger.info("Algorithm started successfully")
-                            else:
+                            try:
+                                success = st.session_state.live_runner.start()
+                                if success:
+                                    _set_algo_running_runtime(True)
+                                    st.session_state.strategy_settings_feedback = (
+                                        "success",
+                                        "✅ Algorithm started – monitoring live market data.",
+                                    )
+                                    logger.info("Algorithm started successfully")
+                                else:
+                                    # Check if it's already running
+                                    if hasattr(st.session_state.live_runner, 'is_running') and st.session_state.live_runner.is_running():
+                                        logger.warning("Algorithm start() returned False but is_running() is True - syncing state")
+                                        _set_algo_running_runtime(True)
+                                        st.session_state.strategy_settings_feedback = (
+                                            "info",
+                                            "ℹ️ Algorithm is already running. State synced.",
+                                        )
+                                    else:
+                                        st.session_state.strategy_settings_feedback = (
+                                            "error",
+                                            "❌ Failed to start algorithm. The runner may already be running or encountered an error. Check logs for details.",
+                                        )
+                                        logger.error("Algorithm start() returned False")
+                            except Exception as start_error:
+                                logger.exception(f"Exception during algorithm start: {start_error}")
                                 st.session_state.strategy_settings_feedback = (
                                     "error",
-                                    "❌ Failed to start algorithm. The runner may already be running or encountered an error. Check logs for details.",
+                                    f"❌ Error starting algorithm: {str(start_error)}. Check logs for details.",
                                 )
-                                logger.error("Algorithm start() returned False")
                     except Exception as e:
                         error_detail = str(e)
                         st.session_state.strategy_settings_feedback = (

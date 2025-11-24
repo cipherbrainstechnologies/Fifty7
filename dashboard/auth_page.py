@@ -127,9 +127,10 @@ def _render_login_form(firebase_auth: FirebaseAuth, allowed_email: str = None):
                             # Persist session to disk
                             persist_firebase_session(email, user['idToken'], user['refreshToken'])
                             
-                            # Force rerun to show dashboard
+                            # Force rerun to show dashboard immediately
+                            # Don't show st.success() here as it causes blur screen with st.rerun()
+                            # The dashboard will show a welcome message instead
                             logger.info(f"Login successful for {email}. Triggering rerun...")
-                            st.success(message)
                             st.rerun()
                     else:
                         st.error(message)
