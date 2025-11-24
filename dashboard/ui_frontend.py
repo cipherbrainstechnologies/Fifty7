@@ -1591,10 +1591,26 @@ if 'broker' not in st.session_state:
         st.warning(f"Broker initialization warning: {e}")
 if 'signal_handler' not in st.session_state:
     # Load strategy config
-    import yaml as yaml_lib
-    with open('config/config.yaml', 'r') as f:
-        strategy_config = yaml_lib.safe_load(f)
-    st.session_state.signal_handler = SignalHandler(strategy_config)
+    try:
+        import yaml as yaml_lib
+        config_path = 'config/config.yaml'
+        if not os.path.exists(config_path):
+            logger.error(f"Configuration file not found: {config_path}")
+            st.warning(f"⚠️ Configuration file not found: {config_path}. Some features may not work.")
+            st.session_state.signal_handler = None
+        else:
+            with open(config_path, 'r') as f:
+                strategy_config = yaml_lib.safe_load(f)
+            if strategy_config:
+                st.session_state.signal_handler = SignalHandler(strategy_config)
+            else:
+                logger.warning(f"Config file {config_path} is empty or invalid")
+                st.warning(f"⚠️ Config file {config_path} is empty or invalid. Some features may not work.")
+                st.session_state.signal_handler = None
+    except Exception as e:
+        logger.error(f"Failed to initialize signal handler: {e}", exc_info=True)
+        st.error(f"❌ Failed to initialize signal handler: {e}")
+        st.session_state.signal_handler = None
 if 'trade_logger' not in st.session_state:
     st.session_state.trade_logger = TradeLogger()
 
@@ -1972,8 +1988,9 @@ def start_background_refresh_if_needed(interval_seconds=10):
 
 # ============ DASHBOARD TAB ============
 if tab == "Dashboard":
-    st.header("📈 Live Algo Status")
-    st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
+    try:
+        st.header("📈 Live Algo Status")
+        st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
     
     engine_status = st.session_state.algo_running
     broker_connected = st.session_state.broker is not None
@@ -3354,11 +3371,18 @@ if tab == "Dashboard":
                 )
             st.rerun()
     
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"❌ Error rendering Dashboard tab: {e}")
+        st.exception(e)
+        logger.error(f"Dashboard tab rendering error: {e}", exc_info=True)
 
     # Perform background API refresh if enabled (non-blocking)
     if st.session_state.background_refresh_enabled:
-        start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)
+        try:
+            start_background_refresh_if_needed(interval_seconds=st.session_state.background_refresh_interval_sec)
+        except Exception as e:
+            logger.error(f"Background refresh error: {e}")
 
     # Auto-refresh fallback (blocking rerun) - Only on Dashboard tab
     # Note: This is already inside Dashboard tab block, so safe to check
