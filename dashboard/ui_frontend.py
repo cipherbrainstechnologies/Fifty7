@@ -2327,13 +2327,30 @@ if tab == "Dashboard":
     with control_cols[0]:
         # Check if live_runner exists - if not, show warning and allow manual start attempt
         live_runner_available = st.session_state.get('live_runner') is not None
-        start_disabled = st.session_state.get('algo_running', False)  # Only disable if already running
-        stop_disabled = (not st.session_state.get('algo_running', False)) or not live_runner_available
+        
+        # Sync session state with actual runtime state
+        # Check if runner is actually running even if session state says it's not
+        actual_running = False
+        if live_runner_available and hasattr(st.session_state.live_runner, 'is_running'):
+            try:
+                actual_running = st.session_state.live_runner.is_running()
+                # Sync session state with actual runtime state
+                if actual_running != st.session_state.get('algo_running', False):
+                    logger.info(f"Syncing algo_running state: session={st.session_state.get('algo_running', False)} -> actual={actual_running}")
+                    _set_algo_running_runtime(actual_running)
+            except Exception as sync_error:
+                logger.warning(f"Failed to check runner state: {sync_error}")
+                actual_running = st.session_state.get('algo_running', False)
+        else:
+            actual_running = st.session_state.get('algo_running', False)
+        
+        start_disabled = actual_running  # Only disable if already running
+        stop_disabled = (not actual_running) or not live_runner_available
         
         if not live_runner_available:
             st.warning("⚠️ Live runner not initialized. Starting may not work. Check broker configuration.")
         
-        if st.session_state.get('algo_running', False):
+        if actual_running:
             if st.button("⏹ Stop Algo", use_container_width=True, type="secondary", disabled=stop_disabled):
                 if st.session_state.live_runner is None:
                     _set_algo_running_runtime(False)
@@ -2410,33 +2427,42 @@ if tab == "Dashboard":
                         )
                 else:
                     try:
-                        # Validate broker credentials before starting
-                        broker = st.session_state.get('broker')
-                        if broker and hasattr(broker, 'validate_credentials'):
-                            is_valid, error_msg = broker.validate_credentials()
-                            if not is_valid:
-                                st.session_state.strategy_settings_feedback = (
-                                    "error",
-                                    f"❌ {error_msg}. Please check broker configuration in Railway environment variables.",
-                                )
-                                logger.error(f"Broker credentials validation failed: {error_msg}")
-                                st.rerun()
-                        
-                        logger.info("Starting live algorithm...")
-                        success = st.session_state.live_runner.start()
-                        if success:
+                        # Check if already running (double-check before attempting to start)
+                        if hasattr(st.session_state.live_runner, 'is_running') and st.session_state.live_runner.is_running():
+                            logger.warning("Algorithm is already running (detected via is_running()). Syncing state...")
                             _set_algo_running_runtime(True)
                             st.session_state.strategy_settings_feedback = (
-                                "success",
-                                "✅ Algorithm started – monitoring live market data.",
+                                "info",
+                                "ℹ️ Algorithm is already running. State synced.",
                             )
-                            logger.info("Algorithm started successfully")
                         else:
-                            st.session_state.strategy_settings_feedback = (
-                                "error",
-                                "❌ Failed to start algorithm. The runner may already be running or encountered an error. Check logs for details.",
-                            )
-                            logger.error("Algorithm start() returned False")
+                            # Validate broker credentials before starting
+                            broker = st.session_state.get('broker')
+                            if broker and hasattr(broker, 'validate_credentials'):
+                                is_valid, error_msg = broker.validate_credentials()
+                                if not is_valid:
+                                    st.session_state.strategy_settings_feedback = (
+                                        "error",
+                                        f"❌ {error_msg}. Please check broker configuration in Railway environment variables.",
+                                    )
+                                    logger.error(f"Broker credentials validation failed: {error_msg}")
+                                    st.rerun()
+                            
+                            logger.info("Starting live algorithm...")
+                            success = st.session_state.live_runner.start()
+                            if success:
+                                _set_algo_running_runtime(True)
+                                st.session_state.strategy_settings_feedback = (
+                                    "success",
+                                    "✅ Algorithm started – monitoring live market data.",
+                                )
+                                logger.info("Algorithm started successfully")
+                            else:
+                                st.session_state.strategy_settings_feedback = (
+                                    "error",
+                                    "❌ Failed to start algorithm. The runner may already be running or encountered an error. Check logs for details.",
+                                )
+                                logger.error("Algorithm start() returned False")
                     except Exception as e:
                         error_detail = str(e)
                         st.session_state.strategy_settings_feedback = (
@@ -2447,7 +2473,7 @@ if tab == "Dashboard":
                 st.rerun()
         if st.session_state.live_runner is None:
             st.caption("Live runner not initialized.")
-        elif st.session_state.get('algo_running', False):
+        elif actual_running:
             st.caption("Monitoring live market data.")
         else:
             st.caption("Algo idle – ready to start.")
