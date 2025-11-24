@@ -229,13 +229,65 @@ from dashboard.auth_page import (
 # Load configuration function (must be defined before use)
 def load_config():
     """
-    Load configuration from secrets.toml (local) or st.secrets (Streamlit Cloud).
+    Load configuration from environment variables (Railway/Render), secrets.toml (local), or st.secrets (Streamlit Cloud).
     Note: Not using @st.cache_data to avoid recursion issues with st.secrets.
     Returns a dict with all config sections.
     """
     config = {}
     
-    # First, try to load from secrets.toml file (for local development)
+    # Priority 1: Load from environment variables (for Railway, Render, etc.)
+    # Check if we're in production (Railway/Render set PORT)
+    is_production = os.getenv("PORT") is not None or os.getenv("RAILWAY_ENVIRONMENT") is not None
+    
+    if is_production:
+        # Load broker config from environment variables
+        broker_config = {}
+        broker_config['type'] = os.getenv('BROKER_TYPE', 'angel')
+        broker_config['api_key'] = os.getenv('BROKER_API_KEY', '')
+        broker_config['client_id'] = os.getenv('BROKER_CLIENT_ID', '')
+        broker_config['username'] = os.getenv('BROKER_USERNAME', os.getenv('BROKER_CLIENT_ID', ''))
+        broker_config['pwd'] = os.getenv('BROKER_PWD', '')
+        broker_config['token'] = os.getenv('BROKER_TOKEN', '')
+        broker_config['api_secret'] = os.getenv('BROKER_API_SECRET', '')
+        
+        if broker_config.get('api_key') or broker_config.get('token'):
+            config['broker'] = broker_config
+            logger.info("Loaded broker config from environment variables")
+        
+        # Load SmartAPI apps config from environment variables
+        smartapi_apps = {}
+        
+        # Trading app
+        if os.getenv('SMARTAPI_TRADING_API_KEY'):
+            smartapi_apps['trading'] = {
+                'api_key': os.getenv('SMARTAPI_TRADING_API_KEY', ''),
+                'api_secret': os.getenv('SMARTAPI_TRADING_API_SECRET', ''),
+            }
+        
+        # Historical app
+        if os.getenv('SMARTAPI_HISTORICAL_API_KEY'):
+            smartapi_apps['historical'] = {
+                'api_key': os.getenv('SMARTAPI_HISTORICAL_API_KEY', ''),
+                'api_secret': os.getenv('SMARTAPI_HISTORICAL_API_SECRET', ''),
+            }
+        
+        # Publisher app
+        if os.getenv('SMARTAPI_PUBLISHER_API_KEY'):
+            smartapi_apps['publisher'] = {
+                'api_key': os.getenv('SMARTAPI_PUBLISHER_API_KEY', ''),
+                'api_secret': os.getenv('SMARTAPI_PUBLISHER_API_SECRET', ''),
+            }
+        
+        if smartapi_apps:
+            config['smartapi_apps'] = smartapi_apps
+            logger.info("Loaded SmartAPI apps config from environment variables")
+        
+        # If we got config from env vars, return early (don't check secrets.toml)
+        if config:
+            logger.info("Using configuration from environment variables (Railway/Render)")
+            return config
+    
+    # Priority 2: Try to load from secrets.toml file (for local development)
     secrets_path = '.streamlit/secrets.toml'
     if os.path.exists(secrets_path):
         if tomllib is None:
@@ -249,7 +301,7 @@ def load_config():
             except Exception as e:
                 logger.error(f"Error loading secrets.toml: {e}")
     
-    # For Streamlit Cloud, we'll access st.secrets directly when needed
+    # Priority 3: For Streamlit Cloud, we'll access st.secrets directly when needed
     # Don't convert to dict here to avoid recursion
     # Mark that we're using Streamlit secrets
     if hasattr(st, 'secrets'):
@@ -430,10 +482,10 @@ if websocket_config.get('enabled', True):
                     if len(st.session_state.websocket_events) > 100:
                         st.session_state.websocket_events.pop(0)
                     
-                # Trigger UI update for critical events
-                critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached']
-                if event_type in critical_events:
-                    st.session_state.last_critical_event = datetime.now()
+                    # Trigger UI update for critical events
+                    critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached']
+                    if event_type in critical_events:
+                        st.session_state.last_critical_event = datetime.now()
                 
                 def on_state_update(message):
                     """Handle state update messages from WebSocket."""
@@ -1056,9 +1108,33 @@ try:
     # Get Firebase config - check Streamlit secrets first, then config dict
     firebase_config = None
     
-    # Priority 1: Check Streamlit secrets directly (for Streamlit Cloud)
-    # Access st.secrets directly using attribute access (avoids recursion)
-    if hasattr(st, 'secrets'):
+    # Priority 1: Check environment variables (for Railway, Render, etc.)
+    # Railway uses environment variables, not secrets.toml
+    firebase_config = {}
+    env_keys = {
+        'apiKey': 'FIREBASE_API_KEY',
+        'authDomain': 'FIREBASE_AUTH_DOMAIN',
+        'projectId': 'FIREBASE_PROJECT_ID',
+        'storageBucket': 'FIREBASE_STORAGE_BUCKET',
+        'messagingSenderId': 'FIREBASE_MESSAGING_SENDER_ID',
+        'appId': 'FIREBASE_APP_ID',
+        'databaseURL': 'FIREBASE_DATABASE_URL',
+        'allowedEmail': 'FIREBASE_ALLOWED_EMAIL',
+    }
+    
+    for config_key, env_key in env_keys.items():
+        env_value = os.getenv(env_key)
+        if env_value:
+            firebase_config[config_key] = env_value
+    
+    # Only use if we got at least apiKey
+    if firebase_config.get('apiKey'):
+        logger.info("Loaded Firebase config from environment variables")
+    else:
+        firebase_config = None
+    
+    # Priority 2: Check Streamlit secrets directly (for Streamlit Cloud)
+    if not firebase_config and hasattr(st, 'secrets'):
         try:
             # Check if firebase section exists using hasattr (safe, no recursion)
             if hasattr(st.secrets, 'firebase'):
@@ -1086,7 +1162,7 @@ try:
             logger.warning(f"Error accessing Streamlit secrets: {e}")
             firebase_config = None
     
-    # Priority 2: Check config dict (for local development)
+    # Priority 3: Check config dict (for local development with secrets.toml)
     if not firebase_config:
         firebase_config = config.get('firebase', {})
         if firebase_config:
