@@ -4798,16 +4798,37 @@ elif tab == "Backtest":
                             {'Month': k, 'Total P&L': v['total_pnl']} 
                             for k, v in sorted(monthly_stats.items())
                         ])
-                        fig = px.bar(
-                            chart_data,
-                            x='Month',
-                            y='Total P&L',
-                            title="Total P&L by Month",
-                            color='Total P&L',
-                            color_continuous_scale=['red', 'green'] if chart_data['Total P&L'].min() < 0 else ['green'],
-                        )
-                        fig.update_layout(height=400)
-                        st.plotly_chart(fig, use_container_width=True)
+                        
+                        # Fix for ZeroDivisionError: color_continuous_scale needs at least 2 colors
+                        # Also handle empty DataFrame case
+                        if chart_data.empty:
+                            st.info("No monthly data available for chart.")
+                        else:
+                            # Determine color scale based on data range
+                            min_pnl = chart_data['Total P&L'].min()
+                            max_pnl = chart_data['Total P&L'].max()
+                            
+                            # Use discrete colors instead of continuous scale to avoid division by zero
+                            if min_pnl < 0 and max_pnl > 0:
+                                # Mixed positive/negative: use red-green scale
+                                color_scale = ['red', 'yellow', 'green']
+                            elif min_pnl >= 0:
+                                # All positive: use green gradient
+                                color_scale = ['lightgreen', 'green']
+                            else:
+                                # All negative: use red gradient
+                                color_scale = ['darkred', 'red']
+                            
+                            fig = px.bar(
+                                chart_data,
+                                x='Month',
+                                y='Total P&L',
+                                title="Total P&L by Month",
+                                color='Total P&L',
+                                color_continuous_scale=color_scale,
+                            )
+                            fig.update_layout(height=400)
+                            st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.info("No monthly data available.")
                     
