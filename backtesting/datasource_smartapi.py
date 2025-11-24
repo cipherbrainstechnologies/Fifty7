@@ -40,13 +40,51 @@ DEFAULT_SYMBOL_TOKENS = {
 
 
 def _load_secrets(secrets_path: Optional[str]) -> Dict:
-    path = Path(secrets_path) if secrets_path else DEFAULT_SECRETS_PATH
-    if not path.exists():
-        raise FileNotFoundError(f"Secrets file not found: {path}")
-    with path.open("rb") as fh:
-        data = tomllib.load(fh)
-    logger.info("Loaded SmartAPI secrets from %s", path)
-    return data
+    """
+    Load secrets from environment variables (production) or secrets.toml (local).
+    """
+    import os
+    
+    # Check if we're in production (Railway, Render, Heroku)
+    is_production = any(os.getenv(key) for key in ['RAILWAY_ENVIRONMENT', 'RENDER', 'DYNO'])
+    
+    if is_production:
+        # Load from environment variables
+        logger.info("Loading SmartAPI secrets from environment variables (production)")
+        broker_config = {
+            "type": os.getenv("BROKER_TYPE", "angel"),
+            "api_key": os.getenv("BROKER_API_KEY") or os.getenv("SMARTAPI_HISTORICAL_API_KEY"),
+            "api_secret": os.getenv("BROKER_API_SECRET") or os.getenv("SMARTAPI_HISTORICAL_API_SECRET"),
+            "client_id": os.getenv("BROKER_CLIENT_ID"),
+            "username": os.getenv("BROKER_USERNAME") or os.getenv("BROKER_CLIENT_ID"),
+            "pwd": os.getenv("BROKER_PASSWORD"),
+            "token": os.getenv("BROKER_TOKEN"),
+        }
+        
+        smartapi_apps = {
+            "historical": {
+                "api_key": os.getenv("SMARTAPI_HISTORICAL_API_KEY") or broker_config.get("api_key"),
+                "api_secret": os.getenv("SMARTAPI_HISTORICAL_API_SECRET") or broker_config.get("api_secret"),
+            }
+        }
+        
+        return {
+            "broker": broker_config,
+            "smartapi_apps": smartapi_apps,
+        }
+    else:
+        # Load from secrets.toml (local development)
+        path = Path(secrets_path) if secrets_path else DEFAULT_SECRETS_PATH
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Secrets file not found: {path}\n"
+                f"For production, set environment variables: BROKER_API_KEY, BROKER_CLIENT_ID, BROKER_PASSWORD, BROKER_TOKEN\n"
+                f"For local development, create {path} with broker configuration."
+            )
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+        logger.info("Loaded SmartAPI secrets from %s", path)
+        return data
 
 
 def _smartconnect_session(api_key: str, username: str, password: str, totp_secret: str) -> SmartConnect:
