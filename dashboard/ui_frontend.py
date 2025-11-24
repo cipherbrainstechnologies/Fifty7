@@ -338,79 +338,135 @@ if state_config.get('enabled', True) and 'state_snapshot_thread' not in st.sessi
 
 # Initialize WebSocket server and client
 websocket_config = config.get('websocket', {})
+
+# Detect production environment
+_is_production = (
+    os.getenv("RAILWAY_ENVIRONMENT") is not None or
+    os.getenv("RENDER") is not None or
+    os.getenv("PORT") is not None or
+    os.getenv("DYNO") is not None
+)
+
+def _get_websocket_uri() -> str:
+    """Get WebSocket URI based on environment."""
+    if _is_production:
+        # In production, use WSS and Railway's public domain
+        railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+        railway_service_url = os.getenv("RAILWAY_STATIC_URL")
+        
+        # Try to get public domain from environment or config
+        public_domain = (
+            railway_public_domain or 
+            railway_service_url or 
+            os.getenv("PUBLIC_URL") or
+            websocket_config.get('public_domain')
+        )
+        
+        if public_domain:
+            # Remove protocol if present
+            public_domain = public_domain.replace("https://", "").replace("http://", "")
+            ws_port = os.getenv("WEBSOCKET_PORT", websocket_config.get('port', '8765'))
+            # Use wss:// for secure WebSocket in production
+            return f"wss://{public_domain}/ws"
+        
+        # Fallback: Use config URI or construct from available info
+        config_uri = websocket_config.get('uri')
+        if config_uri and config_uri.startswith('ws://'):
+            # Convert to wss:// for production
+            return config_uri.replace('ws://', 'wss://')
+        
+        logger.warning(
+            "Cannot determine WebSocket URI in production. "
+            "Set RAILWAY_PUBLIC_DOMAIN or PUBLIC_URL environment variable, "
+            "or configure websocket.public_domain in config.yaml"
+        )
+        return None
+    
+    # Local development: Use config or default
+    return websocket_config.get('uri', f"ws://127.0.0.1:{websocket_config.get('port', 8765)}/ws")
+
 if websocket_config.get('enabled', True):
-    # Start WebSocket server
-    if 'websocket_server_started' not in st.session_state:
-        try:
-            ws_host = websocket_config.get('host', '127.0.0.1')
-            ws_port = websocket_config.get('port', 8765)
-            start_websocket_server(host=ws_host, port=ws_port)
-            st.session_state.websocket_server_started = True
-            logger.info(f"WebSocket server started on ws://{ws_host}:{ws_port}/ws")
-        except Exception as e:
-            logger.warning(f"Failed to start WebSocket server: {e}")
+    # Start WebSocket server (only if not production or if WEBSOCKET_PORT is set)
+    if not _is_production or os.getenv("WEBSOCKET_PORT"):
+        if 'websocket_server_started' not in st.session_state:
+            try:
+                # Let start_websocket_server use environment-aware defaults
+                start_websocket_server()
+                st.session_state.websocket_server_started = True
+                logger.info("WebSocket server started")
+            except Exception as e:
+                logger.warning(f"Failed to start WebSocket server: {e}")
+    else:
+        logger.info(
+            "WebSocket server skipped in production. "
+            "Set WEBSOCKET_PORT environment variable to enable, "
+            "or deploy WebSocket as a separate Railway service."
+        )
     
     # Initialize WebSocket client
     if 'websocket_client_initialized' not in st.session_state:
         try:
-            ws_uri = websocket_config.get('uri', f"ws://127.0.0.1:{websocket_config.get('port', 8765)}/ws")
-            ws_client = get_websocket_client(uri=ws_uri)
-            
-            # Subscribe to WebSocket messages
-            def on_websocket_event(message):
-                """Handle event messages from WebSocket."""
-                event_type = message.get('event_type')
-                data = message.get('data', {})
+            ws_uri = _get_websocket_uri()
+            if not ws_uri:
+                logger.warning("WebSocket client disabled: Cannot determine WebSocket URI")
+            else:
+                ws_client = get_websocket_client(uri=ws_uri)
                 
-                # Update session state to trigger UI refresh
-                if 'websocket_events' not in st.session_state:
-                    st.session_state.websocket_events = []
-                st.session_state.websocket_events.append({
-                    'type': event_type,
-                    'data': data,
-                    'timestamp': message.get('timestamp'),
-                })
-                # Keep only recent events
-                if len(st.session_state.websocket_events) > 100:
-                    st.session_state.websocket_events.pop(0)
-                
+                # Subscribe to WebSocket messages
+                def on_websocket_event(message):
+                    """Handle event messages from WebSocket."""
+                    event_type = message.get('event_type')
+                    data = message.get('data', {})
+                    
+                    # Update session state to trigger UI refresh
+                    if 'websocket_events' not in st.session_state:
+                        st.session_state.websocket_events = []
+                    st.session_state.websocket_events.append({
+                        'type': event_type,
+                        'data': data,
+                        'timestamp': message.get('timestamp'),
+                    })
+                    # Keep only recent events
+                    if len(st.session_state.websocket_events) > 100:
+                        st.session_state.websocket_events.pop(0)
+                    
                 # Trigger UI update for critical events
                 critical_events = ['trade_executed', 'position_closed', 'daily_loss_breached']
                 if event_type in critical_events:
                     st.session_state.last_critical_event = datetime.now()
-            
-            def on_state_update(message):
-                """Handle state update messages from WebSocket."""
-                path = message.get('path')
-                new_value = message.get('new_value')
                 
-                # Update session state
-                if 'websocket_state_updates' not in st.session_state:
-                    st.session_state.websocket_state_updates = {}
-                st.session_state.websocket_state_updates[path] = {
-                    'value': new_value,
-                    'timestamp': message.get('timestamp'),
-                }
-            
-            def on_state_snapshot(message):
-                """Handle state snapshot from WebSocket."""
-                snapshot = message.get('data', {})
-                if 'state' in snapshot:
-                    # Store snapshot in session state
-                    st.session_state.websocket_state_snapshot = snapshot
-                    logger.info("Received state snapshot from WebSocket server")
-            
-            ws_client.subscribe('event', on_websocket_event)
-            ws_client.subscribe('state_update', on_state_update)
-            ws_client.subscribe('state_snapshot', on_state_snapshot)
-            
-            # Start client
-            if ws_client.start():
-                st.session_state.websocket_client_initialized = True
-                st.session_state.websocket_client = ws_client
-                logger.info("WebSocket client initialized and connected")
-            else:
-                logger.warning("Failed to start WebSocket client")
+                def on_state_update(message):
+                    """Handle state update messages from WebSocket."""
+                    path = message.get('path')
+                    new_value = message.get('new_value')
+                    
+                    # Update session state
+                    if 'websocket_state_updates' not in st.session_state:
+                        st.session_state.websocket_state_updates = {}
+                    st.session_state.websocket_state_updates[path] = {
+                        'value': new_value,
+                        'timestamp': message.get('timestamp'),
+                    }
+                
+                def on_state_snapshot(message):
+                    """Handle state snapshot from WebSocket."""
+                    snapshot = message.get('data', {})
+                    if 'state' in snapshot:
+                        # Store snapshot in session state
+                        st.session_state.websocket_state_snapshot = snapshot
+                        logger.info("Received state snapshot from WebSocket server")
+                
+                ws_client.subscribe('event', on_websocket_event)
+                ws_client.subscribe('state_update', on_state_update)
+                ws_client.subscribe('state_snapshot', on_state_snapshot)
+                
+                # Start client
+                if ws_client.start():
+                    st.session_state.websocket_client_initialized = True
+                    st.session_state.websocket_client = ws_client
+                    logger.info(f"WebSocket client initialized and connected to {ws_uri}")
+                else:
+                    logger.warning("Failed to start WebSocket client")
         except Exception as e:
             logger.warning(f"Failed to initialize WebSocket client: {e}")
 

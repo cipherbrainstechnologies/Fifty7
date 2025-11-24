@@ -5,6 +5,7 @@ Uses FastAPI for async WebSocket support.
 
 import asyncio
 import json
+import os
 import threading
 from typing import Set, Dict, Any, Optional
 from datetime import datetime
@@ -343,15 +344,65 @@ def create_websocket_app() -> FastAPI:
     return app
 
 
-def start_websocket_server(host: str = "127.0.0.1", port: int = 8765):
+def _is_production() -> bool:
+    """Detect if running in production (Railway, Render, etc.)"""
+    return (
+        os.getenv("RAILWAY_ENVIRONMENT") is not None or
+        os.getenv("RENDER") is not None or
+        os.getenv("PORT") is not None or
+        os.getenv("DYNO") is not None  # Heroku
+    )
+
+
+def _get_websocket_host() -> str:
+    """Get WebSocket server host based on environment."""
+    if _is_production():
+        # In production, bind to 0.0.0.0 to accept external connections
+        return "0.0.0.0"
+    return os.getenv("WEBSOCKET_HOST", "127.0.0.1")
+
+
+def _get_websocket_port() -> int:
+    """Get WebSocket server port based on environment."""
+    if _is_production():
+        # In production, Railway/Render only expose one port per service
+        # For now, we'll use a separate internal port
+        # NOTE: This requires Railway to expose a second port or use same port
+        # For Railway, consider using the same port as Streamlit or disable WebSocket server
+        port_env = os.getenv("WEBSOCKET_PORT")
+        if port_env:
+            return int(port_env)
+        # Default: Use PORT + 1 (may not work - Railway limitation)
+        main_port = int(os.getenv("PORT", "8501"))
+        return main_port + 1  # This may not work on Railway
+    return int(os.getenv("WEBSOCKET_PORT", "8765"))
+
+
+def start_websocket_server(host: str = None, port: int = None):
     """
     Start WebSocket server in a separate thread.
     
     Args:
-        host: Server host
-        port: Server port
+        host: Server host (defaults to environment-aware value)
+        port: Server port (defaults to environment-aware value)
     """
     global _websocket_server_thread, _websocket_app
+    
+    # Use environment-aware defaults if not provided
+    if host is None:
+        host = _get_websocket_host()
+    if port is None:
+        port = _get_websocket_port()
+    
+    # Check if we should disable WebSocket in production due to port limitations
+    if _is_production() and not os.getenv("WEBSOCKET_PORT"):
+        logger.warning(
+            "WebSocket server requires a separate port. "
+            "On Railway, you may need to: "
+            "1) Set WEBSOCKET_PORT environment variable, or "
+            "2) Deploy WebSocket as a separate service, or "
+            "3) Disable WebSocket in production (set websocket.enabled=false in config)"
+        )
     
     if _websocket_server_thread and _websocket_server_thread.is_alive():
         logger.warning("WebSocket server is already running")
@@ -385,7 +436,8 @@ def start_websocket_server(host: str = "127.0.0.1", port: int = 8765):
     import time
     time.sleep(0.5)
     
-    logger.info(f"WebSocket server started on ws://{host}:{port}/ws")
+    protocol = "wss" if _is_production() else "ws"
+    logger.info(f"WebSocket server started on {protocol}://{host}:{port}/ws")
 
 
 def stop_websocket_server():
