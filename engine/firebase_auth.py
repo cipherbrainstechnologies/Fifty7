@@ -4,8 +4,10 @@ Firebase Authentication Module for Email/Password + OTP Verification
 
 import os
 from typing import Optional, Dict, Tuple
-import streamlit as st
 from logzero import logger
+
+# NOTE: This WebSocket service doesn't use Streamlit.
+# Session management would be handled differently in production.
 
 # Optional Firebase imports
 # pyrebase4 package is imported as 'pyrebase' even though package name is 'pyrebase4'
@@ -254,15 +256,15 @@ class FirebaseAuth:
             return None
     
     def sign_out(self):
-        """Sign out the current user"""
+        """Sign out the current user
+        
+        NOTE: In the WebSocket service, session state is not managed via Streamlit.
+        This method is kept for API compatibility but doesn't clear Streamlit session.
+        """
         try:
-            if 'user' in st.session_state:
-                del st.session_state['user']
-            if 'id_token' in st.session_state:
-                del st.session_state['id_token']
-            if 'refresh_token' in st.session_state:
-                del st.session_state['refresh_token']
-            logger.info("User signed out")
+            # In a WebSocket-only service, session management would be handled differently
+            # This is a placeholder that maintains API compatibility
+            logger.info("User sign out requested (session clearing not implemented in WebSocket service)")
         except Exception as e:
             logger.error(f"Sign out failed: {e}")
 

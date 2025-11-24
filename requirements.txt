@@ -1,5 +1,6 @@
-streamlit>=1.28.0
-streamlit-authenticator>=0.2.3
+# NOTE: Streamlit has been removed from this websocket service
+# This service only runs the websocket server, not the UI dashboard
+
 pandas>=2.1.0
 numpy>=1.24.0
 pyyaml>=6.0
