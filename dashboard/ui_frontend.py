@@ -2384,6 +2384,32 @@ if tab == "Dashboard":
                         st.session_state.strategy_settings_feedback = ("error", f"❌ Error stopping algorithm: {e}")
                 st.rerun()
         else:
+            # Check market hours for user feedback
+            market_open_check = False
+            if live_runner_available and hasattr(st.session_state.live_runner, '_is_market_open'):
+                try:
+                    market_open_check = st.session_state.live_runner._is_market_open()
+                except Exception:
+                    market_open_check = False
+            
+            # Show market status message if market is closed
+            # Note: Algorithm CAN start outside market hours - it will just wait for market to open
+            if not market_open_check and not start_disabled:
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                now_ist = datetime.now(ist_tz)
+                market_open_time = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+                market_close_time = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+                
+                if now_ist.weekday() >= 5:  # Weekend
+                    st.info("ℹ️ **Market is closed (weekend).** Algorithm can start but will wait for next trading day (Monday 9:15 AM IST).")
+                elif now_ist < market_open_time:
+                    time_until_open = market_open_time - now_ist
+                    hours = int(time_until_open.total_seconds() // 3600)
+                    minutes = int((time_until_open.total_seconds() % 3600) // 60)
+                    st.info(f"ℹ️ **Market is closed.** Opens in **{hours}h {minutes}m** (9:15 AM IST). Algorithm can start but will wait for market to open before trading.")
+                elif now_ist > market_close_time:
+                    st.info("ℹ️ **Market is closed** (closed at 3:30 PM IST). Algorithm can start but will wait for next trading day.")
+            
             if st.button("▶ Start Algo", use_container_width=True, type="primary", disabled=start_disabled):
                 if st.session_state.live_runner is None:
                     # Diagnose why live runner is not initialized
@@ -2463,14 +2489,27 @@ if tab == "Dashboard":
                             
                             logger.info("Starting live algorithm...")
                             try:
+                                # Check market hours before starting (informational only - algo can start outside hours)
+                                market_hours_info = ""
+                                if hasattr(st.session_state.live_runner, '_is_market_open'):
+                                    try:
+                                        is_market_open = st.session_state.live_runner._is_market_open()
+                                        if not is_market_open:
+                                            market_hours_info = " Market is currently closed - algorithm will wait for next market open."
+                                    except Exception:
+                                        pass
+                                
                                 success = st.session_state.live_runner.start()
                                 if success:
                                     _set_algo_running_runtime(True)
+                                    message = "✅ Algorithm started – monitoring live market data."
+                                    if market_hours_info:
+                                        message += market_hours_info
                                     st.session_state.strategy_settings_feedback = (
                                         "success",
-                                        "✅ Algorithm started – monitoring live market data.",
+                                        message,
                                     )
-                                    logger.info("Algorithm started successfully")
+                                    logger.info(f"Algorithm started successfully{market_hours_info}")
                                 else:
                                     # Check if it's already running
                                     if hasattr(st.session_state.live_runner, 'is_running') and st.session_state.live_runner.is_running():
