@@ -2341,18 +2341,42 @@ if tab == "Dashboard":
                     )
                 else:
                     try:
-                        success = st.session_state.live_runner.start()
-                        if success:
-                            _set_algo_running_runtime(True)
-                            st.session_state.strategy_settings_feedback = (
-                                "success",
-                                "✅ Algorithm started – monitoring live market data.",
-                            )
+                        # Validate broker credentials before starting
+                        broker = st.session_state.get('broker')
+                        if broker and hasattr(broker, 'validate_credentials'):
+                            is_valid, error_msg = broker.validate_credentials()
+                            if not is_valid:
+                                st.session_state.strategy_settings_feedback = (
+                                    "error",
+                                    f"❌ {error_msg}. Please check broker configuration in Railway environment variables.",
+                                )
+                                st.rerun()
+                            else:
+                                success = st.session_state.live_runner.start()
+                                if success:
+                                    _set_algo_running_runtime(True)
+                                    st.session_state.strategy_settings_feedback = (
+                                        "success",
+                                        "✅ Algorithm started – monitoring live market data.",
+                                    )
+                                else:
+                                    st.session_state.strategy_settings_feedback = (
+                                        "error",
+                                        "❌ Failed to start algorithm. Check logs for details.",
+                                    )
                         else:
-                            st.session_state.strategy_settings_feedback = (
-                                "error",
-                                "❌ Failed to start algorithm. Check logs for details.",
-                            )
+                            success = st.session_state.live_runner.start()
+                            if success:
+                                _set_algo_running_runtime(True)
+                                st.session_state.strategy_settings_feedback = (
+                                    "success",
+                                    "✅ Algorithm started – monitoring live market data.",
+                                )
+                            else:
+                                st.session_state.strategy_settings_feedback = (
+                                    "error",
+                                    "❌ Failed to start algorithm. Check logs for details.",
+                                )
                     except Exception as e:
                         st.session_state.strategy_settings_feedback = ("error", f"❌ Error starting algorithm: {e}")
                         logger.exception(e)

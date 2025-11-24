@@ -3,7 +3,7 @@ Broker Connector for abstract broker interface
 Supports multiple broker APIs (Angel One, Fyers)
 """
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 import pyotp
@@ -429,6 +429,27 @@ class AngelOneBroker(BrokerInterface):
         except Exception as e:
             logger.exception(f"Error getting feed token: {e}")
             return False
+    
+    def validate_credentials(self) -> Tuple[bool, str]:
+        """
+        Validate that broker credentials are present without generating a session.
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        missing = []
+        if not self.api_key:
+            missing.append("api_key")
+        if not self.username and not self.client_id:
+            missing.append("client_id/username")
+        if not self.pwd:
+            missing.append("pwd")
+        if not self.token:
+            missing.append("token")
+        
+        if missing:
+            return False, f"Broker credentials incomplete (missing: {', '.join(missing)})"
+        return True, "OK"
     
     def _ensure_session(self) -> bool:
         """

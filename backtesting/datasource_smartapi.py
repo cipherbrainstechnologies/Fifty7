@@ -46,7 +46,8 @@ def _load_secrets(secrets_path: Optional[str]) -> Dict:
     import os
     
     # Check if we're in production (Railway, Render, Heroku)
-    is_production = any(os.getenv(key) for key in ['RAILWAY_ENVIRONMENT', 'RENDER', 'DYNO'])
+    # Railway sets PORT, Render sets RENDER, Heroku sets DYNO
+    is_production = any(os.getenv(key) for key in ['RAILWAY_ENVIRONMENT', 'RENDER', 'DYNO', 'PORT'])
     
     if is_production:
         # Load from environment variables
@@ -57,9 +58,35 @@ def _load_secrets(secrets_path: Optional[str]) -> Dict:
             "api_secret": os.getenv("BROKER_API_SECRET") or os.getenv("SMARTAPI_HISTORICAL_API_SECRET"),
             "client_id": os.getenv("BROKER_CLIENT_ID"),
             "username": os.getenv("BROKER_USERNAME") or os.getenv("BROKER_CLIENT_ID"),
-            "pwd": os.getenv("BROKER_PASSWORD"),
+            "pwd": os.getenv("BROKER_PWD") or os.getenv("BROKER_PASSWORD", ""),  # Support both BROKER_PWD and BROKER_PASSWORD
             "token": os.getenv("BROKER_TOKEN"),
         }
+        
+        # Validate credentials
+        missing = []
+        if not broker_config.get("api_key"):
+            missing.append("BROKER_API_KEY")
+        if not broker_config.get("client_id") and not broker_config.get("username"):
+            missing.append("BROKER_CLIENT_ID or BROKER_USERNAME")
+        if not broker_config.get("pwd"):
+            missing.append("BROKER_PWD or BROKER_PASSWORD")
+        if not broker_config.get("token"):
+            missing.append("BROKER_TOKEN")
+        
+        if missing:
+            error_msg = f"Broker credentials incomplete (missing: {', '.join(missing)})"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Log what was loaded for debugging
+        logger.info(
+            f"Loaded broker config: type={broker_config['type']}, "
+            f"has_client_id={bool(broker_config['client_id'])}, "
+            f"has_username={bool(broker_config['username'])}, "
+            f"has_pwd={bool(broker_config['pwd'])}, "
+            f"has_token={bool(broker_config['token'])}, "
+            f"has_api_key={bool(broker_config['api_key'])}"
+        )
         
         smartapi_apps = {
             "historical": {
@@ -78,7 +105,7 @@ def _load_secrets(secrets_path: Optional[str]) -> Dict:
         if not path.exists():
             raise FileNotFoundError(
                 f"Secrets file not found: {path}\n"
-                f"For production, set environment variables: BROKER_API_KEY, BROKER_CLIENT_ID, BROKER_PASSWORD, BROKER_TOKEN\n"
+                f"For production, set environment variables: BROKER_API_KEY, BROKER_CLIENT_ID, BROKER_PWD, BROKER_TOKEN\n"
                 f"For local development, create {path} with broker configuration."
             )
         with path.open("rb") as fh:
