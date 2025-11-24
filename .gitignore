@@ -51,6 +51,9 @@ Thumbs.db
 # Environment variables
 .env
 .env.local
+railway_env_vars_raw.txt
+railway_env_vars.txt
+.env.local
 
 # Jupyter
 .ipynb_checkpoints/

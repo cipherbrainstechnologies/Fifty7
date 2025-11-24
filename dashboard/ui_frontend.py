@@ -1376,7 +1376,8 @@ if firebase_auth:
     else:
         # Verify authenticated email matches allowed email (if restricted)
         user_email = st.session_state.get('user_email', '')
-        if allowed_email and user_email.lower() != allowed_email:
+        # Normalize both emails to lowercase for comparison
+        if allowed_email and user_email.lower() != allowed_email.lower():
             st.error(f"❌ Access Denied. Only authorized email ({allowed_email}) can access.")
             firebase_auth.sign_out()
             clear_persisted_firebase_session()
@@ -1388,6 +1389,7 @@ if firebase_auth:
             st.rerun()
         
         # User is authenticated, show dashboard
+        logger.info(f"User authenticated: {user_email}. Rendering dashboard...")
         name = user_email.split('@')[0] if '@' in user_email else user_email
         username = user_email
         auth_status = True

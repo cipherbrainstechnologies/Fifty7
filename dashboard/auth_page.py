@@ -117,12 +117,18 @@ def _render_login_form(firebase_auth: FirebaseAuth, allowed_email: str = None):
                             st.error(f"❌ Access Denied. Only authorized email can login.")
                             firebase_auth.sign_out()
                         else:
+                            # Set session state FIRST, before rerun
                             st.session_state.user = user
                             st.session_state.id_token = user['idToken']
                             st.session_state.refresh_token = user['refreshToken']
-                            st.session_state.user_email = email
+                            st.session_state.user_email = email.lower()  # Normalize email to lowercase
                             st.session_state.authenticated = True
+                            
+                            # Persist session to disk
                             persist_firebase_session(email, user['idToken'], user['refreshToken'])
+                            
+                            # Force rerun to show dashboard
+                            logger.info(f"Login successful for {email}. Triggering rerun...")
                             st.success(message)
                             st.rerun()
                     else:
