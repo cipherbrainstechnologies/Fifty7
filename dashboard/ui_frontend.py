@@ -2009,8 +2009,9 @@ if tab == "Dashboard":
     
     st.markdown('<div class="dashboard-shell">', unsafe_allow_html=True)
     
-    engine_status = st.session_state.algo_running
-    broker_connected = st.session_state.broker is not None
+    # Safe access to session state variables with defaults
+    engine_status = st.session_state.get('algo_running', False)
+    broker_connected = st.session_state.get('broker') is not None
     broker_config = config.get('broker', {})
     if not isinstance(broker_config, dict) and config.get('_from_streamlit_secrets') and hasattr(st, 'secrets'):
         try:
@@ -2304,14 +2305,14 @@ if tab == "Dashboard":
     control_cols = st.columns([1.4, 1, 0.8], gap="large")
     with control_cols[0]:
         # Check if live_runner exists - if not, show warning and allow manual start attempt
-        live_runner_available = st.session_state.live_runner is not None
-        start_disabled = st.session_state.algo_running  # Only disable if already running
-        stop_disabled = (not st.session_state.algo_running) or not live_runner_available
+        live_runner_available = st.session_state.get('live_runner') is not None
+        start_disabled = st.session_state.get('algo_running', False)  # Only disable if already running
+        stop_disabled = (not st.session_state.get('algo_running', False)) or not live_runner_available
         
         if not live_runner_available:
             st.warning("⚠️ Live runner not initialized. Starting may not work. Check broker configuration.")
         
-        if st.session_state.algo_running:
+        if st.session_state.get('algo_running', False):
             if st.button("⏹ Stop Algo", use_container_width=True, type="secondary", disabled=stop_disabled):
                 if st.session_state.live_runner is None:
                     _set_algo_running_runtime(False)
@@ -2358,7 +2359,7 @@ if tab == "Dashboard":
                 st.rerun()
         if st.session_state.live_runner is None:
             st.caption("Live runner not initialized.")
-        elif st.session_state.algo_running:
+        elif st.session_state.get('algo_running', False):
             st.caption("Monitoring live market data.")
         else:
             st.caption("Algo idle – ready to start.")
@@ -2792,7 +2793,7 @@ if tab == "Dashboard":
     footer_last_updated = None
     footer_last_reason = None
     # Live data status
-    if st.session_state.algo_running and st.session_state.live_runner is not None:
+    if st.session_state.get('algo_running', False) and st.session_state.get('live_runner') is not None:
         st.divider()
         st.subheader("📡 Live Data Status")
         st.caption(

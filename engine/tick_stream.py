@@ -56,6 +56,8 @@ class LiveTickStreamer:
         self._default_symbols = default_symbols or []
         self._last_tick_ts: Optional[float] = None
         self._last_error: Optional[str] = None
+        self._failure_count = 0
+        self._max_failures = 5  # Stop trying after 5 consecutive failures
 
         if not self.enabled:
             logger.warning("LiveTickStreamer disabled (SmartWebSocketV2 not available or broker creds missing)")
@@ -160,14 +162,29 @@ class LiveTickStreamer:
 
     def _run(self):
         while not self._stop_event.is_set():
+            # Check if we've exceeded max failures
+            if self._failure_count >= self._max_failures:
+                logger.error(
+                    f"SmartAPI websocket failed {self._failure_count} times. "
+                    "Disabling tick streamer to prevent log spam. Restart required to re-enable."
+                )
+                self.enabled = False
+                break
+            
             try:
                 self._connect()
+                # Reset failure count on successful connection
+                if self._connected:
+                    self._failure_count = 0
             except Exception as exc:
-                logger.warning(f"Tick streamer connection error: {exc}")
+                self._failure_count += 1
+                logger.warning(
+                    f"Tick streamer connection error ({self._failure_count}/{self._max_failures}): {exc}"
+                )
                 self._last_error = str(exc)
             finally:
                 self._connected = False
-                if not self._stop_event.is_set():
+                if not self._stop_event.is_set() and self._failure_count < self._max_failures:
                     time.sleep(5)
 
     def _connect(self):
@@ -245,7 +262,14 @@ class LiveTickStreamer:
         self._connected = False
 
     def _on_error(self, wsapp, error):
-        logger.warning(f"SmartAPI websocket error: {error}")
+        self._failure_count += 1
+        if self._failure_count >= self._max_failures:
+            logger.error(
+                f"SmartAPI websocket error ({self._failure_count}/{self._max_failures}): {error}. "
+                "Stopping reconnection attempts to prevent log spam."
+            )
+        else:
+            logger.warning(f"SmartAPI websocket error ({self._failure_count}/{self._max_failures}): {error}")
         self._connected = False
         self._last_error = str(error)
 
