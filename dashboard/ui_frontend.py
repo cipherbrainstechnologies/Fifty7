@@ -512,8 +512,35 @@ if websocket_enabled:
                     if event_type in critical_events:
                         st.session_state.last_critical_event = datetime.now()
                         # Trigger immediate UI refresh for critical events
-                        # Use a flag to trigger rerun on next script execution
                         st.session_state._websocket_trigger_rerun = True
+                    
+                    # Handle tick_update events (throttled to avoid too frequent reruns)
+                    if event_type == 'tick_update':
+                        tick_data = data
+                        tradingsymbol = tick_data.get('tradingsymbol', '')
+                        is_nifty = tick_data.get('is_index', False) or tradingsymbol.upper() in ['NIFTY', 'NIFTY 50', 'NIFTY50']
+                        
+                        # For NIFTY index, update more frequently (every 2-3 seconds)
+                        # For options, update less frequently (every 5 seconds)
+                        now = time.time()
+                        last_tick_rerun = st.session_state.get('_last_tick_rerun', 0)
+                        
+                        if is_nifty:
+                            # NIFTY: Rerun every 1 second max for faster updates
+                            if now - last_tick_rerun >= 1.0:
+                                st.session_state._last_tick_rerun = now
+                                st.session_state._websocket_trigger_rerun = True
+                                # Store latest NIFTY LTP in session state for immediate access
+                                ltp = tick_data.get('ltp')
+                                if ltp is not None:
+                                    st.session_state._latest_nifty_ltp = float(ltp)
+                                    st.session_state._latest_nifty_ltp_timestamp = now
+                                    logger.debug(f"📊 NIFTY LTP updated via WebSocket: ₹{ltp:.2f}")
+                        else:
+                            # Options: Rerun every 5 seconds max
+                            if now - last_tick_rerun >= 5.0:
+                                st.session_state._last_tick_rerun = now
+                                st.session_state._websocket_trigger_rerun = True
                 
                 def on_state_update(message):
                     """Handle state update messages from WebSocket."""
@@ -2598,27 +2625,47 @@ if tab == "Dashboard":
         st.session_state.strategy_settings_feedback = None
 
     active_signals = st.session_state.signal_handler.get_active_signals()
+    
+    # Get NIFTY LTP - prioritize latest cached value from tick_update events for instant display
     nifty_ltp_value = None
     nifty_source = "Tick stream"
-    tick_streamer = st.session_state.get('tick_streamer')
-    if tick_streamer:
-        quote = tick_streamer.get_quote("NIFTY")
-        if quote and 'ltp' in quote:
+    now = time.time()
+    
+    # First check if we have a recent cached value from tick_update events (< 5 seconds old)
+    # This ensures we show the latest tick value even if UI hasn't rerun yet
+    cached_ltp = st.session_state.get('_latest_nifty_ltp')
+    cached_ltp_ts = st.session_state.get('_latest_nifty_ltp_timestamp', 0)
+    if cached_ltp is not None and (now - cached_ltp_ts) < 5.0:
+        nifty_ltp_value = cached_ltp
+        nifty_source = "Live tick"
+    else:
+        # Fallback to tick streamer cache
+        tick_streamer = st.session_state.get('tick_streamer')
+        if tick_streamer:
+            quote = tick_streamer.get_quote("NIFTY")
+            if quote and 'ltp' in quote:
+                try:
+                    nifty_ltp_value = float(quote['ltp'])
+                    nifty_source = "Tick stream"
+                    # Cache for next render
+                    st.session_state._latest_nifty_ltp = nifty_ltp_value
+                    st.session_state._latest_nifty_ltp_timestamp = now
+                except (TypeError, ValueError):
+                    nifty_ltp_value = None
+        
+        # Final fallback to market data provider (slower REST API)
+        if nifty_ltp_value is None:
             try:
-                nifty_ltp_value = float(quote['ltp'])
-            except (TypeError, ValueError):
-                nifty_ltp_value = None
-    if nifty_ltp_value is None:
-        try:
-            if st.session_state.market_data_provider is not None:
-                ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
-                if isinstance(ohlc, dict):
-                    ltp_val = ohlc.get('ltp') or ohlc.get('close')
-                    if ltp_val is not None:
-                        nifty_ltp_value = float(ltp_val)
-                        nifty_source = "Market data provider"
-        except Exception:
-            pass
+                if st.session_state.market_data_provider is not None:
+                    ohlc = st.session_state.market_data_provider.fetch_ohlc(mode="LTP")
+                    if isinstance(ohlc, dict):
+                        ltp_val = ohlc.get('ltp') or ohlc.get('close')
+                        if ltp_val is not None:
+                            nifty_ltp_value = float(ltp_val)
+                            nifty_source = "Market data provider"
+            except Exception:
+                pass
+    
     nifty_ltp_display = f"₹{nifty_ltp_value:,.2f}" if nifty_ltp_value is not None else "—"
 
     realized_pnl = 0.0

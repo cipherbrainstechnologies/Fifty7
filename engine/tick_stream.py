@@ -13,6 +13,20 @@ from logzero import logger
 
 from .symbol_utils import canonicalize_tradingsymbol
 
+# Lazy import to avoid circular dependency
+_event_bus = None
+
+def _get_event_bus():
+    """Lazy import of event bus to avoid circular dependencies."""
+    global _event_bus
+    if _event_bus is None:
+        try:
+            from .event_bus import get_event_bus
+            _event_bus = get_event_bus()
+        except Exception:
+            pass
+    return _event_bus
+
 try:
     from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 except ImportError:  # pragma: no cover - optional dependency
@@ -52,12 +66,17 @@ class LiveTickStreamer:
 
         self._subscriptions: Dict[str, Dict] = {}
         self._quotes: Dict[str, Dict] = {}
-
+        
         self._default_symbols = default_symbols or []
         self._last_tick_ts: Optional[float] = None
         self._last_error: Optional[str] = None
         self._failure_count = 0
         self._max_failures = 5  # Stop trying after 5 consecutive failures
+        
+        # Throttling for tick_update events (to prevent spam but ensure NIFTY updates frequently)
+        self._last_tick_event_ts: Dict[str, float] = {}  # symbol -> last event publish timestamp
+        self._tick_event_interval = 1.0  # Minimum interval between tick_update events for same symbol (1 second)
+        self._nifty_event_interval = 0.5  # More frequent updates for NIFTY index (0.5 seconds)
 
         if not self.enabled:
             logger.warning("LiveTickStreamer disabled (SmartWebSocketV2 not available or broker creds missing)")
@@ -304,6 +323,8 @@ class LiveTickStreamer:
                     meta_ts = meta.get("tradingsymbol")
                     if meta_ts:
                         ts = meta_ts
+                # Update cache
+                old_ltp = self._quotes.get(token, {}).get("ltp")
                 self._quotes[token] = {
                     "ltp": ltp,
                     "timestamp": row.get("exchangeTimestamp") or row.get("timestamp") or time.time(),
@@ -312,6 +333,47 @@ class LiveTickStreamer:
                     "token": token,
                 }
                 self._last_tick_ts = time.time()
+                
+                # Publish tick_update event for UI refresh (especially for NIFTY index)
+                # Throttle events to prevent spam but ensure frequent updates for NIFTY
+                is_nifty = (ts and ts.upper() in ['NIFTY', 'NIFTY 50', 'NIFTY50', 'NIFTY INDEX'])
+                should_publish = False
+                now = time.time()
+                
+                # For NIFTY index, publish more frequently (every 0.5s or when LTP changes)
+                # For options, publish when LTP changes or every 2 seconds
+                if is_nifty:
+                    last_event_ts = self._last_tick_event_ts.get(ts, 0)
+                    interval = self._nifty_event_interval
+                    # Publish if LTP changed OR enough time has passed (for continuous updates)
+                    if old_ltp != ltp or (now - last_event_ts) >= interval:
+                        should_publish = True
+                        self._last_tick_event_ts[ts] = now
+                else:
+                    # For options, only publish when LTP changes (to reduce spam)
+                    if old_ltp != ltp:
+                        should_publish = True
+                        self._last_tick_event_ts[ts] = now
+                
+                if should_publish:
+                    try:
+                        event_bus = _get_event_bus()
+                        if event_bus:
+                            event_bus.publish('tick_update', {
+                                'tradingsymbol': ts,
+                                'token': token,
+                                'ltp': ltp,
+                                'timestamp': now,
+                                'exchange': meta.get("exchange") if meta else None,
+                                'is_index': is_nifty,
+                                'old_ltp': old_ltp,
+                            })
+                            # Log NIFTY updates more verbosely for debugging
+                            if is_nifty:
+                                logger.debug(f"📊 NIFTY tick_update: LTP={ltp:.2f} (old={old_ltp})")
+                    except Exception as e:
+                        # Don't let event publishing break tick streamer
+                        logger.debug(f"Failed to publish tick_update event: {e}")
 
     def _send_subscribe(self, tokens: List[str]):
         if not tokens or not self._ws:
