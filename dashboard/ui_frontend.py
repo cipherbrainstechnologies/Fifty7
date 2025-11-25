@@ -1866,6 +1866,40 @@ if st.session_state.get('_websocket_trigger_rerun', False):
     st.session_state._websocket_trigger_rerun = False
     st.rerun()
 
+# FALLBACK: Direct polling of tick streamer for NIFTY LTP (works even if WebSocket fails)
+# This ensures NIFTY LTP updates even if WebSocket connection is broken
+if current_main_tab == "Dashboard":
+    if 'last_nifty_direct_poll_ts' not in st.session_state:
+        st.session_state.last_nifty_direct_poll_ts = 0
+    
+    now = time.time()
+    poll_interval = 2.0  # Poll every 2 seconds
+    tick_streamer = st.session_state.get('tick_streamer')
+    
+    if tick_streamer and (now - st.session_state.last_nifty_direct_poll_ts) >= poll_interval:
+        try:
+            quote = tick_streamer.get_quote("NIFTY")
+            if quote and 'ltp' in quote:
+                current_ltp = float(quote.get('ltp', 0))
+                cached_ltp = st.session_state.get('_latest_nifty_ltp')
+                
+                # Update cached value and trigger rerun if price changed
+                if cached_ltp is None or abs(current_ltp - cached_ltp) > 0.01:  # Only if changed by >0.01
+                    st.session_state._latest_nifty_ltp = current_ltp
+                    st.session_state._latest_nifty_ltp_timestamp = now
+                    st.session_state.last_nifty_direct_poll_ts = now
+                    # Only rerun if price actually changed (to avoid unnecessary refreshes)
+                    if cached_ltp is not None:  # Don't rerun on first poll
+                        logger.info(f"📊 NIFTY LTP polled: ₹{current_ltp:.2f} (changed from ₹{cached_ltp:.2f})")
+                        st.rerun()
+                    else:
+                        # First poll - just cache the value
+                        st.session_state.last_nifty_direct_poll_ts = now
+                else:
+                    st.session_state.last_nifty_direct_poll_ts = now
+        except Exception as e:
+            logger.debug(f"NIFTY LTP direct polling error: {e}")
+
 # Only auto-refresh if on Dashboard tab AND auto-refresh is enabled AND no recent user interaction
 # Check if user interacted in last 3 seconds (prevent refresh during dropdown/button clicks)
 time_since_last_interaction = time.time() - st.session_state.get('_last_user_interaction', 0)
@@ -3641,7 +3675,43 @@ if tab == "Dashboard":
         except Exception as e:
             logger.error(f"Background refresh error: {e}")
 
-    # Check if WebSocket triggered a rerun (non-blocking)
+    # CRITICAL: Check WebSocket rerun trigger EARLY (before dashboard rendering)
+    # This ensures UI updates immediately when tick_update events arrive
+    if st.session_state.get('_websocket_trigger_rerun', False):
+        st.session_state._websocket_trigger_rerun = False
+        st.rerun()
+    
+    # Fallback: Periodic NIFTY LTP polling if WebSocket not working
+    # Poll tick streamer cache directly every 2 seconds for NIFTY updates
+    if 'last_nifty_poll_ts' not in st.session_state:
+        st.session_state.last_nifty_poll_ts = 0
+    
+    now = time.time()
+    poll_interval = 2.0  # Poll every 2 seconds
+    tick_streamer = st.session_state.get('tick_streamer')
+    
+    if tick_streamer and (now - st.session_state.last_nifty_poll_ts) >= poll_interval:
+        try:
+            quote = tick_streamer.get_quote("NIFTY")
+            if quote and 'ltp' in quote:
+                current_ltp = float(quote.get('ltp', 0))
+                cached_ltp = st.session_state.get('_latest_nifty_ltp')
+                
+                # Update cached value and trigger rerun if price changed
+                if cached_ltp is None or abs(current_ltp - cached_ltp) > 0.01:  # Only if changed by >0.01
+                    st.session_state._latest_nifty_ltp = current_ltp
+                    st.session_state._latest_nifty_ltp_timestamp = now
+                    st.session_state.last_nifty_poll_ts = now
+                    # Only rerun if price actually changed (to avoid unnecessary refreshes)
+                    if cached_ltp is not None:  # Don't rerun on first poll
+                        logger.debug(f"📊 NIFTY LTP polled: ₹{current_ltp:.2f} (changed from ₹{cached_ltp:.2f})")
+                        st.session_state._websocket_trigger_rerun = True
+                else:
+                    st.session_state.last_nifty_poll_ts = now
+        except Exception as e:
+            logger.debug(f"NIFTY LTP polling error: {e}")
+    
+    # Check again after polling (in case we set the flag above)
     if st.session_state.get('_websocket_trigger_rerun', False):
         st.session_state._websocket_trigger_rerun = False
         st.rerun()
