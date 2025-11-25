@@ -398,6 +398,127 @@ if state_config.get('enabled', True) and 'state_snapshot_thread' not in st.sessi
     st.session_state.state_snapshot_thread = snapshot_thread
     logger.info("Periodic state snapshot thread started")
 
+# ===================================================================
+# RAILWAY KEEP-ALIVE MECHANISM - Prevent service from sleeping
+# ===================================================================
+# Railway free tier puts services to sleep after ~5 minutes of inactivity.
+# This keep-alive mechanism ensures the service stays awake by:
+# 1. Making periodic HTTP requests to the service itself
+# 2. Keeping tick streamer and live runner active (they generate activity)
+# 3. Ensuring continuous tick data flow prevents sleep
+if 'railway_keepalive_thread' not in st.session_state:
+    def railway_keepalive_monitor():
+        """
+        Monitor Railway service activity to prevent sleep.
+        
+        IMPORTANT: Railway sleeps services after ~10 minutes of NO OUTBOUND network traffic.
+        Inbound pings don't help - we need OUTBOUND activity.
+        
+        This monitor ensures:
+        1. Tick streamer stays connected (generates outbound WebSocket traffic to SmartAPI)
+        2. Live runner stays active (generates periodic outbound API calls)
+        3. Logs warnings if service may sleep
+        
+        To permanently prevent sleep, DISABLE "App Sleeping" in Railway dashboard settings.
+        """
+        import time as time_module
+        
+        # Detect Railway environment
+        is_railway = (
+            os.getenv("RAILWAY_ENVIRONMENT") is not None or 
+            os.getenv("PORT") is not None or
+            os.getenv("RAILWAY_STATIC_URL") is not None
+        )
+        
+        if not is_railway:
+            logger.debug("Not on Railway - keep-alive monitor disabled")
+            return
+        
+        logger.info("🚀 Railway keep-alive monitor started")
+        logger.warning(
+            "⚠️ IMPORTANT: Railway sleeps services after ~10 minutes of NO OUTBOUND traffic. "
+            "To prevent sleep, DISABLE 'App Sleeping' in Railway dashboard → Service → Settings"
+        )
+        
+        # Check interval: every 5 minutes
+        check_interval = 300  # 5 minutes
+        
+        while True:
+            try:
+                time_module.sleep(check_interval)
+                
+                # Check tick streamer (generates outbound WebSocket traffic to SmartAPI)
+                tick_streamer = st.session_state.get('tick_streamer')
+                tick_streamer_active = False
+                
+                if tick_streamer:
+                    try:
+                        status = tick_streamer.get_status()
+                        if status:
+                            connected = status.get('connected', False)
+                            subscriptions = status.get('subscriptions', 0)
+                            last_tick_age = status.get('last_tick_age_sec')
+                            
+                            if connected and subscriptions > 0:
+                                tick_streamer_active = True
+                                logger.info(
+                                    f"✅ Keep-alive: Tick streamer ACTIVE "
+                                    f"({subscriptions} subscriptions, last tick: {last_tick_age:.1f}s ago) "
+                                    f"- Generating outbound traffic to SmartAPI → Service should stay awake"
+                                )
+                            else:
+                                logger.warning(
+                                    f"⚠️ Keep-alive: Tick streamer NOT CONNECTED "
+                                    f"(connected={connected}, subscriptions={subscriptions}) "
+                                    f"- Service may sleep if no other outbound traffic for 10+ minutes"
+                                )
+                    except Exception as e:
+                        logger.debug(f"Keep-alive: Error checking tick streamer: {e}")
+                
+                # Check live runner (generates periodic outbound API calls)
+                live_runner = st.session_state.get('live_runner')
+                live_runner_active = False
+                
+                if live_runner and hasattr(live_runner, 'is_running'):
+                    try:
+                        if live_runner.is_running():
+                            live_runner_active = True
+                            logger.info(
+                                "✅ Keep-alive: Live runner ACTIVE "
+                                "- Generating periodic outbound API calls → Service should stay awake"
+                            )
+                    except Exception:
+                        pass
+                
+                # Warning if no active processes generating outbound traffic
+                if not tick_streamer_active and not live_runner_active:
+                    logger.error(
+                        "❌ Keep-alive: NO ACTIVE PROCESSES generating outbound traffic! "
+                        "Service will SLEEP after ~10 minutes of inactivity.\n"
+                        "SOLUTIONS:\n"
+                        "1. Disable 'App Sleeping' in Railway dashboard → Service → Settings (RECOMMENDED)\n"
+                        "2. Start the algo (Live Runner generates outbound API calls)\n"
+                        "3. Ensure tick streamer is connected (generates outbound WebSocket traffic)\n"
+                        "4. Set up external health check (UptimeRobot/cron-job.org) to ping every 5 minutes"
+                    )
+                        
+            except Exception as e:
+                logger.warning(f"Railway keep-alive monitor error: {e}")
+                time_module.sleep(60)  # Wait 1 minute before retry
+    
+    # Start keep-alive monitor thread only once
+    try:
+        keepalive_thread = threading.Thread(
+            target=railway_keepalive_monitor, 
+            daemon=True, 
+            name="RailwayKeepAlive"
+        )
+        keepalive_thread.start()
+        st.session_state.railway_keepalive_thread = keepalive_thread
+        logger.info("🚀 Railway keep-alive monitor initialized")
+    except Exception as e:
+        logger.warning(f"Failed to start Railway keep-alive monitor: {e}")
+
 # Initialize WebSocket server and client
 websocket_config = config.get('websocket', {})
 
