@@ -1,0 +1,148 @@
+# NIFTY Options Trading System Configuration - Render.com Production
+# This config file is for Render.com deployment
+# Copy this to config.yaml when deploying to Render
+
+# Trading Parameters
+lot_size: 75
+
+# Strategy Configuration
+strategy:
+  type: inside_bar
+  sl: 30              # Stop Loss in points
+  rr: 1.8             # Risk-Reward Ratio
+  atm_offset: 0        # Strike offset from ATM (0 = ATM, positive = OTM for calls)
+  filters:
+    volume_spike: true
+    avoid_open_range: false
+  
+# Timeframe Configuration
+timeframes:
+  detection: "1h"     # Inside Bar detection timeframe
+  confirmation: "1h" # Breakout confirmation timeframe
+
+# Broker Configuration (overridden by secrets.toml)
+broker:
+  type: "angel"       # Options: "angel", "fyers"
+  default_qty: 150     # Default quantity per trade (2 lots x 75)
+  enable_bracket_orders: true   # Place SL/TP directly at broker via bracket (ROBO) orders
+  bracket_variety: "ROBO"       # Order variety to use when enable_bracket_orders is true
+  bracket_product_type: "INTRADAY"  # Product type for bracket orders
+  order_variety: "NORMAL"       # Fallback variety when bracket orders are disabled
+  product_type: "INTRADAY"      # Fallback product type when bracket orders are disabled
+
+# Credential Source Mapping (avoid storing secrets in YAML)
+credentials:
+  source: "secrets"  # Load sensitive values from .streamlit/secrets.toml or environment
+  smartapi_apps:
+    trading_section: "smartapi_apps.trading"
+    historical_section: "smartapi_apps.historical"
+    publisher_section: "smartapi_apps.publisher"
+
+# Position Management (point-based)
+position_management:
+  sl_points: 30          # initial SL in points (option price)
+  trail_points: 10       # trailing step in points
+  book1_points: 40       # book 50% at entry + 40 points
+  book2_points: 54       # book remaining at entry + 54 points
+  book1_ratio: 0.5       # 50% at first target
+
+# Logging Configuration
+logging:
+  trades_file: "logs/trades.csv"
+  errors_file: "logs/errors.log"
+  log_level: "INFO"
+
+# Market Data Configuration
+market_data:
+  polling_interval_seconds: 900  # 15 minutes
+  max_retries: 3  # Maximum retry attempts for API calls
+  retry_delay_seconds: 5  # Delay between retries
+  nifty_symbol: "NIFTY"  # Trading symbol for NIFTY index
+  nifty_exchange: "NSE"
+  data_window_hours_1h: 120  # Window for 1-hour candles (≈5 trading days to guarantee ≥20 candles)
+  data_window_hours_15m: 12  # Window for 15-minute candles
+  use_direct_intervals: true  # Prefer direct interval fetching (ONE_HOUR, FIFTEEN_MINUTE) over resampling
+  api_delay_minutes: 5  # Request data up to N minutes ago to avoid API delays
+  pnl_refresh_seconds: 5  # Active P&L refresh interval
+  pnl_quote_stale_seconds: 5  # Quote staleness threshold
+
+# Event Bus Configuration
+event_bus:
+  enabled: true
+  persist_events: true  # Persist events to log file for audit trail
+  event_log_file: "logs/events.log"
+  max_history: 1000  # Maximum events to keep in memory
+
+# State Store Configuration
+state_store:
+  enabled: true
+  snapshot_dir: "data/state"
+  snapshot_interval_minutes: 5  # Interval between state snapshots
+  max_snapshots: 100  # Maximum number of snapshots to keep
+  restore_on_startup: true  # Restore state from snapshot on startup
+  replay_events_on_restore: true  # Replay events since last snapshot
+
+# WebSocket Configuration - DISABLED for Render.com
+# Render only exposes one port per service, so WebSocket server cannot run on separate port
+# The system will fall back to auto-refresh polling which works fine for trading
+websocket:
+  enabled: false  # DISABLED - Render.com doesn't support multiple ports
+  # Note: System will use Streamlit's auto-refresh for updates
+  # This is sufficient for live trading as critical updates are still processed
+
+# Backtesting Data Sources Configuration
+backtesting:
+  strategy_timeframe: "1h"  # Strategy candle size for backtests (1h or 4h)
+  data_source: "desiquant"  # Options: "csv", "desiquant", "marketdata", "truedata", "angel_smartapi"
+  
+  # CSV Data Source Configuration
+  csv:
+    spot_data_path: "data/historical/nifty_spot_1h.csv"
+    options_data_path: "data/historical/nifty_options_1h.csv"
+    expiries_path: "data/historical/expiries.csv"
+  
+  # DesiQuant S3 Data Source Configuration (Free, no API key required)
+  desiquant:
+    enabled: true
+    # Uses public S3 credentials (built into datasource_desiquant.py)
+  
+  # Market Data API Configuration (Requires API key)
+  marketdata:
+    enabled: true  # Set to true to enable Market Data API
+    api_key: "azZCREFyMWh3d0h6RnBOSTF0Qld0UWFMQ1laWURQY2pvU3QtTU9jU1ItMD0"  # Your Market Data API key (get from https://www.marketdata.app/)
+    base_url: "https://api.marketdata.app/v1"
+    request_delay: 0.2  # Delay between requests (seconds) to respect rate limits
+    
+    # Symbol mapping
+    symbols:
+      NIFTY: "NIFTY"
+      BANKNIFTY: "BANKNIFTY"
+      FINNIFTY: "FINNIFTY"
+    
+    # Strike configuration
+    strikes:
+      NIFTY: 50  # Strike step for NIFTY (multiples of 50)
+      BANKNIFTY: 100  # Strike step for BANKNIFTY (multiples of 100)
+      FINNIFTY: 50  # Strike step for FINNIFTY (multiples of 50)
+  
+  # TrueData API Configuration (Professional data provider - Paid subscription required)
+  truedata:
+    enabled: false  # Set to true to enable TrueData API (requires subscription)
+    username: ""  # Your TrueData username (get from https://truedata.in)
+    password: ""  # Your TrueData password
+    
+    # Strike configuration
+    strike_step:
+      NIFTY: 50  # Strike step for NIFTY
+      BANKNIFTY: 100  # Strike step for BANKNIFTY
+      FINNIFTY: 50  # Strike step for FINNIFTY
+      MIDCPNIFTY: 25  # Strike step for MIDCPNIFTY
+
+  # Angel SmartAPI Backtesting (historical spot only via SmartAPI)
+  angel_smartapi:
+    enabled: true
+    secrets_path: ".streamlit/secrets.toml"
+    symbol: "NIFTY"
+    symbol_token: "99926000"  # NIFTY 50 index token
+    interval: "ONE_HOUR"
+    exchange: "NSE"
